@@ -34,7 +34,7 @@ impl App {
         ui2.vertical_centered(|ui| {
             ui.add(egui::Image::new(crate::brand::mark()).fit_to_exact_size(Vec2::splat(44.0)));
             ui.add_space(14.0);
-            ui.label(RichText::new("Let's build").font(theme::sans(28.0)).color(theme::INK));
+            ui.label(RichText::new("Let's build").font(theme::display(30.0)).color(theme::INK));
             ui.add_space(14.0);
             self.workspace_pill(ui);
         });
@@ -149,7 +149,7 @@ impl App {
             ui.painter().circle_filled(d.center(), 3.0, theme::RUST);
             ui.label(
                 RichText::new("The daemon is not running, so there is nothing to send to yet.")
-                    .font(theme::sans(12.5))
+                    .font(theme::prose(12.5))
                     .color(theme::FAINT),
             );
             let again = ui.add(

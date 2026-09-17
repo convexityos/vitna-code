@@ -1,4 +1,5 @@
-//! Vitna's material, ported from `apps/vitna-desktop/src/styles/tokens.css`.
+//! Vitna's material, ported from `apps/vitna-desktop/src/styles/tokens.css`,
+//! with the three faces it names bundled under `assets/fonts/`.
 //!
 //! The values are the same hexes rather than an approximation, so the native
 //! window and the reference surface cannot drift into two different products.
@@ -60,58 +61,77 @@ pub fn sans(size: f32) -> FontId {
     FontId::new(size, FontFamily::Proportional)
 }
 
-/// A monospace face from the host, when one of the preferred faces is
-/// installed.
-///
-/// The tokens name JetBrains Mono, Space Grotesk and Manrope. None of the three
-/// is in this repository, so this window does not claim them: it asks the host
-/// for the closest face it actually has, falls back to egui's bundled default,
-/// and reports which one it drew with. Bundling the named faces is a licensing
-/// decision somebody has to make, not something to paper over with a lookalike.
-fn host_mono() -> Option<(String, Vec<u8>)> {
-    let candidates: &[&str] = if cfg!(windows) {
-        &[
-            r"C:\Windows\Fonts\JetBrainsMono-Regular.ttf",
-            r"C:\Windows\Fonts\CascadiaMono.ttf",
-            r"C:\Windows\Fonts\consola.ttf",
-        ]
-    } else if cfg!(target_os = "macos") {
-        &[
-            "/Library/Fonts/JetBrainsMono-Regular.ttf",
-            "/System/Library/Fonts/SFNSMono.ttf",
-        ]
-    } else {
-        &[
-            "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-        ]
-    };
+/// The three faces the design names, bundled as the OFL variable TrueType files
+/// under `assets/fonts/`, each pinned to a weight on its `wght` axis at
+/// registration so every label in the window draws at that weight. Bundled
+/// rather than probed from the host, so the window draws the same face on
+/// every machine.
+const MANROPE: &[u8] = include_bytes!("../assets/fonts/Manrope-Variable.ttf");
+const SPACE_GROTESK: &[u8] = include_bytes!("../assets/fonts/SpaceGrotesk-Variable.ttf");
+const JETBRAINS_MONO: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Variable.ttf");
 
-    for path in candidates {
-        if let Ok(bytes) = std::fs::read(path) {
-            let name = std::path::Path::new(path)
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "host-mono".to_string());
-            return Some((name, bytes));
-        }
-    }
-    None
+/// Weights. The variable masters default to Regular, which on a dark ground
+/// reads thin; these are the cuts the window actually uses.
+const WGHT_UI: f32 = 500.0;
+const WGHT_DISPLAY: f32 = 600.0;
+const WGHT_PROSE: f32 = 500.0;
+const WGHT_MONO: f32 = 500.0;
+
+/// Space Grotesk is what a view says: headings, labels, controls, chips. It is
+/// the proportional default, so `sans` is the UI voice.
+pub fn display(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name("display".into()))
+}
+
+/// Manrope is for sentences: the one or two lines of explanation a view
+/// carries, and hover text.
+pub fn prose(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name("prose".into()))
+}
+
+fn face(bytes: &'static [u8], weight: f32) -> std::sync::Arc<egui::FontData> {
+    std::sync::Arc::new(egui::FontData::from_static(bytes).tweak(egui::FontTweak {
+        coords: egui::epaint::text::VariationCoords::new([(*b"wght", weight)]),
+        ..Default::default()
+    }))
 }
 
 pub fn install(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    if let Some((name, bytes)) = host_mono() {
-        fonts.font_data.insert(
-            name.clone(),
-            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
-        );
-        fonts
-            .families
-            .entry(FontFamily::Monospace)
-            .or_default()
-            .insert(0, name);
-    }
+    fonts.font_data.insert("SpaceGrotesk".to_owned(), face(SPACE_GROTESK, WGHT_UI));
+    fonts.font_data.insert("SpaceGroteskDisplay".to_owned(), face(SPACE_GROTESK, WGHT_DISPLAY));
+    fonts.font_data.insert("Manrope".to_owned(), face(MANROPE, WGHT_PROSE));
+    fonts.font_data.insert("JetBrainsMono".to_owned(), face(JETBRAINS_MONO, WGHT_MONO));
+
+    // Each family leads with the design's face and keeps egui's defaults
+    // behind it, so a glyph the face lacks (emoji, a stray symbol) still draws
+    // rather than boxing.
+    let defaults = fonts
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    let chain = |lead: &[&str]| -> Vec<String> {
+        lead.iter()
+            .map(|s| (*s).to_owned())
+            .chain(defaults.iter().cloned())
+            .collect()
+    };
+    fonts
+        .families
+        .insert(FontFamily::Proportional, chain(&["SpaceGrotesk", "Manrope"]));
+    fonts.families.insert(
+        FontFamily::Name("display".into()),
+        chain(&["SpaceGroteskDisplay", "SpaceGrotesk"]),
+    );
+    fonts
+        .families
+        .insert(FontFamily::Name("prose".into()), chain(&["Manrope", "SpaceGrotesk"]));
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, "JetBrainsMono".to_owned());
     ctx.set_fonts(fonts);
 
     ctx.all_styles_mut(|style| {

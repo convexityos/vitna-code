@@ -24,9 +24,8 @@ impl App {
             ui.add(egui::Image::new(crate::brand::mark()).fit_to_exact_size(Vec2::splat(18.0)));
             ui.label(
                 RichText::new("Vitna Code")
-                    .font(theme::sans(14.0))
-                    .color(theme::INK)
-                    .strong(),
+                    .font(theme::display(14.5))
+                    .color(theme::INK),
             );
         });
         ui.add_space(16.0);
