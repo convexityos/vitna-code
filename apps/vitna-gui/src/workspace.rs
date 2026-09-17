@@ -47,7 +47,15 @@ const SCAN_CAP: usize = 4000;
 /// Directories the walk never descends into. They are build output and vendored
 /// code: their mtimes answer "when did a tool last run", not "when did someone
 /// last change this workspace".
-const SKIP: &[&str] = &[".git", "node_modules", "target", "dist", ".venv", "__pycache__"];
+const SKIP: &[&str] = &[".git", "node_modules", "dist", ".venv", "__pycache__"];
+
+/// Cargo's output directory is `target` by default and anything at all under
+/// CARGO_TARGET_DIR; a `target-mingw` beside `target` is common enough that
+/// matching the name exactly let the walk descend into a build tree and hit
+/// its cap, which the window then reported as a partial reading.
+fn is_skipped(name: &str) -> bool {
+    SKIP.contains(&name) || name.starts_with("target")
+}
 
 impl Workspace {
     pub fn open(path: impl AsRef<Path>) -> Self {
@@ -128,7 +136,7 @@ fn newest_mtime(root: &Path) -> (Option<SystemTime>, usize, bool) {
             };
 
             if file_type.is_dir() {
-                if SKIP.contains(&name.as_ref()) {
+                if is_skipped(name.as_ref()) {
                     continue;
                 }
                 stack.push(entry.path());
@@ -241,13 +249,16 @@ mod tests {
         let dir = scratch("skip");
         std::fs::create_dir_all(dir.join("target")).expect("create target");
         std::fs::write(dir.join("target").join("huge.bin"), b"x").expect("write in target");
+        // A custom CARGO_TARGET_DIR beside it is build output too.
+        std::fs::create_dir_all(dir.join("target-mingw")).expect("create target-mingw");
+        std::fs::write(dir.join("target-mingw").join("huge.bin"), b"x").expect("write in target-mingw");
         std::fs::write(dir.join("src.rs"), b"fn main() {}").expect("write source");
 
         let (_, scanned, capped) = newest_mtime(&dir);
         assert!(!capped);
-        // target/ is counted as one entry and never descended into, so its
-        // contents are not scanned.
-        assert_eq!(scanned, 2);
+        // Each build directory is counted as one entry and never descended
+        // into, so their contents are not scanned: two dirs plus src.rs.
+        assert_eq!(scanned, 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
