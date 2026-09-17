@@ -1,0 +1,262 @@
+/* The receipt reader. Findings first, as a ladder of checks, then the record. */
+
+.receipt-view {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 38px clamp(20px, 4vw, 56px) 56px;
+}
+
+.receipt-head {
+  max-width: 1120px;
+  margin: 0 auto 28px;
+}
+
+.receipt-title {
+  margin-top: 6px;
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: clamp(1.6rem, 2.4vw, 2.15rem);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.receipt-lede {
+  max-width: 72ch;
+  margin-top: 6px;
+  color: var(--mute);
+}
+
+.receipt-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  align-items: start;
+  gap: 32px;
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+.receipt-input {
+  position: sticky;
+  top: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.dropzone {
+  display: grid;
+  place-items: center;
+  gap: 4px;
+  padding: 26px 16px;
+  border: 1px dashed var(--hair);
+  border-radius: var(--r);
+  background: var(--field);
+  text-align: center;
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    background-color var(--t-fast) var(--ease);
+}
+
+.dropzone:hover,
+.dropzone[data-dragging] {
+  border-color: rgba(142, 162, 255, 0.6);
+}
+
+.dropzone[data-dragging] {
+  background: var(--peri-tint);
+}
+
+.dropzone:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.dropzone-title {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.receipt-label {
+  display: grid;
+  gap: 6px;
+}
+
+.receipt-text {
+  min-height: 220px;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.receipt-sample {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--fs-small);
+}
+
+.receipt-findings {
+  display: grid;
+  gap: 26px;
+}
+
+.receipt-empty {
+  padding: 36px 0;
+}
+
+.checks {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--hair-2);
+  border-radius: var(--r);
+  background: var(--face);
+}
+
+.check {
+  position: relative;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--hair-3);
+}
+
+.check:last-child {
+  border-bottom: 0;
+}
+
+.check-rust::before {
+  content: '';
+  position: absolute;
+  top: 11px;
+  bottom: 11px;
+  left: 0;
+  width: 2px;
+  background: var(--rust);
+}
+
+.check-title {
+  display: flex;
+  align-items: center;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.check-detail {
+  margin-top: 3px;
+  color: var(--faint);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+
+.record {
+  display: grid;
+  gap: 24px;
+}
+
+.record-facts {
+  border-top: 1px solid var(--hair-2);
+}
+
+.record-facts > div {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 16px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--hair-3);
+}
+
+.record-facts dt {
+  color: var(--faint);
+  font-size: var(--fs-small);
+}
+
+.record-facts dd {
+  margin: 0;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.record-sub {
+  display: block;
+  margin-top: 2px;
+  color: var(--fainter);
+  font-size: var(--fs-meta);
+}
+
+.record-section {
+  display: grid;
+  gap: 10px;
+}
+
+.record-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-small);
+}
+
+.record-table th {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--hair-2);
+  color: var(--faint);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  text-align: left;
+}
+
+.record-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--hair-3);
+  overflow-wrap: anywhere;
+}
+
+.evidence {
+  display: grid;
+  gap: 14px;
+}
+
+.evidence-item {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: start;
+  gap: 14px;
+}
+
+.grade-scale {
+  width: 72px;
+  height: 14px;
+  margin-top: 5px;
+}
+
+.grade-rule {
+  stroke: var(--hair);
+  stroke-width: 1;
+}
+
+.grade-tick {
+  fill: var(--fainter);
+}
+
+.grade-mark {
+  fill: var(--peri-2);
+}
+
+.statements {
+  display: grid;
+  gap: 6px;
+  font-size: var(--fs-meta);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .receipt-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .receipt-input {
+    position: static;
+  }
+
+  .record-facts > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}
