@@ -8,7 +8,7 @@ pub use fake::{FakeRunner, FaultInjectionMode, RunnerFault};
 pub use journal::{ActionJournal, ActionState, JournalEntry};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -19,6 +19,23 @@ pub struct ExecutionOutput {
     pub stderr: String,
     pub duration_ms: u64,
     pub statement_digest: String,
+}
+
+/// The statement digest binds one action to what it reported: the action id, the
+/// command, its exit code and both output streams. Both runners compute it here so
+/// a receipt cannot depend on which runner produced it.
+pub fn compute_statement_digest(
+    action_id: &str,
+    command: &str,
+    exit_code: i32,
+    stdout: &str,
+    stderr: &str,
+) -> String {
+    let raw = format!(
+        "statement:{}:{}:{}:{}:{}",
+        action_id, command, exit_code, stdout, stderr
+    );
+    hex::encode(Sha256::digest(raw.as_bytes()))
 }
 
 #[async_trait]
@@ -121,23 +138,26 @@ impl Runner for ProcessRunner {
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-        let statement_raw = format!(
-            "statement:{}:{}:{}:{}:{}",
-            action_id, command, exit_code, stdout, stderr
-        );
-        let statement_digest = hex::encode(Sha256::digest(statement_raw.as_bytes()));
+        let statement_digest =
+            compute_statement_digest(&action_id, command, exit_code, &stdout, &stderr);
 
         // Step 4: Record finished in journal
         {
             let mut j = self.journal.lock().map_err(|e| e.to_string())?;
-            j.record_finished(&action_id, &statement_digest, now_ms + duration_ms)
-                .map_err(|e| format!("Journal error on finished: {}", e))?;
+            j.record_finished(
+                &action_id,
+                exit_code,
+                hex::encode(Sha256::digest(stdout.as_bytes())),
+                hex::encode(Sha256::digest(stderr.as_bytes())),
+                now_ms + duration_ms,
+            )
+            .map_err(|e| format!("Journal error on finished: {}", e))?;
         }
 
         // Step 5: Record acknowledged in journal
         {
             let mut j = self.journal.lock().map_err(|e| e.to_string())?;
-            j.record_acknowledged(&action_id, now_ms + duration_ms + 1)
+            j.record_acknowledged(&action_id)
                 .map_err(|e| format!("Journal error on acknowledged: {}", e))?;
         }
 

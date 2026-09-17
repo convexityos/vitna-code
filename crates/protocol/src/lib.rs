@@ -1,7 +1,7 @@
 //! Vitna Agent Protocol definitions, wire framing, and envelope serialization.
 
 use serde::{Deserialize, Serialize};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 
 pub const PROTOCOL_VERSION_MAJOR: u32 = 1;
 pub const PROTOCOL_VERSION_MINOR: u32 = 0;

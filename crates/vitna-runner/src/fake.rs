@@ -1,6 +1,6 @@
 //! Fake execution runner with synthetic fault injection for reliability testing.
 
-use crate::journal::{ActionJournal, ActionState, JournalEntry};
+use crate::journal::{ActionJournal, JournalEntry};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use std::io;
@@ -91,8 +91,46 @@ impl FakeRunner {
     }
 }
 
+#[async_trait]
+impl crate::Runner for std::sync::Mutex<FakeRunner> {
+    async fn run_command(
+        &self,
+        command: &str,
+        _working_dir: &Path,
+        _timeout_ms: u64,
+    ) -> Result<crate::ExecutionOutput, String> {
+        let action_id = format!(
+            "fake-act-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let arg_digest = hex::encode(Sha256::digest(command.as_bytes()));
+        let mut runner = self.lock().map_err(|e| e.to_string())?;
+        let entry = runner
+            .execute_action(&action_id, &arg_digest, FaultInjectionMode::None, 1000)
+            .map_err(|e| format!("{:?}", e))?;
+
+        let exit_code = entry.exit_code.unwrap_or(0);
+        let stdout = format!("Fake output for: {}", command);
+        let stderr = String::new();
+
+        Ok(crate::ExecutionOutput {
+            statement_digest: crate::compute_statement_digest(
+                &action_id, command, exit_code, &stdout, &stderr,
+            ),
+            exit_code,
+            stdout,
+            stderr,
+            duration_ms: 5,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::journal::ActionState;
     use super::*;
 
     #[test]
@@ -173,35 +211,3 @@ mod tests {
         let _ = std::fs::remove_file(temp_file);
     }
 }
-
-#[async_trait]
-impl crate::Runner for std::sync::Mutex<FakeRunner> {
-    async fn run_command(
-        &self,
-        command: &str,
-        _working_dir: &Path,
-        _timeout_ms: u64,
-    ) -> Result<crate::ExecutionOutput, String> {
-        let action_id = format!(
-            "fake-act-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        );
-        let arg_digest = hex::encode(Sha256::digest(command.as_bytes()));
-        let mut runner = self.lock().map_err(|e| e.to_string())?;
-        let entry = runner
-            .execute_action(&action_id, &arg_digest, FaultInjectionMode::None, 1000)
-            .map_err(|e| format!("{:?}", e))?;
-
-        Ok(crate::ExecutionOutput {
-            exit_code: 0,
-            stdout: format!("Fake output for: {}", command),
-            stderr: String::new(),
-            duration_ms: 5,
-            statement_digest: entry.statement_digest.unwrap_or_default(),
-        })
-    }
-}
-
