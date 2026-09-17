@@ -1,0 +1,15 @@
+[package]
+name = "vitna-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+eframe.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+vitna-protocol.workspace = true
+
+[[bin]]
+name = "vitna-code"
+path = "src/main.rs"
