@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "vitna-orchestration"
 version.workspace = true
 edition.workspace = true
@@ -15,3 +15,12 @@ vitna-policy.workspace = true
 vitna-context.workspace = true
 vitna-providers.workspace = true
 vitna-tools.workspace = true
+vitna-receipts.workspace = true
+vitna-runner.workspace = true
+sha2.workspace = true
+hex.workspace = true
+async-trait.workspace = true
+ed25519-dalek.workspace = true
+
+[dev-dependencies]
+vitna-receipt-verify.workspace = true

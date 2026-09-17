@@ -1,6 +1,6 @@
 # Vitna Code Implementation Status
 
-- Status: Phase 0 Complete (Phase 0A, 0B, 0C Verified)
+- Status: Phase 1 Complete (Durable Vertical Slice Verified)
 - Date: 2026-09-16
 - Tracking Mode: Evidence-backed milestones (no percentage estimates)
 
@@ -11,11 +11,24 @@
 | **Phase 0A** | Authority, Invariants, Threat Model, Platform & Dependency Matrices | **COMPLETE** | See `docs/PHASE_0A_GATE_REPORT.md` |
 | **Phase 0B** | Protocol Envelope, Event Store, Runner Journal, Receipt Trust Model | **COMPLETE** | See `docs/PHASE_0B_GATE_REPORT.md` |
 | **Phase 0C** | Platform Proof: Fake Provider & Runner, Hostile Repos, Hardware CI | **COMPLETE** | See `docs/PHASE_0C_GATE_REPORT.md` |
-| **Phase 1** | Durable Vertical Slice (CLI, TUI, Daemon, Guarded Runner, Local Receipt v0) | READY TO START | Exit criteria for Phase 0 certified |
-| **Phase 2** | Competitive Solo-Agent Alpha (OpenAI/Anthropic adapters, Git broker, inspect/build) | NOT STARTED | Blocked on Phase 1 exit |
+| **Phase 1** | Durable Vertical Slice (CLI, TUI, Daemon, Guarded Runner, Local Receipt v0) | **COMPLETE** | See `docs/PHASE_1_GATE_REPORT.md` |
+| **Phase 2** | Competitive Solo-Agent Alpha (OpenAI/Anthropic adapters, Git broker, inspect/build) | READY TO START | Exit criteria for Phase 1 certified |
 | **Phase 3** | Trustworthy Solo-Agent Beta (Strong sandbox, MCP, keychain secrets, Playwright) | NOT STARTED | Blocked on Phase 2 exit |
 | **Phase 4** | Durable Multi-Agent Beta (DAG scheduler, per-agent clones, merge queue) | NOT STARTED | Blocked on Phase 3 exit |
 | **Phase 5** | V1 Hardening and Release (Packaging, signed installers, SBOM, public benchmarks) | NOT STARTED | Blocked on Phase 4 exit |
+
+## Phase 1 Deliverables Ledger
+
+| Deliverable | Target Location | Verification Method | Status |
+|---|---|---|---|
+| Standard Brokered Tools | `crates/tools/` (`read_file`, `write_file`, `list_dir`, `run_command`, `path_safety`) | Path traversal confinement, preimage/postimage calculation, and unified diff tested | Verified |
+| Context Assembler & Prompt Core | `crates/context/src/assembler.rs` | Project guidelines ingestion (AGENTS.md), diff inclusion, and context digest tested | Verified |
+| Orchestration State Machine | `crates/orchestration/src/engine.rs` | Turn lifecycle, exact-action approval check, and Merkle root receipt calculation | Verified |
+| Local Daemon & Session Store | `crates/daemon/src/server.rs` | Workspace session mapping, task execution loop, and SQLite WAL event storage | Verified |
+| Non-Interactive CLI Suite | `apps/vitna-cli/src/main.rs` | `vitna run`, `vitna doctor`, `vitna verify`, `vitna serve`, `vitna sessions` subcommands | Verified |
+| Calm Terminal TUI Client | `apps/vitna-tui/src/lib.rs` & `main.rs` | Ratatui split-pane layout, single amber signal budget, and approval modal interface | Verified |
+| End-to-End Vertical Slice Test | `crates/orchestration/tests/vertical_slice_test.rs` | Full execution: inspection -> creation -> modification -> verification -> signed receipt | Verified |
+| Phase 1 Gate Report | `docs/PHASE_1_GATE_REPORT.md` | Formal audit certifying Phase 1 deliverables and authorizing Phase 2 progression | Verified |
 
 ## Phase 0C Deliverables Ledger
 

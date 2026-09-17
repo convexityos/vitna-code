@@ -12,6 +12,10 @@ serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 vitna-protocol.workspace = true
+vitna-daemon.workspace = true
+vitna-receipts.workspace = true
+vitna-receipt-verify.workspace = true
+vitna-store.workspace = true
 
 [[bin]]
 name = "vitna"

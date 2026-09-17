@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "vitna-tools"
 version.workspace = true
 edition.workspace = true
@@ -6,9 +6,12 @@ license.workspace = true
 
 [dependencies]
 tokio.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 vitna-protocol.workspace = true
 vitna-runner.workspace = true
 vitna-policy.workspace = true
+vitna-sandbox.workspace = true
 sha2.workspace = true
+hex.workspace = true

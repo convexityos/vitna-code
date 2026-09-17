@@ -34,6 +34,7 @@ homepage = "https://vitna.ai"
 [workspace.dependencies]
 # Async Runtime
 tokio = { version = "1.40", features = ["full"] }
+async-trait = "0.1"
 
 # Serialization and Protocols
 serde = { version = "1.0", features = ["derive"] }
