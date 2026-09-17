@@ -1,4 +1,8 @@
 //! The composer: the thing you reach for.
+//!
+//! Its base is shaped after Claude Code's: a row of chips above the field
+//! saying where the turn will run, a return-key cap in the field, and a base
+//! row with attach and the mode on the left, the model and send on the right.
 
 use eframe::egui::{self, Align, Color32, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 
@@ -6,6 +10,7 @@ use crate::app::{App, Mode, Placement};
 use crate::icons;
 use crate::stage::column;
 use crate::theme;
+use crate::workspace::Head;
 
 impl App {
     pub(crate) fn composer(&mut self, ui: &mut egui::Ui, rect: Rect) {
@@ -13,6 +18,9 @@ impl App {
         let inner = Rect::from_min_max(col.min, egui::pos2(col.right(), rect.bottom() - 24.0));
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
         ui.set_clip_rect(rect);
+
+        self.context_row(&mut ui);
+        ui.add_space(10.0);
 
         let ready = self.link.is_open() && !self.draft.trim().is_empty();
 
@@ -22,21 +30,37 @@ impl App {
             .corner_radius(CornerRadius::same(20))
             .inner_margin(egui::Margin { left: 18, right: 14, top: 14, bottom: 12 })
             .show(&mut ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.draft)
-                        .desired_rows(2)
-                        .desired_width(f32::INFINITY)
-                        .frame(egui::Frame::default())
-                        // What you type is a paragraph, and so is the prompt
-                        // that stands in for it; both read in the prose face.
-                        .font(theme::prose(15.0))
-                        .text_color(theme::INK)
-                        .hint_text(
-                            RichText::new("Ask anything")
-                                .font(theme::prose(15.0))
-                                .color(theme::FAINTER),
-                        ),
-                );
+                ui.horizontal_top(|ui| {
+                    // The cap's width is reserved whether or not it shows, so
+                    // the first keystroke does not move the text.
+                    let width = ui.available_width() - 40.0;
+                    let empty = self.draft.is_empty();
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.draft)
+                            .desired_rows(2)
+                            .desired_width(width)
+                            .frame(egui::Frame::default())
+                            // What you type is a paragraph, and so is the prompt
+                            // that stands in for it; both read in the prose face.
+                            .font(theme::prose(15.0))
+                            .text_color(theme::INK)
+                            // Enter is for sending, as the cap says; a new line
+                            // is Shift+Enter.
+                            .return_key(Some(egui::KeyboardShortcut::new(
+                                egui::Modifiers::SHIFT,
+                                egui::Key::Enter,
+                            )))
+                            .hint_text(
+                                RichText::new("Ask anything")
+                                    .font(theme::prose(15.0))
+                                    .color(theme::FAINTER),
+                            ),
+                    );
+                    if empty {
+                        ui.add_space(8.0);
+                        keycap(ui);
+                    }
+                });
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
@@ -49,107 +73,133 @@ impl App {
                     icons::plus(ui.painter(), r.center(), theme::MUTE);
                     attach.on_hover_text("Name a file with @, or attach one. Both need the daemon.");
 
-                    ui.add_space(4.0);
-                    self.mode_chip(ui);
+                    ui.add_space(2.0);
+                    self.mode_picker(ui);
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let (r, send) =
-                            ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::click());
-                        ui.painter().circle_filled(
-                            r.center(),
-                            16.0,
-                            if ready { theme::PERI } else { theme::FACE },
-                        );
-                        icons::arrow_up(
-                            ui.painter(),
-                            r.center(),
-                            if ready { theme::CANVAS } else { theme::FAINTER },
-                        );
-                        if !self.link.is_open() {
-                            send.on_hover_text("Nothing to send to: the daemon is not running.");
+                            ui.allocate_exact_size(Vec2::splat(30.0), egui::Sense::click());
+                        if ready {
+                            ui.painter().circle_filled(r.center(), 14.0, theme::PERI);
+                            icons::arrow_up(ui.painter(), r.center(), theme::CANVAS);
+                        } else {
+                            // Nothing to send yet: an empty ring, the resting
+                            // state Claude Code draws.
+                            ui.painter().circle_stroke(
+                                r.center(),
+                                8.5,
+                                Stroke::new(1.5, theme::FAINTER),
+                            );
                         }
+                        let hint = if !self.link.is_open() {
+                            "Nothing to send to: the daemon is not running."
+                        } else if self.draft.trim().is_empty() {
+                            "Enter sends once there is something to send."
+                        } else {
+                            "Send (Enter)"
+                        };
+                        send.on_hover_text(hint);
+
+                        ui.add_space(2.0);
+                        self.model_picker(ui);
                     });
                 });
             });
+    }
 
-        ui.add_space(10.0);
-
-        // Under the field: where it runs, which model, which branch.
+    /// The chips above the field, the way Claude Code states a turn's setup:
+    /// where it runs, which folder, which branch, and whether in a worktree.
+    fn context_row(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.add_space(6.0);
-            for p in Placement::ALL {
-                let active = self.placement == p;
-                let label = ui.add(
-                    egui::Button::new(
-                        RichText::new(p.label())
-                            .font(theme::sans(13.0))
-                            .color(if active { theme::INK } else { theme::FAINTER }),
-                    )
-                    .fill(Color32::TRANSPARENT)
-                    .frame(false),
-                );
-                if label.clicked() {
-                    self.placement = p;
-                }
-                if active {
-                    ui.painter().hline(
-                        label.rect.x_range().shrink(4.0),
-                        label.rect.bottom() + 1.0,
-                        Stroke::new(1.5, theme::PERI),
-                    );
-                }
-                ui.add_space(6.0);
+            ui.spacing_mut().item_spacing.x = 6.0;
+
+            chip(ui, icons::monitor, "Local", theme::INK_2, egui::Sense::hover())
+                .on_hover_text("Runs on this machine. Vitna has no remote mode.");
+
+            let name = self.workspace.name.clone();
+            chip(ui, icons::folder, &name, theme::INK_2, egui::Sense::click())
+                .on_hover_text("Opening another folder is the daemon's to do, and it is not running.");
+
+            let (head, tone) = match &self.workspace.head {
+                Some(Head::Branch(b)) => (b.clone(), theme::INK_2),
+                Some(h) => (h.label(), theme::RUST),
+                None => ("no repository".to_string(), theme::FAINT),
+            };
+            chip(ui, icons::branch, &head, tone, egui::Sense::click())
+                .on_hover_text("The branch this window is on. Checking out another is the daemon's to do.");
+
+            // The worktree checkbox. Placement is the daemon's to enforce;
+            // this only states the preference.
+            let on = self.placement == Placement::Worktree;
+            let galley = ui.painter().layout_no_wrap("worktree".to_string(), theme::sans(12.5), theme::INK_2);
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 38.0, 26.0), egui::Sense::click());
+            chip_ground(ui, rect, resp.hovered());
+            let b = Rect::from_center_size(egui::pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(12.0));
+            if on {
+                ui.painter().rect_filled(b, CornerRadius::same(3), theme::PERI);
+                let st = Stroke::new(1.6, theme::CANVAS);
+                let c = b.center();
+                ui.painter().line_segment([c + Vec2::new(-3.0, 0.0), c + Vec2::new(-1.0, 2.2)], st);
+                ui.painter().line_segment([c + Vec2::new(-1.0, 2.2), c + Vec2::new(3.2, -2.4)], st);
+            } else {
+                ui.painter().rect_stroke(b, CornerRadius::same(3), Stroke::new(1.2, theme::FAINT), egui::StrokeKind::Inside);
             }
-
-            ui.add_space(10.0);
-            self.model_picker(ui);
-
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if let Some(head) = &self.workspace.head {
-                    ui.label(
-                        RichText::new(head.label())
-                            .font(theme::mono(12.0))
-                            .color(theme::FAINT),
-                    );
-                    icons::inline(ui, 16.0, theme::FAINTER, icons::branch);
-                }
+            ui.painter().galley(egui::pos2(rect.left() + 28.0, rect.center().y - galley.size().y / 2.0), galley, theme::INK_2);
+            if resp.clicked() {
+                self.placement = if on { Placement::Local } else { Placement::Worktree };
+            }
+            resp.on_hover_text(if on {
+                "The turn runs in a fresh worktree of this repo; this checkout stays as it is."
+            } else {
+                "The turn runs on this checkout, in place."
             });
         });
     }
 
-    fn mode_chip(&mut self, ui: &mut egui::Ui) {
-        let text = self.mode.label();
-        let galley = ui
-            .painter()
-            .layout_no_wrap(text.to_string(), theme::sans(12.5), theme::INK_2);
-        let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(galley.size().x + 34.0, 26.0),
-            egui::Sense::click(),
-        );
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(13),
-            if response.hovered() { theme::FACE_2 } else { theme::FACE },
-        );
-        ui.painter().galley(
-            egui::pos2(rect.left() + 12.0, rect.center().y - galley.size().y / 2.0),
-            galley,
-            theme::INK_2,
-        );
-        icons::chevron_down(ui.painter(), egui::pos2(rect.right() - 12.0, rect.center().y), theme::FAINT);
-        if response.clicked() {
-            self.mode = match self.mode {
-                Mode::Build => Mode::Plan,
-                Mode::Plan => Mode::Build,
-            };
+    /// The mode, as a plain word that opens a two-row menu.
+    fn mode_picker(&mut self, ui: &mut egui::Ui) {
+        let galley = ui.painter().layout_no_wrap(self.mode.label().to_string(), theme::sans(13.0), theme::INK_2);
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(galley.size().x + 20.0, 28.0), egui::Sense::click());
+        if response.hovered() {
+            ui.painter().rect_filled(rect, CornerRadius::same(7), theme::FACE);
         }
-        response.on_hover_text("Build edits files. Plan proposes and stops.");
+        ui.painter().galley(egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, theme::INK_2);
+        let response = response.on_hover_text("Build edits files. Plan proposes and stops.");
+
+        egui::Popup::menu(&response)
+            .align(egui::RectAlign::TOP_START)
+            .gap(8.0)
+            .width(240.0)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+            .show(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for (m, what) in [
+                    (Mode::Build, "Edits files and runs commands."),
+                    (Mode::Plan, "Proposes, then stops for you."),
+                ] {
+                    let row = ui.allocate_response(Vec2::new(ui.available_width(), 40.0), egui::Sense::click());
+                    let r = row.rect;
+                    if row.hovered() {
+                        ui.painter().rect_filled(r, CornerRadius::same(6), Color32::from_white_alpha(10));
+                    }
+                    let on = self.mode == m;
+                    ui.painter().text(egui::pos2(r.left() + 10.0, r.top() + 13.0), egui::Align2::LEFT_CENTER, m.label(), theme::sans(13.0), if on { theme::PERI_2 } else { theme::INK_2 });
+                    ui.painter().text(egui::pos2(r.left() + 10.0, r.top() + 28.0), egui::Align2::LEFT_CENTER, what, theme::sans(11.0), theme::FAINTER);
+                    if on {
+                        icons::check(ui.painter(), egui::pos2(r.right() - 14.0, r.center().y), theme::PERI_2);
+                    }
+                    if row.clicked() {
+                        self.mode = m;
+                    }
+                }
+            });
     }
 
     /// The model menu, shaped after OpenCode's: a search field, providers as
     /// muted headers, plain rows with a check on the chosen one, a hover card
     /// beside the row with the model's facts, and a footer. It sets a
     /// preference the daemon is handed with the turn; the receipt says what ran.
+    /// Its trigger is the model's name in plain text, as Claude Code writes it.
     fn model_picker(&mut self, ui: &mut egui::Ui) {
         let selected = self.model.and_then(|i| self.choices.get(i)).cloned();
         let (label, pid, pname) = match &selected {
@@ -158,12 +208,12 @@ impl App {
         };
         let galley = ui.painter().layout_no_wrap(label, theme::sans(13.0), theme::INK_2);
         let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(galley.size().x + 60.0, 28.0), egui::Sense::click());
-        ui.painter().rect_filled(rect, CornerRadius::same(8), if response.hovered() { theme::FACE_2 } else { theme::FACE });
-        ui.painter().rect_stroke(rect, CornerRadius::same(8), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
-        provider_badge(ui, egui::pos2(rect.left() + 18.0, rect.center().y), 14.0, &pid, &pname);
-        ui.painter().galley(egui::pos2(rect.left() + 34.0, rect.center().y - galley.size().y / 2.0), galley, theme::INK_2);
-        icons::chevron_down(ui.painter(), egui::pos2(rect.right() - 13.0, rect.center().y), theme::FAINT);
+            ui.allocate_exact_size(Vec2::new(galley.size().x + 40.0, 28.0), egui::Sense::click());
+        if response.hovered() {
+            ui.painter().rect_filled(rect, CornerRadius::same(7), theme::FACE);
+        }
+        provider_badge(ui, egui::pos2(rect.left() + 16.0, rect.center().y), 14.0, &pid, &pname);
+        ui.painter().galley(egui::pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0), galley, theme::INK_2);
         let hint = match &selected {
             Some(c) => format!("Preference sent with the turn: {} via {}. The receipt says what ran.", c.sku, c.provider_id),
             None => "No tool-calling model in the catalog.".to_owned(),
@@ -173,7 +223,7 @@ impl App {
         let force_open = std::mem::take(&mut self.open_model_menu_once);
         egui::Popup::menu(&response)
             .open_memory(if force_open { Some(egui::SetOpenCommand::Bool(true)) } else { None })
-            .align(egui::RectAlign::TOP_START)
+            .align(egui::RectAlign::TOP_END)
             .gap(8.0)
             .width(300.0)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
@@ -312,4 +362,28 @@ fn provider_badge(ui: &mut egui::Ui, c: egui::Pos2, size: f32, provider_id: &str
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initial, theme::display(size * 0.62), theme::INK);
         }
     }
+}
+
+/// The return-key cap at the end of the empty field.
+fn keycap(ui: &mut egui::Ui) {
+    let (r, resp) = ui.allocate_exact_size(Vec2::new(26.0, 20.0), egui::Sense::hover());
+    let r = r.translate(Vec2::new(0.0, 1.0));
+    ui.painter().rect_filled(r, CornerRadius::same(5), theme::FACE);
+    ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
+    icons::enter(ui.painter(), r.center(), theme::FAINT);
+    resp.on_hover_text("Enter sends. Shift+Enter starts a new line.");
+}
+
+/// A chip: an icon and a word on a quiet ground.
+fn chip(ui: &mut egui::Ui, icon: fn(&egui::Painter, egui::Pos2, Color32), text: &str, tone: Color32, sense: egui::Sense) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(text.to_string(), theme::sans(12.5), tone);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 40.0, 26.0), sense);
+    chip_ground(ui, rect, resp.hovered() && sense.senses_click());
+    icon(ui.painter(), egui::pos2(rect.left() + 16.0, rect.center().y), theme::FAINT);
+    ui.painter().galley(egui::pos2(rect.left() + 28.0, rect.center().y - galley.size().y / 2.0), galley, tone);
+    resp
+}
+
+fn chip_ground(ui: &egui::Ui, rect: Rect, hot: bool) {
+    ui.painter().rect_filled(rect, CornerRadius::same(7), if hot { theme::FACE_2 } else { theme::FACE });
 }
