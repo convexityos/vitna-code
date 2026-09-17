@@ -60,6 +60,10 @@ pub struct App {
     /// the receipt, not this field, says what actually ran.
     pub(crate) model: Option<usize>,
     pub(crate) draft: String,
+    /// The model menu's search text.
+    pub(crate) model_query: String,
+    /// Set from VITNA_GUI_OPEN_MODEL_MENU at startup; consumed on the first frame.
+    pub(crate) open_model_menu_once: bool,
     pub(crate) mode: Mode,
     pub(crate) placement: Placement,
 }
@@ -81,6 +85,8 @@ impl App {
             choices,
             model,
             draft: String::new(),
+            model_query: String::new(),
+            open_model_menu_once: std::env::var_os("VITNA_GUI_OPEN_MODEL_MENU").is_some(),
             mode: Mode::Build,
             placement: Placement::Worktree,
         }

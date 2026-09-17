@@ -18,12 +18,12 @@
 
 use eframe::egui::{self, Color32, FontFamily, FontId, TextStyle};
 
-pub const CANVAS: Color32 = Color32::from_rgb(0x0a, 0x0d, 0x18);
-pub const RAIL: Color32 = Color32::from_rgb(0x06, 0x08, 0x0f);
-pub const FACE: Color32 = Color32::from_rgb(0x1e, 0x25, 0x41);
+pub const CANVAS: Color32 = Color32::from_rgb(0x0b, 0x11, 0x28);
+pub const RAIL: Color32 = Color32::from_rgb(0x07, 0x0c, 0x1e);
+pub const FACE: Color32 = Color32::from_rgb(0x1f, 0x27, 0x48);
 pub const GROUND: Color32 = Color32::from_rgb(0x10, 0x15, 0x24);
-pub const FACE_2: Color32 = Color32::from_rgb(0x28, 0x30, 0x52);
-pub const FIELD: Color32 = Color32::from_rgb(0x13, 0x1a, 0x2c);
+pub const FACE_2: Color32 = Color32::from_rgb(0x29, 0x33, 0x59);
+pub const FIELD: Color32 = Color32::from_rgb(0x14, 0x1c, 0x38);
 pub const CONTROL: Color32 = Color32::from_rgb(0x2c, 0x35, 0x57);
 
 pub const INK: Color32 = Color32::from_rgb(0xf3, 0xf6, 0xfd);
@@ -72,10 +72,10 @@ const JETBRAINS_MONO: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Vari
 
 /// Weights. The variable masters default to Regular, which on a dark ground
 /// reads thin; these are the cuts the window actually uses.
-const WGHT_UI: f32 = 500.0;
-const WGHT_DISPLAY: f32 = 600.0;
-const WGHT_PROSE: f32 = 400.0;
-const WGHT_MONO: f32 = 500.0;
+const WGHT_UI: f32 = 440.0;
+const WGHT_DISPLAY: f32 = 540.0;
+const WGHT_PROSE: f32 = 370.0;
+const WGHT_MONO: f32 = 440.0;
 
 /// Space Grotesk is what a view says: headings, labels, controls, chips. It is
 /// the proportional default, so `sans` is the UI voice.
