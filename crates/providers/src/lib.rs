@@ -14,10 +14,53 @@ pub use keyring::KeyringStore;
 pub use openai::OpenAIProvider;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One message in a turn.
+///
+/// The flat `role` plus `content` pair is enough for plain text and nothing
+/// else. A tool-using turn has to send back the calls the assistant made and
+/// the results they produced, matched by id: the Anthropic Messages API
+/// rejects a request outright when a `tool_use` block has no answering
+/// `tool_result`, and OpenAI needs the `tool_call_id` on the result message.
+/// So the shape carries both, and each adapter renders them its own way.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderMessage {
     pub role: String,
     pub content: String,
+    /// The calls this assistant message made, echoed back on the next request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ProviderToolCall>,
+    /// On a tool result message, the id of the call it answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+impl ProviderMessage {
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: content.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn assistant(content: impl Into<String>, tool_calls: Vec<ProviderToolCall>) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.into(),
+            tool_calls,
+            tool_call_id: None,
+        }
+    }
+
+    /// A result for one tool call. `content` is what the tool produced.
+    pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: "tool".to_string(),
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(call_id.into()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,7 +89,7 @@ pub enum ProviderStreamEvent {
     Finish(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderToolCall {
     pub id: String,
     pub name: String,
