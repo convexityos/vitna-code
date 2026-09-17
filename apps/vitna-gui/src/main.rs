@@ -8,8 +8,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod catalog;
+mod composer;
+mod icons;
 mod link;
 mod repo;
+mod sidebar;
+mod stage;
 mod theme;
 mod workspace;
 
