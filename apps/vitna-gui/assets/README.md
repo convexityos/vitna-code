@@ -44,3 +44,20 @@ at 500; JetBrains Mono for paths, shas and counts, at 500. Weights are set on
 each face's `wght` axis when it is registered (`theme.rs`), so one number
 moves every label. Each family keeps egui's default faces behind it so a
 glyph these lack still draws.
+
+## logos/
+
+Provider marks for the model menu, used to identify the provider the way every
+coding terminal's picker does. The marks are their owners' trademarks; the
+icon FILES come from Simple Icons (CC0 1.0, `LICENSE-simple-icons.md`),
+fetched 2026-09-17, with one edit: the path carries `fill="#ffffff"` so the
+window can tint it with the ink token, since a tint can only darken a black
+source.
+
+- `anthropic.svg`: Simple Icons `anthropic`.
+- OpenAI is not here. Simple Icons no longer carries the mark (only "OpenAI
+  Gym" remains), which means it was removed, and a mark its owner asked a
+  free set to drop is not something to re-fetch from a mirror. A provider
+  with no file under `logos/` draws a monogram badge instead. An official
+  OpenAI SVG placed here as `openai.svg`, under whatever brand permission you
+  hold, is the whole change.

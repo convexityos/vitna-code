@@ -71,3 +71,24 @@ pub fn inline(ui: &mut egui::Ui, size: f32, tone: Color32, draw: fn(&egui::Paint
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
     draw(ui.painter(), rect.center(), tone);
 }
+
+pub fn search(p: &egui::Painter, c: Pos2, tone: Color32) {
+    let st = s(tone);
+    p.circle_stroke(c + Vec2::new(-1.5, -1.5), 5.0, st);
+    p.line_segment([c + Vec2::new(2.2, 2.2), c + Vec2::new(6.0, 6.0)], st);
+}
+
+pub fn check(p: &egui::Painter, c: Pos2, tone: Color32) {
+    let st = Stroke::new(1.8, tone);
+    p.line_segment([c + Vec2::new(-5.0, 0.0), c + Vec2::new(-1.5, 3.5)], st);
+    p.line_segment([c + Vec2::new(-1.5, 3.5), c + Vec2::new(5.5, -3.5)], st);
+}
+
+/// Three sliders, the settings mark every reference uses.
+pub fn sliders(p: &egui::Painter, c: Pos2, tone: Color32) {
+    let st = s(tone);
+    for (dy, knob) in [(-4.5, -2.0), (0.0, 3.0), (4.5, -1.0)] {
+        p.line_segment([c + Vec2::new(-6.0, dy), c + Vec2::new(6.0, dy)], st);
+        p.circle_filled(c + Vec2::new(knob, dy), 1.8, tone);
+    }
+}

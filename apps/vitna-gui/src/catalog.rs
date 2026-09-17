@@ -38,6 +38,17 @@ pub struct Model {
     pub tool_call: bool,
     #[serde(default)]
     pub reasoning: bool,
+    #[serde(default)]
+    pub usd_per_mtok: Option<Pricing>,
+}
+
+/// Dollars per million tokens, as models.dev publishes it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Pricing {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
 }
 
 /// One row of the picker: a model and the provider it belongs to.
@@ -49,6 +60,7 @@ pub struct Choice {
     pub name: String,
     pub context_tokens: Option<u64>,
     pub reasoning: bool,
+    pub usd_per_mtok: Option<Pricing>,
 }
 
 impl Catalog {
@@ -78,6 +90,7 @@ impl Catalog {
                     name: m.name.clone(),
                     context_tokens: m.context_tokens,
                     reasoning: m.reasoning,
+                    usd_per_mtok: m.usd_per_mtok.clone(),
                 });
             }
         }
@@ -104,16 +117,6 @@ impl Catalog {
     }
 }
 
-/// "1M" / "200K" for a context window, or None when the catalog has none.
-pub fn context_label(tokens: Option<u64>) -> Option<String> {
-    let t = tokens?;
-    Some(if t >= 1_000_000 {
-        format!("{}M", t / 1_000_000)
-    } else {
-        format!("{}K", t / 1_000)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,10 +132,4 @@ mod tests {
         assert!(c.default_choice(&choices).is_some());
     }
 
-    #[test]
-    fn context_labels_round_the_way_people_say_them() {
-        assert_eq!(context_label(Some(1_000_000)).as_deref(), Some("1M"));
-        assert_eq!(context_label(Some(200_000)).as_deref(), Some("200K"));
-        assert_eq!(context_label(None), None);
-    }
 }

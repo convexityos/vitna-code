@@ -23,3 +23,12 @@ pub const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 pub fn wordmark() -> egui::ImageSource<'static> {
     egui::include_image!("../assets/vitna-wordmark-sm.png")
 }
+
+/// A provider's mark, when a licensed file exists for it. `None` means draw a
+/// monogram: the menu never invents a logo.
+pub fn provider_mark(provider_id: &str) -> Option<egui::ImageSource<'static>> {
+    match provider_id {
+        "anthropic" => Some(egui::include_image!("../assets/logos/anthropic.svg")),
+        _ => None,
+    }
+}
