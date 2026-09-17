@@ -1,0 +1,77 @@
+name: Vitna Code CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check-rules:
+    name: Repository Hygiene & Em-Dash Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for em-dashes
+        run: |
+          echo "Scanning for forbidden em-dash characters..."
+          if grep -rn --exclude-dir=".git" -P "\x{2014}" .; then
+            echo "ERROR: Forbidden em-dash character found in files above!"
+            exit 1
+          fi
+          echo "Em-dash check passed."
+
+  matrix-build:
+    name: Build & Test (${{ matrix.target.os }} - ${{ matrix.target.arch }})
+    needs: check-rules
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: linux
+            arch: x86_64
+            runner: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+          - os: linux
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            triple: aarch64-unknown-linux-gnu
+          - os: macos
+            arch: aarch64
+            runner: macos-latest
+            triple: aarch64-apple-darwin
+          - os: windows
+            arch: x86_64
+            runner: windows-latest
+            triple: x86_64-pc-windows-msvc
+          - os: windows
+            arch: aarch64
+            runner: windows-11-arm64
+            triple: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.triple }}
+          components: clippy, rustfmt
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target.triple }}
+
+      - name: Cargo Check
+        run: cargo check --workspace --all-targets
+
+      - name: Cargo Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Cargo Test
+        run: cargo test --workspace --no-fail-fast

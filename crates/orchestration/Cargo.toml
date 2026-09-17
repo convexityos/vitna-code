@@ -1,0 +1,17 @@
+﻿[package]
+name = "vitna-orchestration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+vitna-protocol.workspace = true
+vitna-store.workspace = true
+vitna-policy.workspace = true
+vitna-context.workspace = true
+vitna-providers.workspace = true
+vitna-tools.workspace = true

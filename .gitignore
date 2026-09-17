@@ -1,0 +1,41 @@
+# Rust build output
+target/
+**/*.rs.bk
+Cargo.lock
+
+# SQLite database and WAL files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Local state, session journals, and artifacts
+.vitna/
+state/
+artifacts/
+workspaces/
+runner-journal.bin
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secrets and environment overrides
+.env
+.env.*
+!*.example
+credentials.json
+keychain-cache/
+
+# Test output and traces
+traces/
+eval_results/
+receipts-out/

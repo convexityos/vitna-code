@@ -1,0 +1,84 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/vitna-cli",
+    "apps/vitna-tui",
+    "crates/daemon",
+    "crates/protocol",
+    "crates/store",
+    "crates/orchestration",
+    "crates/policy",
+    "crates/context",
+    "crates/providers",
+    "crates/tools",
+    "crates/git-workspaces",
+    "crates/git-broker",
+    "crates/mcp",
+    "crates/skills",
+    "crates/receipts",
+    "crates/telemetry",
+    "crates/evals",
+    "crates/vitna-runner",
+    "crates/vitna-sandbox",
+    "crates/vitna-receipt-verify",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Vitna Engineering <engineering@vitna.ai>"]
+license = "Apache-2.0"
+repository = "https://github.com/convexityos/vitna-code"
+homepage = "https://vitna.ai"
+
+[workspace.dependencies]
+# Async Runtime
+tokio = { version = "1.40", features = ["full"] }
+
+# Serialization and Protocols
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+prost = "0.13"
+prost-types = "0.13"
+
+# Database and Storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Terminal UI and Styling
+ratatui = "0.28"
+crossterm = "0.28"
+
+# Security, Cryptography and Hashing
+ring = "0.17"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+sha2 = "0.10"
+hex = "0.4"
+subtle = "2.6"
+
+# PTY
+portable-pty = "0.8"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# CLI Parsing
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Internal workspace crates
+vitna-protocol = { path = "crates/protocol" }
+vitna-store = { path = "crates/store" }
+vitna-policy = { path = "crates/policy" }
+vitna-receipts = { path = "crates/receipts" }
+vitna-sandbox = { path = "crates/vitna-sandbox" }
+vitna-runner = { path = "crates/vitna-runner" }
+vitna-context = { path = "crates/context" }
+vitna-tools = { path = "crates/tools" }
+vitna-providers = { path = "crates/providers" }
+vitna-orchestration = { path = "crates/orchestration" }
+vitna-git-broker = { path = "crates/git-broker" }
+vitna-git-workspaces = { path = "crates/git-workspaces" }
+vitna-mcp = { path = "crates/mcp" }
+vitna-skills = { path = "crates/skills" }
+vitna-telemetry = { path = "crates/telemetry" }
+vitna-evals = { path = "crates/evals" }

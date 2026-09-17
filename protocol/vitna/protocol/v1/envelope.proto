@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package vitna.protocol.v1;
+
+// Stable envelope framing all Vitna Agent Protocol commands and events.
+message ProtocolEnvelope {
+  uint32 protocol_version_major = 1;
+  uint32 protocol_version_minor = 2;
+  uint32 schema_version = 3;
+  string type_url = 4;
+  string session_id = 5;
+  string run_id = 6;
+  uint64 sequence = 7;
+  string idempotency_key = 8;
+  bytes payload = 9;
+}
+
+// Client handshake negotiating supported protocol range
+message HandshakeRequest {
+  uint32 min_supported_version = 1;
+  uint32 max_supported_version = 2;
+  string client_identifier = 3;
+}
+
+message HandshakeResponse {
+  uint32 selected_version_major = 1;
+  uint32 selected_version_minor = 2;
+  string daemon_build_commit = 3;
+}

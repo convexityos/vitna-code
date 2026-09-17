@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vitna.ai/schemas/vitna-run-receipt-v1.json",
+  "title": "VitnaRunReceiptV1",
+  "description": "Cryptographic execution receipt for Vitna Code runs",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "session_id",
+    "workspace_fingerprint",
+    "base_commit_sha",
+    "model_selection",
+    "event_hash_chain_root",
+    "isolation_label",
+    "completion_state",
+    "device_signature"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "vitna-run-receipt-v1"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "workspace_fingerprint": {
+      "type": "string"
+    },
+    "base_commit_sha": {
+      "type": "string"
+    },
+    "model_selection": {
+      "type": "object",
+      "required": ["provider", "model_sku", "routing_reason"],
+      "properties": {
+        "provider": { "type": "string" },
+        "model_sku": { "type": "string" },
+        "routing_reason": { "type": "string" },
+        "policy_digest": { "type": "string" }
+      }
+    },
+    "event_hash_chain_root": {
+      "type": "string"
+    },
+    "isolation_label": {
+      "type": "string",
+      "enum": ["read_only", "guarded", "strong", "full_access"]
+    },
+    "completion_state": {
+      "type": "string",
+      "enum": [
+        "completed_with_evidence",
+        "completed_with_unknowns",
+        "blocked",
+        "failed",
+        "cancelled",
+        "needs_reconciliation"
+      ]
+    },
+    "evidence_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["evidence_id", "grade", "description"],
+        "properties": {
+          "evidence_id": { "type": "string" },
+          "grade": {
+            "type": "string",
+            "enum": [
+              "model_reported",
+              "broker_observed",
+              "sandbox_captured",
+              "independently_reproduced",
+              "remote_or_hardware_attested"
+            ]
+          },
+          "description": { "type": "string" },
+          "artifact_digest": { "type": "string" }
+        }
+      }
+    },
+    "changeset": {
+      "type": "object",
+      "properties": {
+        "files_modified": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "preimage_hash", "postimage_hash"],
+            "properties": {
+              "path": { "type": "string" },
+              "preimage_hash": { "type": "string" },
+              "postimage_hash": { "type": "string" }
+            }
+          }
+        },
+        "diff_digest": { "type": "string" }
+      }
+    },
+    "runner_execution_statements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["action_id", "statement_digest", "signature"],
+        "properties": {
+          "action_id": { "type": "string" },
+          "statement_digest": { "type": "string" },
+          "signature": { "type": "string" }
+        }
+      }
+    },
+    "device_signature": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+﻿[package]
+name = "vitna-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+vitna-protocol.workspace = true
+vitna-store.workspace = true
+vitna-orchestration.workspace = true
+vitna-policy.workspace = true
+vitna-context.workspace = true
+vitna-providers.workspace = true
+vitna-tools.workspace = true
+vitna-git-broker.workspace = true
+vitna-git-workspaces.workspace = true
+vitna-mcp.workspace = true
+vitna-skills.workspace = true
+vitna-receipts.workspace = true
+vitna-telemetry.workspace = true
+vitna-runner.workspace = true
+
+[[bin]]
+name = "vitna-coded"
+path = "src/main.rs"

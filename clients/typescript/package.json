@@ -1,0 +1,17 @@
+{
+  "name": "@vitna/protocol-client",
+  "version": "0.1.0",
+  "description": "Generated TypeScript protocol client for Vitna Agent Protocol",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "protobufjs": "^7.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.2"
+  }
+}
