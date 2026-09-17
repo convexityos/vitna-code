@@ -1,0 +1,167 @@
+/* The workspace diff, beside the timeline. Added lines take the periwinkle
+   band (the change being asked for), removed lines the rust band (what the
+   change takes away); the sign column carries the meaning either way. */
+
+.changes {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border-left: 1px solid var(--hair-2);
+  background: var(--canvas) var(--grain);
+}
+
+.changes-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--hair-3);
+}
+
+.changes-title {
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 1.02rem;
+  font-weight: 500;
+}
+
+.changes-scroll {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  padding: 12px 14px 28px;
+}
+
+.changes-workspace {
+  display: grid;
+  gap: 10px;
+}
+
+.changes-meta {
+  padding: 0 4px;
+  overflow-wrap: anywhere;
+}
+
+.add-count {
+  color: var(--peri-2);
+}
+
+.del-count {
+  color: var(--rust);
+}
+
+.file-diff {
+  overflow: hidden;
+  border: 1px solid var(--hair-2);
+  border-radius: var(--r-sm);
+  background: var(--plate);
+}
+
+.file-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--hair-2);
+  background: var(--face);
+}
+
+.file-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-note {
+  padding: 10px 12px;
+}
+
+.hunk + .hunk {
+  border-top: 1px solid var(--hair-2);
+}
+
+.hunk-head {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--hair-3);
+  background: rgba(113, 136, 255, 0.05);
+  color: var(--faint);
+  overflow-wrap: anywhere;
+}
+
+.hunk-lines {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: var(--fs-meta);
+  line-height: 1.65;
+}
+
+.hunk-lines td {
+  padding: 0;
+  vertical-align: top;
+}
+
+.hunk-lines .ln {
+  width: 1%;
+  padding: 0 8px;
+  color: var(--fainter);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.hunk-lines .sign {
+  width: 16px;
+  color: var(--fainter);
+  text-align: center;
+  user-select: none;
+}
+
+.hunk-lines .code {
+  padding-right: 12px;
+  color: var(--mute);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.line-add {
+  background: var(--peri-band);
+}
+
+.line-add .sign {
+  color: var(--peri-2);
+}
+
+.line-add .code {
+  color: var(--ink);
+}
+
+.line-del {
+  background: var(--rust-band);
+}
+
+.line-del .sign {
+  color: var(--rust);
+}
+
+.line-del .code {
+  color: var(--ink-2);
+}
+
+.line-note .code {
+  color: var(--fainter);
+}
+
+@media (max-width: 1100px) {
+  .changes {
+    border-top: 1px solid var(--hair-2);
+    border-left: 0;
+  }
+}

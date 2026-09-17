@@ -25,6 +25,27 @@ jobs:
           fi
           echo "Em-dash check passed."
 
+  desktop:
+    name: Desktop frontend (typecheck, test, build)
+    needs: check-rules
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/vitna-desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/vitna-desktop/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Also runs scripts/check-bundle.mjs: no third-party host, no sample
+      # session and a Content-Security-Policy in the production bundle.
+      - run: npm run build
+
   matrix-build:
     name: Build & Test (${{ matrix.target.os }} - ${{ matrix.target.arch }})
     needs: check-rules

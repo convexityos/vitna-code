@@ -1,0 +1,90 @@
+/*
+ * Vitna Code's material. Taken from the Vitna console (vitna repo,
+ * app/styles/console.css), which is the product's signed-in application frame
+ * and the closest thing Vitna has to a coding terminal:
+ *
+ *   Grounds  blue-black canvas, a charcoal-blue working ground a step up,
+ *            cards facing the reader a step above that, fields sunk below,
+ *            and plates a step BELOW the ground for the one object that is a
+ *            record rather than furniture: the approval.
+ *   Accents  periwinkle for what the window asks of a person and where they
+ *            stand; rust for a state somebody has to act on, or that is
+ *            provisional. Green is one dot beside "verified" and its kin.
+ *   Type     Space Grotesk for what a view says, Manrope for prose,
+ *            JetBrains Mono for labels, digests, paths and code. Nothing
+ *            below the type floor.
+ *
+ * No glass, no glow, no gradient on the brand ink. Colour carries state and
+ * never decoration, and the word is always printed beside it.
+ */
+:root {
+  color-scheme: dark;
+
+  --canvas: #0a0d18;
+  --rail: #0b1020;
+  --ground: #101524;
+  --face: #171d31;
+  --face-2: #1c2339;
+  --field: #0c1020;
+  --control: #232b45;
+  --plate: #090d1a;
+
+  --ink: #f3f6fd;
+  --ink-2: #dfe5f4;
+  --mute: #b4bcd0;
+  --faint: #969fb8;
+  --fainter: #7e88a1;
+  --wordmark: #1a2037;
+
+  --hair: rgba(243, 246, 253, 0.13);
+  --hair-2: rgba(243, 246, 253, 0.08);
+  --hair-3: rgba(243, 246, 253, 0.045);
+  --top-light: rgba(243, 246, 253, 0.06);
+
+  --peri: #7188ff;
+  --peri-2: #8ea2ff;
+  --peri-3: #a9b8ff;
+  --peri-tint: rgba(113, 136, 255, 0.15);
+  --peri-band: rgba(113, 136, 255, 0.11);
+  --rust: #d9a441;
+  --rust-2: #e0b164;
+  --rust-tint: rgba(217, 164, 65, 0.14);
+  --rust-band: rgba(217, 164, 65, 0.09);
+  --ok: #2fbf71;
+  --on-key: #0a0d18;
+
+  --focus: var(--peri-2);
+
+  --r: 14px;
+  --r-sm: 10px;
+  --r-xs: 7px;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.1, 1);
+  --t-fast: 160ms;
+  --t-move: 420ms;
+
+  --sans: 'Manrope Variable', 'Manrope', 'Avenir Next', system-ui, sans-serif;
+  --display: 'Space Grotesk Variable', 'Space Grotesk', 'Manrope Variable', sans-serif;
+  --mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, Consolas, monospace;
+
+  /* The type floor, from Vitna's tokens: nothing is set smaller. */
+  --fs-mark: 0.7rem;
+  --fs-meta: 0.72rem;
+  --fs-small: 0.84rem;
+  --fs-body: 0.95rem;
+
+  --bar: 46px;
+  --column: 820px;
+  --changes: min(46vw, 600px);
+
+  /* Grain is a tiled background with its alpha baked in, never a blended
+     overlay: a smooth surface is what reads as generated. */
+  --grain: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-fast: 0ms;
+    --t-move: 0ms;
+  }
+}
