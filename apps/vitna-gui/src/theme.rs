@@ -19,12 +19,11 @@ use eframe::egui::{self, Color32, FontFamily, FontId, TextStyle};
 
 pub const CANVAS: Color32 = Color32::from_rgb(0x0a, 0x0d, 0x18);
 pub const RAIL: Color32 = Color32::from_rgb(0x0b, 0x10, 0x20);
-pub const GROUND: Color32 = Color32::from_rgb(0x10, 0x15, 0x24);
 pub const FACE: Color32 = Color32::from_rgb(0x17, 0x1d, 0x31);
+pub const GROUND: Color32 = Color32::from_rgb(0x10, 0x15, 0x24);
 pub const FACE_2: Color32 = Color32::from_rgb(0x1c, 0x23, 0x39);
 pub const FIELD: Color32 = Color32::from_rgb(0x0c, 0x10, 0x20);
 pub const CONTROL: Color32 = Color32::from_rgb(0x23, 0x2b, 0x45);
-pub const PLATE: Color32 = Color32::from_rgb(0x09, 0x0d, 0x1a);
 
 pub const INK: Color32 = Color32::from_rgb(0xf3, 0xf6, 0xfd);
 pub const INK_2: Color32 = Color32::from_rgb(0xdf, 0xe5, 0xf4);
@@ -41,12 +40,10 @@ pub const OK: Color32 = Color32::from_rgb(0x2f, 0xbf, 0x71);
 /// than blended per widget.
 pub const HAIR: Color32 = Color32::from_rgb(0x25, 0x2a, 0x38);
 pub const HAIR_2: Color32 = Color32::from_rgb(0x1a, 0x1f, 0x2c);
-/// The faintest rule, for rows inside a table.
-pub const HAIR_3: Color32 = Color32::from_rgb(0x14, 0x18, 0x24);
 
-/// Radii, from the tokens' 8 to 20 range.
+
+/// Widget radii: the field and the button.
 pub const R: f32 = 16.0;
-pub const R_SM: f32 = 12.0;
 pub const R_XS: f32 = 8.0;
 
 /// The type floor. Nothing in this window is set smaller than MARK.
@@ -100,15 +97,6 @@ fn host_mono() -> Option<(String, Vec<u8>)> {
         }
     }
     None
-}
-
-/// The face this window is actually drawing with. Names what was found rather
-/// than what the tokens asked for.
-pub fn mono_face_name() -> String {
-    match host_mono() {
-        Some((name, _)) => name,
-        None => "egui default".to_string(),
-    }
 }
 
 pub fn install(ctx: &egui::Context) {
@@ -198,28 +186,11 @@ pub fn install(ctx: &egui::Context) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// The shell: a computer in a display.
-//
-// Convexity frames its terminal as a rounded "device" floating on a near-black
-// desk beside a fixed icon rail, which is what makes the product read as one
-// instrument rather than a page. The geometry below is that shell
-// (`frontend/mockups/assets/shell.css`) in Vitna's palette: the desk is a step
-// BELOW the canvas rather than a warm black, and the one accent is periwinkle
-// rather than amber.
-// ---------------------------------------------------------------------------
 
-/// A step below the canvas, so the device has something to sit on.
-pub const DESK: Color32 = Color32::from_rgb(0x05, 0x07, 0x0d);
-/// The device surface is the canvas proper.
-pub const DEVICE: Color32 = CANVAS;
-/// The header band inside the device, one step up from it.
-pub const BAND: Color32 = Color32::from_rgb(0x0e, 0x13, 0x22);
-
-pub const RAIL_W: f32 = 76.0;
-pub const FRAME: f32 = 14.0;
-pub const DEVICE_RADIUS: f32 = 18.0;
-pub const HEADER_H: f32 = 46.0;
+/// A named sidebar, not an icon rail. Every terminal this sits beside lists
+/// real work by name, and an icon rail is Convexity's answer to twenty
+/// destinations rather than to one plus a list of sessions.
+pub const SIDEBAR_W: f32 = 258.0;
 
 /// An eyebrow: sans, small, uppercase, wide tracking, tertiary.
 ///
@@ -242,59 +213,3 @@ pub fn eyebrow(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
     job
 }
 
-/// A section header: a short title, then a hairline running to the edge, then an
-/// optional mono meta label. The rule is what makes a dense surface read as
-/// sections rather than as a list of paragraphs.
-pub fn section_header(ui: &mut egui::Ui, title: &str, meta: Option<&str>) {
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(title)
-                .font(sans(FS_SMALL))
-                .color(INK_2)
-                .strong(),
-        );
-        // Measure the meta rather than estimating from its length, which is
-        // what clipped it to "1 comm".
-        let meta_galley = meta.map(|m| {
-            ui.painter()
-                .layout_no_wrap(m.to_string(), mono(FS_MARK), FAINTER)
-        });
-        let meta_w = meta_galley
-            .as_ref()
-            .map(|g| g.size().x + 10.0)
-            .unwrap_or(0.0);
-        let rule_w = (ui.available_width() - meta_w - 10.0).max(0.0);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(rule_w, 1.0), egui::Sense::hover());
-        ui.painter().hline(
-            rect.x_range(),
-            rect.center().y,
-            egui::Stroke::new(1.0, HAIR_2),
-        );
-        if let Some(g) = meta_galley {
-            let (rect, _) = ui.allocate_exact_size(g.size(), egui::Sense::hover());
-            ui.painter().galley(rect.min, g, FAINTER);
-        }
-    });
-    ui.add_space(8.0);
-}
-
-/// A value and the quiet label above it. The scale contrast between the two is
-/// what makes density read as deliberate.
-pub fn stat(ui: &mut egui::Ui, label: &str, value: &str, tone: Color32, size: f32, width: f32) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(width, 44.0),
-        egui::Layout::top_down(egui::Align::Min),
-        |ui| {
-            ui.set_min_width(width);
-            // No wrapping: an eyebrow that breaks in half reads as a defect,
-            // and it was one.
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-            ui.label(eyebrow(ui, label));
-            ui.add_space(1.0);
-            ui.label(egui::RichText::new(value).font(mono(size)).color(tone));
-        },
-    );
-}
-
-/// A dash, for a number this window does not know. Never a zero.
-pub const UNKNOWN: &str = "--";

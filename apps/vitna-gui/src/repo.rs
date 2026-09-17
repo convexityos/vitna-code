@@ -18,17 +18,8 @@ pub struct RepoFacts {
     pub staged: Option<usize>,
     pub modified: Option<usize>,
     pub untracked: Option<usize>,
-    pub commits: Vec<Commit>,
     /// Why some of the above is missing. Printed rather than swallowed.
     pub trouble: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Commit {
-    pub sha: String,
-    pub unix_seconds: i64,
-    pub author: String,
-    pub subject: String,
 }
 
 /// What the window has so far.
@@ -141,23 +132,6 @@ fn read(root: &Path) -> RepoFacts {
         }
     }
 
-    // Unit separator between fields: a commit subject may contain anything a
-    // person can type, including tabs, and this repository's subjects are long
-    // sentences with quotes and colons in them.
-    if let Ok(log) = git(root, &["log", "-n", "6", "--format=%h%x1f%ct%x1f%an%x1f%s"]) {
-        for line in log.lines() {
-            let mut f = line.split('\u{1f}');
-            let (sha, ts, author, subject) = (f.next(), f.next(), f.next(), f.next());
-            if let (Some(sha), Some(ts), Some(author), Some(subject)) = (sha, ts, author, subject) {
-                facts.commits.push(Commit {
-                    sha: sha.to_string(),
-                    unix_seconds: ts.parse().unwrap_or(0),
-                    author: author.to_string(),
-                    subject: subject.to_string(),
-                });
-            }
-        }
-    }
 
     facts
 }
