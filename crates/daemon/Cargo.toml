@@ -27,6 +27,10 @@ vitna-telemetry.workspace = true
 vitna-runner.workspace = true
 ed25519-dalek.workspace = true
 
+[dev-dependencies]
+# The scripted provider the turn tests drive the agent loop with.
+async-trait.workspace = true
+
 [[bin]]
 name = "vitna-coded"
 path = "src/main.rs"
