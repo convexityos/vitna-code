@@ -1,6 +1,6 @@
 //! The centre: what the window is looking at, stated once, then the composer.
 
-use eframe::egui::{self, Align, Color32, Layout, Rect, RichText, Vec2};
+use eframe::egui::{self, Color32, Rect, RichText, Vec2};
 
 use crate::app::App;
 use crate::icons;
@@ -18,7 +18,7 @@ pub(crate) fn column(rect: Rect) -> Rect {
 
 impl App {
     pub(crate) fn stage(&mut self, ui: &mut egui::Ui, rect: Rect) {
-        let composer_h = 150.0;
+        let composer_h = 178.0;
         let body = Rect::from_min_max(rect.min, egui::pos2(rect.right(), rect.bottom() - composer_h));
         let composer_rect = Rect::from_min_max(egui::pos2(rect.left(), body.bottom()), rect.max);
 
@@ -120,8 +120,15 @@ impl App {
             None => "unknown".to_string(),
         };
 
-        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-            ui.add_space((ui.available_width() - 560.0).max(0.0) / 2.0);
+        let f = theme::sans(13.0);
+        let w = |ui: &egui::Ui, s: &str| {
+            ui.painter().layout_no_wrap(s.to_string(), f.clone(), theme::MUTE).size().x
+        };
+        // Per fact: icon, two spacings and its text; 22px between facts.
+        let total = 3.0 * 34.0 + w(ui, &head) + w(ui, &changes) + w(ui, &touched) + 2.0 * 22.0;
+        let pad = ((ui.available_width() - total) / 2.0).max(0.0);
+        ui.horizontal(|ui| {
+            ui.add_space(pad);
             fact(ui, icons::branch, &head, head_tone);
             ui.add_space(22.0);
             fact(ui, icons::changes, &changes, theme::MUTE);
