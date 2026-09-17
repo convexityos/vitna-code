@@ -1,6 +1,6 @@
 # Vitna Code Implementation Status
 
-- Status: Phase 0A Complete
+- Status: Phase 0B Complete
 - Date: 2026-09-16
 - Tracking Mode: Evidence-backed milestones (no percentage estimates)
 
@@ -9,13 +9,27 @@
 | Phase | Description | Status | Evidence / Verification Gate |
 |---|---|---|---|
 | **Phase 0A** | Authority, Invariants, Threat Model, Platform & Dependency Matrices | **COMPLETE** | See `docs/PHASE_0A_GATE_REPORT.md` |
-| **Phase 0B** | Protocol Envelope, Event Store, Runner Journal, Receipt Trust Model | NOT STARTED | Blocked on Phase 0A user review |
-| **Phase 0C** | Platform Proof: Fake Provider & Runner, Hostile Repos, Hardware CI | NOT STARTED | Blocked on Phase 0B completion |
+| **Phase 0B** | Protocol Envelope, Event Store, Runner Journal, Receipt Trust Model | **COMPLETE** | See `docs/PHASE_0B_GATE_REPORT.md` |
+| **Phase 0C** | Platform Proof: Fake Provider & Runner, Hostile Repos, Hardware CI | NOT STARTED | Blocked on Phase 0B review |
 | **Phase 1** | Durable Vertical Slice (CLI, TUI, Daemon, Guarded Runner, Local Receipt v0) | NOT STARTED | Blocked on Phase 0 exit |
 | **Phase 2** | Competitive Solo-Agent Alpha (OpenAI/Anthropic adapters, Git broker, inspect/build) | NOT STARTED | Blocked on Phase 1 exit |
 | **Phase 3** | Trustworthy Solo-Agent Beta (Strong sandbox, MCP, keychain secrets, Playwright) | NOT STARTED | Blocked on Phase 2 exit |
 | **Phase 4** | Durable Multi-Agent Beta (DAG scheduler, per-agent clones, merge queue) | NOT STARTED | Blocked on Phase 3 exit |
 | **Phase 5** | V1 Hardening and Release (Packaging, signed installers, SBOM, public benchmarks) | NOT STARTED | Blocked on Phase 4 exit |
+
+## Phase 0B Deliverables Ledger
+
+| Deliverable | Target Location | Verification Method | Status |
+|---|---|---|---|
+| Protocol Wire Schemas | `protocol/vitna/protocol/v1/` (`commands.proto`, `events.proto`, `envelope.proto`) | Protobuf definitions frozen; length-prefixed framing and 16MB boundary verified | Verified |
+| Protocol Framing Codecs | `crates/protocol/src/lib.rs` | Unit tests verify frame encoding/decoding, roundtrips, and oversized frame rejection | Verified |
+| Initial SQLite Schema Migration | `crates/store/migrations/0001_initial_schema.sql` | Migration 0001 creates events table and all materialized state projections | Verified |
+| Append-Only Event Store & Replay | `crates/store/src/lib.rs` | Single-writer actor channel pattern, SHA-256 hash chaining, and replay engine tested | Verified |
+| Durable Runner Action Journal | `crates/vitna-runner/src/journal.rs` | 5-step action protocol (`prepared` -> `started` -> `finished` -> `acknowledged`) tested with crash recovery | Verified |
+| Receipt Trust Model & RFC 8785 | `crates/receipts/src/lib.rs` | Canonical JSON serialization, Merkle root calculation, and Ed25519 signing verified | Verified |
+| Offline Receipt Verifier | `crates/vitna-receipt-verify/src/lib.rs` | Independent verification of schema, hash chain, statements, and device signature | Verified |
+| Crash Recovery Test Fixtures | `fixtures/crash-recovery/` (`clean_run.json`, `crash_mid_tool.json`, `crash_post_finish_unack.json`) | Replay integration tests in `crates/store/tests/replay_tests.rs` verify deterministic state reconstruction | Verified |
+| Phase 0B Gate Report | `docs/PHASE_0B_GATE_REPORT.md` | Formal audit report certifying all Phase 0B exit criteria are satisfied | Verified |
 
 ## Phase 0A Deliverables Ledger
 

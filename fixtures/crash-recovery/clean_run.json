@@ -1,0 +1,52 @@
+[
+  {
+    "event_id": "evt-001",
+    "run_id": "run-recovery-clean",
+    "sequence": 0,
+    "type_url": "type.vitna.ai/vitna.protocol.v1.RunStateChanged",
+    "timestamp_ms": 1773792000000,
+    "encrypted_payload": [114, 117, 110, 110, 105, 110, 103, 95, 109, 111, 100, 101, 108],
+    "prev_event_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "event_hash": "3a00a12e23f0c3755c06497f1f0a2c0f6f4d2f80164c8d9c1598f8e811776999"
+  },
+  {
+    "event_id": "evt-002",
+    "run_id": "run-recovery-clean",
+    "sequence": 1,
+    "type_url": "type.vitna.ai/vitna.protocol.v1.ToolProposed",
+    "timestamp_ms": 1773792000100,
+    "encrypted_payload": [114, 101, 97, 100, 95, 102, 105, 108, 101],
+    "prev_event_hash": "3a00a12e23f0c3755c06497f1f0a2c0f6f4d2f80164c8d9c1598f8e811776999",
+    "event_hash": "c5d19e9927cfba735ad804b4c73ef226d71bcf5a06c592a40bbfa6c46a6f6ee0"
+  },
+  {
+    "event_id": "evt-003",
+    "run_id": "run-recovery-clean",
+    "sequence": 2,
+    "type_url": "type.vitna.ai/vitna.protocol.v1.ToolStarted",
+    "timestamp_ms": 1773792000150,
+    "encrypted_payload": [115, 116, 97, 114, 116, 101, 100],
+    "prev_event_hash": "c5d19e9927cfba735ad804b4c73ef226d71bcf5a06c592a40bbfa6c46a6f6ee0",
+    "event_hash": "848981f3d87b1c312788e36746ef920cb95df5057d341ba228a6cefcbe61925b"
+  },
+  {
+    "event_id": "evt-004",
+    "run_id": "run-recovery-clean",
+    "sequence": 3,
+    "type_url": "type.vitna.ai/vitna.protocol.v1.ToolFinished",
+    "timestamp_ms": 1773792000250,
+    "encrypted_payload": [102, 105, 110, 105, 115, 104, 101, 100],
+    "prev_event_hash": "848981f3d87b1c312788e36746ef920cb95df5057d341ba228a6cefcbe61925b",
+    "event_hash": "6920adba944358a5f36e4f3c7e7b68df8eb04a372d829032658933fa7c7e527d"
+  },
+  {
+    "event_id": "evt-005",
+    "run_id": "run-recovery-clean",
+    "sequence": 4,
+    "type_url": "type.vitna.ai/vitna.protocol.v1.RunStateChanged",
+    "timestamp_ms": 1773792000300,
+    "encrypted_payload": [99, 111, 109, 112, 108, 101, 116, 101, 100],
+    "prev_event_hash": "6920adba944358a5f36e4f3c7e7b68df8eb04a372d829032658933fa7c7e527d",
+    "event_hash": "a4d34a478be326f5d72f90409ec8e44c20be67fb8061ff972cbb2424cf05106e"
+  }
+]

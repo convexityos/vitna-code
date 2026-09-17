@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package vitna.protocol.v1;
+
+// Streaming events emitted by vitna-coded daemon.
+
+message MessageDelta {
+  string message_id = 1;
+  string role = 2; // "model", "system", "user"
+  string delta_text = 3;
+}
+
+message ReasoningSummaryDelta {
+  string step_id = 1;
+  string delta_text = 2;
+}
+
+message PlanChanged {
+  string plan_id = 1;
+  repeated string steps = 2;
+  uint32 active_step_index = 3;
+}
+
+message ToolProposed {
+  string tool_call_id = 1;
+  string tool_name = 2;
+  string tool_version = 3;
+  string definition_digest = 4;
+  string argument_digest = 5;
+  string effect_class = 6; // "read", "write", "execute", "network", "secret"
+  bytes raw_arguments_json = 7;
+}
+
+message ApprovalRequested {
+  string approval_id = 1;
+  string tool_call_id = 2;
+  string action_digest = 3;
+  string description = 4;
+  string executable_identity = 5;
+  string canonical_cwd = 6;
+  repeated string environment_names = 7;
+  repeated string bound_mounts = 8;
+  uint64 timeout_ms = 9;
+}
+
+message ToolStarted {
+  string tool_call_id = 1;
+  uint64 started_at_ms = 2;
+}
+
+message ToolOutput {
+  string tool_call_id = 1;
+  string stream = 2; // "stdout", "stderr"
+  bytes chunk = 3;
+}
+
+message ToolFinished {
+  string tool_call_id = 1;
+  int32 exit_code = 2;
+  string stdout_digest = 3;
+  string stderr_digest = 4;
+  uint64 duration_ms = 5;
+  string status = 6; // "completed", "failed", "cancelled"
+}
+
+message DiffChanged {
+  string agent_workspace_id = 1;
+  string diff_text = 2;
+  string diff_digest = 3;
+  repeated string modified_files = 4;
+}
+
+message AgentSpawned {
+  string child_run_id = 1;
+  string parent_run_id = 2;
+  string goal = 3;
+  string agent_workspace_path = 4;
+}
+
+message AgentCompleted {
+  string child_run_id = 1;
+  string completion_state = 2;
+  string result_artifact_digest = 3;
+}
+
+message UsageUpdated {
+  string run_id = 1;
+  string provider = 2;
+  string model_sku = 3;
+  uint64 prompt_tokens = 4;
+  uint64 completion_tokens = 5;
+  uint64 cached_tokens = 6;
+  bool cost_known = 7;
+  double cost_usd = 8;
+}
+
+message RunStateChanged {
+  string run_id = 1;
+  string previous_state = 2;
+  string new_state = 3;
+  // States: queued, running_model, waiting_for_approval, running_tool,
+  // waiting_for_child, waiting_for_retry, paused, needs_reconciliation,
+  // completed, failed, cancelled, orphaned
+  string reason = 4;
+}
+
+message Diagnostic {
+  string level = 1; // "info", "warn", "error"
+  string code = 2;
+  string message = 3;
+  string details = 4;
+}

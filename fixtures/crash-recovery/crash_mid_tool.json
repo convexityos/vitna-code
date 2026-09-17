@@ -1,0 +1,32 @@
+[
+  {
+    "event_id": "evt-010",
+    "run_id": "run-recovery-crash-mid",
+    "sequence": 0,
+    "type_url": "type.vitna.ai/vitna.protocol.v1.RunStateChanged",
+    "timestamp_ms": 1773792100000,
+    "encrypted_payload": [114, 117, 110, 110, 105, 110, 103, 95, 109, 111, 100, 101, 108],
+    "prev_event_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "event_hash": "63a51f89aa0ee331ff6be46a6f1d977da96df62c1995cb4d519b5bfb73ec48a0"
+  },
+  {
+    "event_id": "evt-011",
+    "run_id": "run-recovery-crash-mid",
+    "sequence": 1,
+    "type_url": "type.vitna.ai/vitna.protocol.v1.ToolProposed",
+    "timestamp_ms": 1773792100050,
+    "encrypted_payload": [119, 114, 105, 116, 101, 95, 102, 105, 108, 101],
+    "prev_event_hash": "63a51f89aa0ee331ff6be46a6f1d977da96df62c1995cb4d519b5bfb73ec48a0",
+    "event_hash": "d1c07aa82410a566144e5bc7d0e980336214151a66a1f114a1936cbb56111f12"
+  },
+  {
+    "event_id": "evt-012",
+    "run_id": "run-recovery-crash-mid",
+    "sequence": 2,
+    "type_url": "type.vitna.ai/vitna.protocol.v1.ToolStarted",
+    "timestamp_ms": 1773792100100,
+    "encrypted_payload": [115, 116, 97, 114, 116, 101, 100],
+    "prev_event_hash": "d1c07aa82410a566144e5bc7d0e980336214151a66a1f114a1936cbb56111f12",
+    "event_hash": "fa5b4ca9cf5256e729a997282b09eb3fa54e2aa9504c53ef82ba5db00067341e"
+  }
+]

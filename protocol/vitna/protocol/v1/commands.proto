@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package vitna.protocol.v1;
+
+// Client commands submitted to the local vitna-coded daemon.
+
+message CreateSession {
+  string workspace_path = 1;
+  string title = 2;
+  string initial_mode = 3; // "inspect", "build", "autopilot"
+  string idempotency_key = 4;
+}
+
+message SubmitTurn {
+  string session_id = 1;
+  string prompt = 2;
+  repeated string attached_file_paths = 3;
+  string idempotency_key = 4;
+}
+
+message SteerRun {
+  string run_id = 1;
+  string feedback = 2;
+  string idempotency_key = 3;
+}
+
+message PauseRun {
+  string run_id = 1;
+  string reason = 2;
+}
+
+message ResumeRun {
+  string run_id = 1;
+}
+
+message CancelRun {
+  string run_id = 1;
+  string reason = 2;
+}
+
+message ApproveAction {
+  string approval_id = 1;
+  string action_digest = 2;
+  string scope = 3; // "once", "session", "project"
+}
+
+message RejectAction {
+  string approval_id = 1;
+  string action_digest = 2;
+  string reason = 3;
+}
+
+message SpawnChild {
+  string parent_run_id = 1;
+  string goal = 2;
+  string requested_mode = 3;
+  uint64 token_budget = 4;
+  uint32 max_nesting_depth = 5;
+  string idempotency_key = 6;
+}
+
+message ApplyChangeSet {
+  string change_set_id = 1;
+  string target_checkout_path = 2;
+  string expected_base_commit = 3;
+  string idempotency_key = 4;
+}
+
+message AttachTerminal {
+  string session_id = 1;
+  uint32 terminal_columns = 2;
+  uint32 terminal_rows = 3;
+}
+
+message SubscribeEvents {
+  string session_id = 1;
+  uint64 resume_after_sequence = 2;
+}
