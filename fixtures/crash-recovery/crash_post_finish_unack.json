@@ -7,7 +7,7 @@
     "timestamp_ms": 1773792200000,
     "encrypted_payload": [114, 117, 110, 110, 105, 110, 103, 95, 109, 111, 100, 101, 108],
     "prev_event_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-    "event_hash": "25a58a705a6bb9a4cb3e0586e093dbfb8053a29b0a701fa147986b51b752df42"
+    "event_hash": "c5d4cef38a071eca1740093f2aa5c3bc0410eb138eaba376532d6a5868aa876d"
   },
   {
     "event_id": "evt-021",
@@ -16,8 +16,8 @@
     "type_url": "type.vitna.ai/vitna.protocol.v1.ToolProposed",
     "timestamp_ms": 1773792200050,
     "encrypted_payload": [115, 116, 114, 117, 99, 116, 117, 114, 101, 100, 95, 101, 120, 101, 99],
-    "prev_event_hash": "25a58a705a6bb9a4cb3e0586e093dbfb8053a29b0a701fa147986b51b752df42",
-    "event_hash": "d1e7c5b6ef16e053a4eaee82f9d852048aa6178e24484b901a84f3319043e061"
+    "prev_event_hash": "c5d4cef38a071eca1740093f2aa5c3bc0410eb138eaba376532d6a5868aa876d",
+    "event_hash": "432428cf79bc90c4afb92aca11f7200aa75d3f6c15eae5efea9d5641c861c641"
   },
   {
     "event_id": "evt-022",
@@ -26,8 +26,8 @@
     "type_url": "type.vitna.ai/vitna.protocol.v1.ToolStarted",
     "timestamp_ms": 1773792200100,
     "encrypted_payload": [115, 116, 97, 114, 116, 101, 100],
-    "prev_event_hash": "d1e7c5b6ef16e053a4eaee82f9d852048aa6178e24484b901a84f3319043e061",
-    "event_hash": "1ce979313271aa268be9ad3a7787df9bda05556289b41dd07945d81b49ea75f8"
+    "prev_event_hash": "432428cf79bc90c4afb92aca11f7200aa75d3f6c15eae5efea9d5641c861c641",
+    "event_hash": "1bdbe6942a2537dae76ee9caa6ae99e437e3d2a7e6eaebf78c2b967e27affcba"
   },
   {
     "event_id": "evt-023",
@@ -36,7 +36,7 @@
     "type_url": "type.vitna.ai/vitna.protocol.v1.ToolFinished",
     "timestamp_ms": 1773792200200,
     "encrypted_payload": [102, 105, 110, 105, 115, 104, 101, 100],
-    "prev_event_hash": "1ce979313271aa268be9ad3a7787df9bda05556289b41dd07945d81b49ea75f8",
-    "event_hash": "2087532296e8dcf7a58a74ec1ee94119d80d28fa6935da60904037aa9c51a707"
+    "prev_event_hash": "1bdbe6942a2537dae76ee9caa6ae99e437e3d2a7e6eaebf78c2b967e27affcba",
+    "event_hash": "bd42f3ed59d28f3e212b200c3579813de7091fda4d6b16d4d713fb3fe37bfc0e"
   }
 ]
