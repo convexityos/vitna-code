@@ -24,3 +24,5 @@ ed25519-dalek.workspace = true
 
 [dev-dependencies]
 vitna-receipt-verify.workspace = true
+vitna-git-broker.workspace = true
+vitna-git-workspaces.workspace = true

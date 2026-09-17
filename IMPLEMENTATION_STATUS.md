@@ -1,6 +1,6 @@
 # Vitna Code Implementation Status
 
-- Status: Phase 3 Complete (Trustworthy Solo-Agent Beta Verified)
+- Status: Phase 4 Complete (Durable Multi-Agent Beta Verified)
 - Date: 2026-09-16
 - Tracking Mode: Evidence-backed milestones (no percentage estimates)
 
@@ -14,8 +14,18 @@
 | **Phase 1** | Durable Vertical Slice (CLI, TUI, Daemon, Guarded Runner, Local Receipt v0) | **COMPLETE** | See `docs/PHASE_1_GATE_REPORT.md` |
 | **Phase 2** | Competitive Solo-Agent Alpha (OpenAI/Anthropic adapters, Git broker, inspect/build) | **COMPLETE** | See `docs/PHASE_2_GATE_REPORT.md` |
 | **Phase 3** | Trustworthy Solo-Agent Beta (Strong sandbox, MCP, keychain secrets, Playwright) | **COMPLETE** | See `docs/PHASE_3_GATE_REPORT.md` |
-| **Phase 4** | Durable Multi-Agent Beta (DAG scheduler, per-agent clones, merge queue) | READY TO START | Exit criteria for Phase 3 certified |
-| **Phase 5** | V1 Hardening and Release (Packaging, signed installers, SBOM, public benchmarks) | NOT STARTED | Blocked on Phase 4 exit |
+| **Phase 4** | Durable Multi-Agent Beta (DAG scheduler, per-agent clones, merge queue) | **COMPLETE** | See `docs/PHASE_4_GATE_REPORT.md` |
+| **Phase 5** | V1 Hardening and Release (Packaging, signed installers, SBOM, public benchmarks) | READY TO START | Exit criteria for Phase 4 certified |
+
+## Phase 4 Deliverables Ledger
+
+| Deliverable | Target Location | Verification Method | Status |
+|---|---|---|---|
+| Directed Acyclic Graph (DAG) Task Scheduler | `crates/orchestration/src/dag.rs` | Kahn's cycle detection, dependency satisfaction, and cascading cancellation tests | Verified |
+| Serialized Multi-Agent Merge Queue | `crates/git-broker/src/merge_queue.rs` | Preimage re-validation, conflict rejection, and serialized primary merging tested | Verified |
+| Hierarchical Receipt Aggregation | `crates/receipts/src/lib.rs`, `schemas/vitna-run-receipt-v1.json` | `child_receipt_roots`, recursive evidence aggregation, and canonical Ed25519 signing tested | Verified |
+| Multi-Agent DAG Integration Test | `crates/orchestration/tests/multi_agent_dag_test.rs` | 3-agent pipeline (researcher, isolated backend, tester), merge queue, and receipt verification | Verified |
+| Phase 4 Gate Report | `docs/PHASE_4_GATE_REPORT.md` | Formal audit certifying Phase 4 deliverables and authorizing Phase 5 progression | Verified |
 
 ## Phase 3 Deliverables Ledger
 

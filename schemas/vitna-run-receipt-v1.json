@@ -113,6 +113,12 @@
         }
       }
     },
+    "child_receipt_roots": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "device_signature": {
       "type": "string"
     }

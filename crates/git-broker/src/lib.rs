@@ -1,8 +1,10 @@
 //! Trusted Git broker managing isolated agent changesets, preimage verification, and safe merging.
 
 pub mod broker;
+pub mod merge_queue;
 
 pub use broker::{ChangeSet, FileChange, GitBroker, MergeConflict, MergeResult, NULL_HASH};
+pub use merge_queue::{MergeQueue, MergeQueueItem, MergeQueueResult};
 
 #[cfg(test)]
 mod tests {

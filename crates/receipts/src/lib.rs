@@ -57,11 +57,24 @@ pub struct VitnaRunReceiptV1 {
     pub evidence_items: Vec<EvidenceItemRecord>,
     pub changeset: ChangeSetRecord,
     pub runner_execution_statements: Vec<RunnerExecutionStatementRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub child_receipt_roots: Vec<String>,
     #[serde(default)]
     pub device_signature: String,
 }
 
 impl VitnaRunReceiptV1 {
+    /// Aggregates child agent evidence and event roots into this parent receipt.
+    pub fn aggregate_child_receipt(&mut self, child_receipt: &VitnaRunReceiptV1) {
+        if !child_receipt.event_hash_chain_root.is_empty() {
+            self.child_receipt_roots.push(child_receipt.event_hash_chain_root.clone());
+        }
+        for item in &child_receipt.evidence_items {
+            if !self.evidence_items.iter().any(|e| e.evidence_id == item.evidence_id) {
+                self.evidence_items.push(item.clone());
+            }
+        }
+    }
     /// Computes canonical JSON representation (RFC 8785 discipline: deterministic key ordering, compact whitespace).
     pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
         let mut clone = self.clone();
