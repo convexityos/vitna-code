@@ -48,6 +48,10 @@ pub struct OrchestrationEngine {
     pub runner_statements: Vec<RunnerExecutionStatementRecord>,
     pub evidence_items: Vec<EvidenceItemRecord>,
     pub history: Vec<ContextMessage>,
+    /// What the receipt will say about how the run ended. Defaults to the
+    /// completed case and is lowered by whoever cuts the run short, so a
+    /// truncated run cannot be signed as a finished one.
+    pub completion_state: String,
 }
 
 impl OrchestrationEngine {
@@ -72,6 +76,7 @@ impl OrchestrationEngine {
             runner_statements: Vec::new(),
             evidence_items: Vec::new(),
             history: Vec::new(),
+            completion_state: "completed_with_evidence".to_string(),
         }
     }
 
@@ -138,29 +143,45 @@ impl OrchestrationEngine {
         )?;
 
         // Step 2: Dispatch step action
-        let (tool_name, args, is_mutating) = match &step {
-            StepType::InspectWorkspace => (
-                "list_dir".to_string(),
-                serde_json::json!({ "path": "." }),
-                false,
-            ),
+        let (tool_name, args) = match &step {
+            StepType::InspectWorkspace => {
+                ("list_dir".to_string(), serde_json::json!({ "path": "." }))
+            }
             StepType::ProposeEdit { path, content } => (
                 "write_file".to_string(),
                 serde_json::json!({ "path": path, "content": content }),
-                true,
             ),
             StepType::RunVerification { command } => (
                 "run_command".to_string(),
                 serde_json::json!({ "command": command }),
-                true,
             ),
         };
 
+        self.execute_tool(&tool_name, args).await
+    }
+
+    /// The guarded path a tool call takes, whoever chose it.
+    ///
+    /// `execute_task_step` picks its tool from a fixed `StepType`; the agent
+    /// loop picks it from what a model asked for. Both arrive here, so the
+    /// approval gate, the hash-chained events and the evidence capture are one
+    /// implementation rather than two. That matters more than the duplication
+    /// would: the guarantee a receipt claims IS this path, and a second copy of
+    /// it is a second thing that can quietly stop matching the first.
+    pub async fn execute_tool(
+        &mut self,
+        tool_name: &str,
+        args: serde_json::Value,
+    ) -> Result<ToolResult, String> {
+        let tool_name = tool_name.to_string();
         let tool = self
             .tool_registry
             .get(&tool_name)
             .ok_or_else(|| format!("Tool not found: {}", tool_name))?;
 
+        // Taken from the definition rather than from the caller, so the flag the
+        // gate enforces is the same one the model was shown.
+        let is_mutating = tool.definition().is_mutating;
         let action_digest = tool.compute_action_digest(&args);
 
         // Step 3: Exact-action capability & approval check
@@ -297,7 +318,7 @@ impl OrchestrationEngine {
             run_id: self.config.run_id.clone(),
             session_id: self.config.session_id.clone(),
             workspace_fingerprint: ws_fingerprint,
-            base_commit_sha: "0000000000000000000000000000000000000000".to_string(),
+            base_commit_sha: base_commit_sha(&self.config.workspace_root),
             model_selection: ModelSelectionRecord {
                 provider: self.config.provider_name.clone(),
                 model_sku: self.config.model_sku.clone(),
@@ -306,7 +327,7 @@ impl OrchestrationEngine {
             },
             event_hash_chain_root: merkle_root,
             isolation_label: self.config.sandbox_guarantee.clone(),
-            completion_state: "completed_with_evidence".to_string(),
+            completion_state: self.completion_state.clone(),
             evidence_items: self.evidence_items.clone(),
             changeset: ChangeSetRecord {
                 files_modified: self.changeset_modifications.clone(),
@@ -344,5 +365,35 @@ impl OrchestrationEngine {
         )?;
 
         Ok(receipt)
+    }
+}
+
+/// The commit the run started from, or git's own null sha when there is no
+/// commit to name.
+///
+/// This was the all-zero literal, unconditionally, which reads as "no base
+/// commit" and was being written over real repositories. A receipt whose
+/// changeset cannot be located against a commit is a receipt nobody can check
+/// a diff against.
+fn base_commit_sha(workspace_root: &std::path::Path) -> String {
+    const NONE: &str = "0000000000000000000000000000000000000000";
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["rev-parse", "HEAD"])
+        .output();
+
+    match out {
+        Ok(o) if o.status.success() => {
+            let sha = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
+                sha
+            } else {
+                NONE.to_string()
+            }
+        }
+        // Not a repository, no commits yet, or no git on the box. All three
+        // genuinely have no base commit to name.
+        _ => NONE.to_string(),
     }
 }
