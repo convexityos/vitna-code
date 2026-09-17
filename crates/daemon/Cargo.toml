@@ -25,6 +25,7 @@ vitna-skills.workspace = true
 vitna-receipts.workspace = true
 vitna-telemetry.workspace = true
 vitna-runner.workspace = true
+ed25519-dalek.workspace = true
 
 [[bin]]
 name = "vitna-coded"
