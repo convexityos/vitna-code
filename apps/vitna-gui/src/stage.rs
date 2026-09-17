@@ -6,7 +6,7 @@ use crate::app::App;
 use crate::icons;
 use crate::link::Link;
 use crate::theme;
-use crate::workspace::{self, Head};
+use crate::workspace;
 
 /// The centred column every surface in the main area shares.
 pub(crate) const COLUMN: f32 = 720.0;
@@ -35,8 +35,6 @@ impl App {
             ui.add(egui::Image::new(crate::brand::mark()).fit_to_exact_size(Vec2::splat(44.0)));
             ui.add_space(14.0);
             ui.label(RichText::new("Let's build").font(theme::display(30.0)).color(theme::INK));
-            ui.add_space(14.0);
-            self.workspace_pill(ui);
         });
 
         ui2.add_space(34.0);
@@ -50,47 +48,10 @@ impl App {
         self.composer(ui, composer_rect);
     }
 
-    /// The folder this window is open on, as a pill with a chevron. The
-    /// references all put the workspace here, under the heading.
-    fn workspace_pill(&mut self, ui: &mut egui::Ui) {
-        let text = self.workspace.name.clone();
-        let galley = ui
-            .painter()
-            .layout_no_wrap(text.clone(), theme::sans(13.0), theme::INK_2);
-        let size = Vec2::new(galley.size().x + 54.0, 30.0);
-        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius::same(15),
-            if response.hovered() { theme::FACE_2 } else { theme::FACE },
-        );
-        ui.painter().rect_stroke(
-            rect,
-            egui::CornerRadius::same(15),
-            egui::Stroke::new(1.0, theme::HAIR_2),
-            egui::StrokeKind::Inside,
-        );
-        icons::folder(ui.painter(), egui::pos2(rect.left() + 17.0, rect.center().y), theme::FAINT);
-        ui.painter().galley(
-            egui::pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0),
-            galley,
-            theme::INK_2,
-        );
-        icons::chevron_down(ui.painter(), egui::pos2(rect.right() - 15.0, rect.center().y), theme::FAINT);
-        response.on_hover_text(
-            "Opening another folder is the daemon's to do, and it is not running.",
-        );
-    }
-
-    /// One quiet line of facts with icons: branch, changes, last touched.
+    /// One quiet line of facts with icons: changes, last touched. The branch
+    /// is a chip above the composer now, so it is not repeated here.
     fn facts_line(&mut self, ui: &mut egui::Ui) {
         let facts = self.facts();
-
-        let (head, head_tone) = match &self.workspace.head {
-            Some(Head::Branch(b)) => (b.clone(), theme::MUTE),
-            Some(h) => (h.label(), theme::RUST),
-            None => ("no repository".to_string(), theme::FAINT),
-        };
 
         let changes = match &facts {
             None => "reading changes".to_string(),
@@ -124,12 +85,10 @@ impl App {
             ui.painter().layout_no_wrap(s.to_string(), f.clone(), theme::MUTE).size().x
         };
         // Per fact: icon, two spacings and its text; 22px between facts.
-        let total = 3.0 * 34.0 + w(ui, &head) + w(ui, &changes) + w(ui, &touched) + 2.0 * 22.0;
+        let total = 2.0 * 34.0 + w(ui, &changes) + w(ui, &touched) + 22.0;
         let pad = ((ui.available_width() - total) / 2.0).max(0.0);
         ui.horizontal(|ui| {
             ui.add_space(pad);
-            fact(ui, icons::branch, &head, head_tone);
-            ui.add_space(22.0);
             fact(ui, icons::changes, &changes, theme::MUTE);
             ui.add_space(22.0);
             fact(ui, icons::clock, &touched, theme::MUTE);

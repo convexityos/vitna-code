@@ -32,22 +32,13 @@ impl Mode {
     }
 }
 
-/// Where a run executes. The daemon enforces this; the window only states it.
+/// Where a run executes: on this checkout in place, or in a fresh worktree of
+/// it. The daemon enforces this; the window only states the preference, as
+/// the worktree checkbox above the composer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
     Local,
     Worktree,
-}
-
-impl Placement {
-    pub const ALL: [Placement; 2] = [Placement::Local, Placement::Worktree];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Placement::Local => "Local",
-            Placement::Worktree => "Worktree",
-        }
-    }
 }
 
 pub struct App {
