@@ -220,7 +220,7 @@ pub fn install(ctx: &egui::Context) {
 /// A named sidebar, not an icon rail. Every terminal this sits beside lists
 /// real work by name, and an icon rail is Convexity's answer to twenty
 /// destinations rather than to one plus a list of sessions.
-pub const SIDEBAR_W: f32 = 258.0;
+pub const SIDEBAR_W: f32 = 244.0;
 
 /// An eyebrow: sans, small, uppercase, wide tracking, tertiary.
 ///
