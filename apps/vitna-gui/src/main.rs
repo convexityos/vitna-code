@@ -9,6 +9,7 @@
 
 mod app;
 mod link;
+mod repo;
 mod theme;
 mod workspace;
 

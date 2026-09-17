@@ -41,6 +41,8 @@ pub const OK: Color32 = Color32::from_rgb(0x2f, 0xbf, 0x71);
 /// than blended per widget.
 pub const HAIR: Color32 = Color32::from_rgb(0x25, 0x2a, 0x38);
 pub const HAIR_2: Color32 = Color32::from_rgb(0x1a, 0x1f, 0x2c);
+/// The faintest rule, for rows inside a table.
+pub const HAIR_3: Color32 = Color32::from_rgb(0x14, 0x18, 0x24);
 
 /// Radii, from the tokens' 8 to 20 range.
 pub const R: f32 = 16.0;
@@ -176,8 +178,9 @@ pub fn install(ctx: &egui::Context) {
         v.widgets.open.bg_stroke = egui::Stroke::new(1.0, HAIR);
         v.widgets.open.fg_stroke = egui::Stroke::new(1.0, INK);
 
-        // No shadow anywhere: the tokens ban glass and glow, and a drop shadow is
-        // the same claim by another name.
+        // Shadows exist in exactly one place, between the desk and the device,
+        // and that is painted by hand in app.rs. Every popup and window stays
+        // flat, because a shadow on a working surface is glow by another name.
         v.window_shadow = egui::epaint::Shadow::NONE;
         v.popup_shadow = egui::epaint::Shadow::NONE;
         v.window_corner_radius = (R as u8).into();
@@ -188,3 +191,86 @@ pub fn install(ctx: &egui::Context) {
         style.spacing.interact_size.y = 26.0;
     });
 }
+
+// ---------------------------------------------------------------------------
+// The shell: a computer in a display.
+//
+// Convexity frames its terminal as a rounded "device" floating on a near-black
+// desk beside a fixed icon rail, which is what makes the product read as one
+// instrument rather than a page. The geometry below is that shell
+// (`frontend/mockups/assets/shell.css`) in Vitna's palette: the desk is a step
+// BELOW the canvas rather than a warm black, and the one accent is periwinkle
+// rather than amber.
+// ---------------------------------------------------------------------------
+
+/// A step below the canvas, so the device has something to sit on.
+pub const DESK: Color32 = Color32::from_rgb(0x05, 0x07, 0x0d);
+/// The device surface is the canvas proper.
+pub const DEVICE: Color32 = CANVAS;
+/// The header band inside the device, one step up from it.
+pub const BAND: Color32 = Color32::from_rgb(0x0e, 0x13, 0x22);
+
+pub const RAIL_W: f32 = 76.0;
+pub const FRAME: f32 = 14.0;
+pub const DEVICE_RADIUS: f32 = 18.0;
+pub const HEADER_H: f32 = 46.0;
+
+/// An eyebrow: sans, small, uppercase, wide tracking, tertiary.
+///
+/// Sans and not mono on purpose. Convexity moved these labels off the mono role
+/// because when everything is mono nothing scans, and mono is the value's
+/// voice, never the label's.
+pub fn eyebrow(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &text.to_uppercase(),
+        0.0,
+        egui::TextFormat {
+            font_id: sans(FS_MARK),
+            extra_letter_spacing: 1.1,
+            color: FAINTER,
+            ..Default::default()
+        },
+    );
+    let _ = ui;
+    job
+}
+
+/// A section header: a short title, then a hairline running to the edge, then an
+/// optional mono meta label. The rule is what makes a dense surface read as
+/// sections rather than as a list of paragraphs.
+pub fn section_header(ui: &mut egui::Ui, title: &str, meta: Option<&str>) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(title)
+                .font(sans(FS_SMALL))
+                .color(INK_2)
+                .strong(),
+        );
+        let meta_w = meta.map(|m| m.len() as f32 * 6.5 + 10.0).unwrap_or(0.0);
+        let rule_w = (ui.available_width() - meta_w - 10.0).max(0.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(rule_w, 1.0), egui::Sense::hover());
+        ui.painter().hline(
+            rect.x_range(),
+            rect.center().y,
+            egui::Stroke::new(1.0, HAIR_2),
+        );
+        if let Some(m) = meta {
+            ui.label(egui::RichText::new(m).font(mono(FS_MARK)).color(FAINTER));
+        }
+    });
+    ui.add_space(8.0);
+}
+
+/// A value and the quiet label above it. The scale contrast between the two is
+/// what makes density read as deliberate.
+pub fn stat(ui: &mut egui::Ui, label: &str, value: &str, tone: Color32, size: f32) {
+    ui.vertical(|ui| {
+        ui.label(eyebrow(ui, label));
+        ui.add_space(1.0);
+        ui.label(egui::RichText::new(value).font(mono(size)).color(tone));
+    });
+}
+
+/// A dash, for a number this window does not know. Never a zero.
+pub const UNKNOWN: &str = "--";
