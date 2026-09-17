@@ -1,0 +1,562 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "vitna-code-v1.0.0",
+  "documentNamespace": "https://vitna.ai/spdx/vitna-code-v1.0.0",
+  "creationInfo": {
+    "created": "2026-09-16T22:00:00Z",
+    "creators": [
+      "Tool: Vitna-SBOM-Generator-1.0",
+      "Organization: Convexity Engineering <engineering@vitna.ai>"
+    ]
+  },
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-vitna-code",
+      "name": "vitna-code",
+      "versionInfo": "1.0.0",
+      "downloadLocation": "git+https://github.com/convexityos/vitna-code.git@v1.0.0",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "The coding terminal that leaves a receipt"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-cli",
+      "name": "vitna-cli",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Terminal client and non-interactive command line interface"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-tui",
+      "name": "vitna-tui",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Calm Terminal interactive TUI client"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-daemon",
+      "name": "vitna-daemon",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Local persistence and session management daemon"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-protocol",
+      "name": "vitna-protocol",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Wire schemas and length-prefixed framing codecs"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-store",
+      "name": "vitna-store",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "SQLite WAL actor and append-only event log"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-orchestration",
+      "name": "vitna-orchestration",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Turn state machine, approval gating, and DAG scheduler"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-policy",
+      "name": "vitna-policy",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Signed policy rules and exact-action enforcement"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-context",
+      "name": "vitna-context",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Context assembly and AGENTS.md parsing engine"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-providers",
+      "name": "vitna-providers",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Anthropic and OpenAI streaming adapters and credential vault"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-tools",
+      "name": "vitna-tools",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Path-confined tool registry and browser verification"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-git-workspaces",
+      "name": "vitna-git-workspaces",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Disposable clone workspace manager"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-git-broker",
+      "name": "vitna-git-broker",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Preimage/postimage calculator and serialized merge queue"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-mcp",
+      "name": "vitna-mcp",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Model Context Protocol JSON-RPC client and broker"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-skills",
+      "name": "vitna-skills",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Executable capability modules"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-receipts",
+      "name": "vitna-receipts",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Cryptographic receipt generator and Merkle tree engine"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-telemetry",
+      "name": "vitna-telemetry",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Zero-cloud local structured tracing engine"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-evals",
+      "name": "vitna-evals",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Deterministic evals, benchmarks, and fault-injection suites"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-runner",
+      "name": "vitna-runner",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Hardened action journal and runner state engine"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-sandbox",
+      "name": "vitna-sandbox",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Cross-platform OS sandbox executor (Bwrap, Seatbelt, AppContainer)"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vitna-receipt-verify",
+      "name": "vitna-receipt-verify",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NONE",
+      "filesAnalyzed": false,
+      "supplier": "Organization: Convexity Engineering <engineering@vitna.ai>",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright (c) 2026 Convexity Engineering",
+      "description": "Offline independent cryptographic receipt verifier"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-tokio",
+      "name": "tokio",
+      "versionInfo": "1.40.0",
+      "downloadLocation": "https://crates.io/crates/tokio/1.40.0",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "description": "Asynchronous runtime for Rust"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-serde",
+      "name": "serde",
+      "versionInfo": "1.0.210",
+      "downloadLocation": "https://crates.io/crates/serde/1.0.210",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "description": "Serialization and deserialization framework"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-serde_json",
+      "name": "serde_json",
+      "versionInfo": "1.0.128",
+      "downloadLocation": "https://crates.io/crates/serde_json/1.0.128",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "description": "JSON serialization library"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-rusqlite",
+      "name": "rusqlite",
+      "versionInfo": "0.32.1",
+      "downloadLocation": "https://crates.io/crates/rusqlite/0.32.1",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "description": "SQLite database client library"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-ed25519-dalek",
+      "name": "ed25519-dalek",
+      "versionInfo": "2.1.1",
+      "downloadLocation": "https://crates.io/crates/ed25519-dalek/2.1.1",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "description": "Fast and efficient Ed25519 key generation and signing"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-ring",
+      "name": "ring",
+      "versionInfo": "0.17.8",
+      "downloadLocation": "https://crates.io/crates/ring/0.17.8",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "licenseConcluded": "ISC AND OpenSSL",
+      "licenseDeclared": "ISC AND OpenSSL",
+      "copyrightText": "NOASSERTION",
+      "description": "Cryptographic primitives implementation"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-sha2",
+      "name": "sha2",
+      "versionInfo": "0.10.8",
+      "downloadLocation": "https://crates.io/crates/sha2/0.10.8",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "description": "Pure Rust implementation of the SHA-2 cryptographic hash function"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-ratatui",
+      "name": "ratatui",
+      "versionInfo": "0.28.1",
+      "downloadLocation": "https://crates.io/crates/ratatui/0.28.1",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "description": "Terminal user interface library"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-crossterm",
+      "name": "crossterm",
+      "versionInfo": "0.28.1",
+      "downloadLocation": "https://crates.io/crates/crossterm/0.28.1",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "description": "Cross-platform terminal manipulation library"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-prost",
+      "name": "prost",
+      "versionInfo": "0.13.3",
+      "downloadLocation": "https://crates.io/crates/prost/0.13.3",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "description": "Protocol Buffers implementation for Rust"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-clap",
+      "name": "clap",
+      "versionInfo": "4.5.20",
+      "downloadLocation": "https://crates.io/crates/clap/4.5.20",
+      "filesAnalyzed": false,
+      "supplier": "NOASSERTION",
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "description": "Command line argument parser for Rust"
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-code"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-cli"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-tui"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-daemon"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-protocol"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-store"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-orchestration"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-policy"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-context"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-providers"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-tools"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-git-workspaces"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-git-broker"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-mcp"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-skills"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-receipts"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-telemetry"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-evals"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-runner"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-sandbox"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Package-vitna-receipt-verify"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-tokio"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-serde"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-serde_json"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-rusqlite"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-ed25519-dalek"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-ring"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-sha2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-ratatui"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-crossterm"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-prost"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-vitna-code",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-clap"
+    }
+  ]
+}

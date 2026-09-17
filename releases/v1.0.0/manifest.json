@@ -1,0 +1,46 @@
+{
+  "schema_version": "vitna-release-manifest-v1",
+  "version": "1.0.0",
+  "channel": "stable",
+  "release_date": "2026-09-16T22:00:00Z",
+  "release_notes_url": "https://github.com/convexityos/vitna-code/releases/tag/v1.0.0",
+  "assets": [
+    {
+      "target_triple": "x86_64-pc-windows-msvc",
+      "filename": "vitna-code-v1.0.0-x86_64-pc-windows-msvc.zip",
+      "sha256": "5bb7d401a9607491872548dfed4bd78e2d2c3f56b7ebd20eb149d15aad152317",
+      "size_bytes": 28450112,
+      "min_os_version": "Windows 10 Build 19041+"
+    },
+    {
+      "target_triple": "aarch64-pc-windows-msvc",
+      "filename": "vitna-code-v1.0.0-aarch64-pc-windows-msvc.zip",
+      "sha256": "c9b359e8332a314ca3241490dfb549423516572948eb40ce5b479acb17832d72",
+      "size_bytes": 26891240,
+      "min_os_version": "Windows 11 Build 22000+"
+    },
+    {
+      "target_triple": "x86_64-unknown-linux-gnu",
+      "filename": "vitna-code-v1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+      "sha256": "c0e0aa6dfbcb427dc5f337aa0a445c32222a62482a8b11936d29de81c19d7c48",
+      "size_bytes": 25114880,
+      "min_os_version": "Linux kernel 5.15+, glibc 2.31+"
+    },
+    {
+      "target_triple": "x86_64-apple-darwin",
+      "filename": "vitna-code-v1.0.0-x86_64-apple-darwin.tar.gz",
+      "sha256": "efa9bf6d05739c4b68b84eb3703ef42d48155fbfae611aaa4ba85426ecebb487",
+      "size_bytes": 24982110,
+      "min_os_version": "macOS Monterey 12.0+"
+    },
+    {
+      "target_triple": "aarch64-apple-darwin",
+      "filename": "vitna-code-v1.0.0-aarch64-apple-darwin.tar.gz",
+      "sha256": "c92771729871c11e7d491865efa3541c1157b5708079c906a2c9bd9530e7367e",
+      "size_bytes": 24198420,
+      "min_os_version": "macOS Monterey 12.0+ (Apple Silicon)"
+    }
+  ],
+  "publisher_public_key": "39be60e1122dc72d1877704b3a6ec56302263ed212aadad3fedc4a7b6b0887f7",
+  "publisher_signature": "76aaaf651b4932767b46520ffa4e8a7f4e79a46d8a42108a692e64e4eb4c3fb574e5165674cfe21aba50f5c8e9b685b835cad5692f36771cc6fb31f0283a1c0a"
+}

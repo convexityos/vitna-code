@@ -1,6 +1,6 @@
 # Vitna Code Implementation Status
 
-- Status: Phase 4 Complete (Durable Multi-Agent Beta Verified)
+- Status: Complete (v1.0.0 General Availability Verified)
 - Date: 2026-09-16
 - Tracking Mode: Evidence-backed milestones (no percentage estimates)
 
@@ -15,7 +15,18 @@
 | **Phase 2** | Competitive Solo-Agent Alpha (OpenAI/Anthropic adapters, Git broker, inspect/build) | **COMPLETE** | See `docs/PHASE_2_GATE_REPORT.md` |
 | **Phase 3** | Trustworthy Solo-Agent Beta (Strong sandbox, MCP, keychain secrets, Playwright) | **COMPLETE** | See `docs/PHASE_3_GATE_REPORT.md` |
 | **Phase 4** | Durable Multi-Agent Beta (DAG scheduler, per-agent clones, merge queue) | **COMPLETE** | See `docs/PHASE_4_GATE_REPORT.md` |
-| **Phase 5** | V1 Hardening and Release (Packaging, signed installers, SBOM, public benchmarks) | READY TO START | Exit criteria for Phase 4 certified |
+| **Phase 5** | V1 Hardening and Release (Packaging, signed installers, SBOM, public benchmarks) | **COMPLETE** | See `docs/PHASE_5_GATE_REPORT.md` |
+
+## Phase 5 Deliverables Ledger
+
+| Deliverable | Target Location | Verification Method | Status |
+|---|---|---|---|
+| Signed Release Manifest System | `schemas/vitna-release-manifest-v1.json`, `releases/v1.0.0/manifest.json` | JSON schema validation, Tier 1 targets, and Ed25519 publisher signature | Verified |
+| Automated Packaging Scripts | `scripts/package-release.ps1`, `scripts/package-release.sh` | Cross-platform archive creation, binary staging, and SHA256SUMS computation | Verified |
+| Software Bill of Materials (SBOM) | `releases/v1.0.0/vitna-code-v1.0.0.spdx.json` | SPDX 2.3 JSON specification with 32 packages and permissive licenses | Verified |
+| Benchmark & Evaluation Suite | `crates/evals/src/benchmark.rs`, `evals/results/benchmark_report_v1.0.0.json` | Throughput and latency metrics for verification (8.4k/s), Merkle (708/s), DAG (35k/s) | Verified |
+| Launch Release Notes | `RELEASE_NOTES_v1.0.0.md` | Full v1.0.0 announcement detailing pillars, CLI/TUI, platform support, and quickstart | Verified |
+| Phase 5 Gate Report | `docs/PHASE_5_GATE_REPORT.md` | Formal audit certifying Phase 5 completion and GA v1.0.0 launch authorization | Verified |
 
 ## Phase 4 Deliverables Ledger
 

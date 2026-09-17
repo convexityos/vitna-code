@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vitna.ai/schemas/vitna-release-manifest-v1.json",
+  "title": "VitnaReleaseManifestV1",
+  "description": "Cryptographically signed distribution manifest for Vitna Code releases",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "version",
+    "channel",
+    "release_date",
+    "release_notes_url",
+    "assets",
+    "publisher_public_key",
+    "publisher_signature"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "vitna-release-manifest-v1"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[a-zA-Z0-9.]+)?$"
+    },
+    "channel": {
+      "type": "string",
+      "enum": ["stable", "beta", "nightly"]
+    },
+    "release_date": {
+      "type": "string"
+    },
+    "release_notes_url": {
+      "type": "string"
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "target_triple",
+          "filename",
+          "sha256",
+          "size_bytes",
+          "min_os_version"
+        ],
+        "properties": {
+          "target_triple": {
+            "type": "string",
+            "enum": [
+              "x86_64-unknown-linux-gnu",
+              "x86_64-pc-windows-msvc",
+              "aarch64-pc-windows-msvc",
+              "x86_64-apple-darwin",
+              "aarch64-apple-darwin"
+            ]
+          },
+          "filename": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "min_os_version": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "publisher_public_key": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "publisher_signature": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{128}$"
+    }
+  }
+}

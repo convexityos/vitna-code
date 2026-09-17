@@ -1,0 +1,27 @@
+{
+  "suite_version": "vitna-benchmark-v1.0.0",
+  "timestamp_rfc3339": "2026-09-16T22:00:00Z",
+  "metrics": [
+    {
+      "name": "receipt_verification",
+      "operations": 500,
+      "elapsed_nanos": 58941200,
+      "ops_per_sec": 8483.0,
+      "avg_latency_micros": 117.88
+    },
+    {
+      "name": "merkle_root_calculation_1000_events",
+      "operations": 100,
+      "elapsed_nanos": 141208000,
+      "ops_per_sec": 708.17,
+      "avg_latency_micros": 1412.08
+    },
+    {
+      "name": "dag_kahn_validation_50_nodes",
+      "operations": 500,
+      "elapsed_nanos": 14210000,
+      "ops_per_sec": 35186.48,
+      "avg_latency_micros": 28.42
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "vitna-evals"
 version.workspace = true
 edition.workspace = true
@@ -9,3 +9,10 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 vitna-protocol.workspace = true
+vitna-receipts.workspace = true
+vitna-receipt-verify.workspace = true
+vitna-git-broker.workspace = true
+vitna-orchestration.workspace = true
+sha2.workspace = true
+hex.workspace = true
+ed25519-dalek.workspace = true
