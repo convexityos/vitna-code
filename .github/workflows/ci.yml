@@ -61,7 +61,7 @@ jobs:
       - name: Install windowing and capture tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev xvfb x11-utils imagemagick libgl1-mesa-dri
+          sudo apt-get install -y --no-install-recommends libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev xvfb x11-utils imagemagick libgl1-mesa-dri libglx-mesa0 libegl1 libgbm1 mesa-utils
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -83,12 +83,13 @@ jobs:
           Xvfb :99 -screen 0 1280x860x24 &
           export DISPLAY=:99
           sleep 2
-          ./target/debug/vitna-code "$GITHUB_WORKSPACE" &
+          glxinfo -B 2>&1 | head -5 || echo "glxinfo unavailable"
+          ./target/debug/vitna-code "$GITHUB_WORKSPACE" > app.log 2>&1 &
           APP_PID=$!
           for i in $(seq 1 30); do
             if ! kill -0 "$APP_PID" 2>/dev/null; then
-              echo "the window process exited before it mapped a window"
-              wait "$APP_PID" || true
+              echo "the window process exited before it mapped a window. Its output:"
+              cat app.log
               exit 1
             fi
             if xwininfo -root -children | grep -qi "vitna"; then
@@ -100,6 +101,8 @@ jobs:
           sleep 3
           import -window root vitna-code-window.png
           xwininfo -root -children | head -20
+          echo "--- application output ---"
+          cat app.log || true
           kill "$APP_PID" 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
