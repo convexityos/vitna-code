@@ -18,15 +18,15 @@
 
 use eframe::egui::{self, Color32, FontFamily, FontId, TextStyle};
 
-// The ladder tops out at #1d2d4f (the owner's ceiling): the hovered chip and
+// The ladder tops out at #10192b (the owner's ceiling): the hovered chip and
 // the hairline sit there, and every ground steps darker from it.
-pub const CANVAS: Color32 = Color32::from_rgb(0x0e, 0x18, 0x30);
-pub const RAIL: Color32 = Color32::from_rgb(0x0a, 0x12, 0x26);
-pub const FACE: Color32 = Color32::from_rgb(0x18, 0x26, 0x43);
-pub const GROUND: Color32 = Color32::from_rgb(0x12, 0x1e, 0x37);
-pub const FACE_2: Color32 = Color32::from_rgb(0x1d, 0x2d, 0x4f);
-pub const FIELD: Color32 = Color32::from_rgb(0x14, 0x21, 0x3b);
-pub const CONTROL: Color32 = Color32::from_rgb(0x1d, 0x2d, 0x4f);
+pub const CANVAS: Color32 = Color32::from_rgb(0x08, 0x0d, 0x1a);
+pub const RAIL: Color32 = Color32::from_rgb(0x05, 0x09, 0x14);
+pub const FACE: Color32 = Color32::from_rgb(0x0d, 0x15, 0x25);
+pub const GROUND: Color32 = Color32::from_rgb(0x0a, 0x10, 0x1e);
+pub const FACE_2: Color32 = Color32::from_rgb(0x10, 0x19, 0x2b);
+pub const FIELD: Color32 = Color32::from_rgb(0x0b, 0x12, 0x20);
+pub const CONTROL: Color32 = Color32::from_rgb(0x10, 0x19, 0x2b);
 
 pub const INK: Color32 = Color32::from_rgb(0xf3, 0xf6, 0xfd);
 pub const INK_2: Color32 = Color32::from_rgb(0xdf, 0xe5, 0xf4);
@@ -41,8 +41,8 @@ pub const OK: Color32 = Color32::from_rgb(0x2f, 0xbf, 0x71);
 
 /// Hairlines are the tokens' alpha over the canvas, resolved once here rather
 /// than blended per widget.
-pub const HAIR: Color32 = Color32::from_rgb(0x1d, 0x2d, 0x4f);
-pub const HAIR_2: Color32 = Color32::from_rgb(0x1b, 0x2a, 0x4a);
+pub const HAIR: Color32 = Color32::from_rgb(0x10, 0x19, 0x2b);
+pub const HAIR_2: Color32 = Color32::from_rgb(0x0e, 0x17, 0x28);
 
 
 /// Widget radii: the field and the button.
@@ -157,7 +157,7 @@ pub fn install(ctx: &egui::Context) {
         v.faint_bg_color = FACE;
         v.override_text_color = Some(INK_2);
         v.window_stroke = egui::Stroke::new(1.0, HAIR);
-        v.selection.bg_fill = Color32::from_rgb(0x1d, 0x2d, 0x4f);
+        v.selection.bg_fill = Color32::from_rgb(0x10, 0x19, 0x2b);
         v.selection.stroke = egui::Stroke::new(1.0, PERI_2);
         v.hyperlink_color = PERI_2;
 
