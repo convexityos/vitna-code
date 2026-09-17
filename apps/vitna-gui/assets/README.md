@@ -11,6 +11,11 @@ repository is the source of truth; nothing here is edited in place.
   renders it through the SVG loader at whatever size a call site asks for,
   which is the whole reason it ships as a vector: the same drawing measures
   0.98 ink-to-grey at 16px as a vector and 0.73 when downscaled from a raster.
+- `vitna-wordmark-sm.png` is `public/vitna-wordmark-v3-sm.png`, the 376 x 104
+  cut the site chrome renders at 20px tall. It is white ink on transparent
+  (BRAND.md: alpha derived from luminance, ink set flat), so the window tints
+  it with the ink token. The 2093 x 579 master is not shipped; the chrome does
+  not ship it either.
 - `icon.png` is `public/icon.png`, rasterised from that SVG upstream, used only
   for the OS window and taskbar icon, which the platform takes as a bitmap.
 
