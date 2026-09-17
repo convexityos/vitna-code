@@ -15,7 +15,7 @@ use crate::workspace::Head;
 impl App {
     pub(crate) fn composer(&mut self, ui: &mut egui::Ui, rect: Rect) {
         let col = column(rect);
-        let inner = Rect::from_min_max(col.min, egui::pos2(col.right(), rect.bottom() - 18.0));
+        let inner = Rect::from_min_max(col.min, egui::pos2(col.right(), rect.bottom()));
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
         ui.set_clip_rect(rect);
 
@@ -24,7 +24,7 @@ impl App {
 
         let ready = self.link.is_open() && !self.draft.trim().is_empty();
 
-        egui::Frame::default()
+        let field = egui::Frame::default()
             .fill(theme::FIELD)
             .stroke(Stroke::new(1.0, theme::HAIR))
             .corner_radius(CornerRadius::same(12))
@@ -67,7 +67,7 @@ impl App {
         // Beneath the field, in the open, the way Claude Code lays its base
         // row on the canvas rather than inside the box.
         ui.add_space(2.0);
-        ui.horizontal(|ui| {
+        let row = ui.horizontal(|ui| {
             // Attach, on the left, the way all three references place it.
             let (r, attach) =
                 ui.allocate_exact_size(Vec2::splat(26.0), egui::Sense::click());
@@ -109,8 +109,10 @@ impl App {
             });
         });
 
-        // What this frame actually used, for the stage to hand back next frame.
-        let want = ui.min_rect().height() + 18.0;
+        // What this frame used, for the stage to hand back next frame, with
+        // the same room under the base row as the field leaves above it.
+        let gap = row.response.rect.top() - field.response.rect.bottom();
+        let want = row.response.rect.bottom() - inner.top() + gap;
         if (want - self.composer_h).abs() > 0.5 {
             self.composer_h = want;
             ui.ctx().request_repaint();
