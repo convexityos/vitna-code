@@ -27,8 +27,8 @@ impl App {
         egui::Frame::default()
             .fill(theme::FIELD)
             .stroke(Stroke::new(1.0, theme::HAIR))
-            .corner_radius(CornerRadius::same(20))
-            .inner_margin(egui::Margin { left: 18, right: 14, top: 14, bottom: 12 })
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(egui::Margin { left: 16, right: 10, top: 10, bottom: 10 })
             .show(&mut ui, |ui| {
                 ui.horizontal_top(|ui| {
                     // The cap's width is reserved whether or not it shows, so
@@ -37,7 +37,7 @@ impl App {
                     let empty = self.draft.is_empty();
                     ui.add(
                         egui::TextEdit::multiline(&mut self.draft)
-                            .desired_rows(2)
+                            .desired_rows(1)
                             .desired_width(width)
                             .frame(egui::Frame::default())
                             // What you type is a paragraph, and so is the prompt
@@ -61,50 +61,52 @@ impl App {
                         keycap(ui);
                     }
                 });
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    // Attach, on the left, the way all three references place it.
-                    let (r, attach) =
-                        ui.allocate_exact_size(Vec2::splat(30.0), egui::Sense::click());
-                    if attach.hovered() {
-                        ui.painter().circle_filled(r.center(), 15.0, theme::FACE);
-                    }
-                    icons::plus(ui.painter(), r.center(), theme::MUTE);
-                    attach.on_hover_text("Name a file with @, or attach one. Both need the daemon.");
-
-                    ui.add_space(2.0);
-                    self.mode_picker(ui);
-
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let (r, send) =
-                            ui.allocate_exact_size(Vec2::splat(30.0), egui::Sense::click());
-                        if ready {
-                            ui.painter().circle_filled(r.center(), 14.0, theme::PERI);
-                            icons::arrow_up(ui.painter(), r.center(), theme::CANVAS);
-                        } else {
-                            // Nothing to send yet: an empty ring, the resting
-                            // state Claude Code draws.
-                            ui.painter().circle_stroke(
-                                r.center(),
-                                8.5,
-                                Stroke::new(1.5, theme::FAINTER),
-                            );
-                        }
-                        let hint = if !self.link.is_open() {
-                            "Nothing to send to: the daemon is not running."
-                        } else if self.draft.trim().is_empty() {
-                            "Enter sends once there is something to send."
-                        } else {
-                            "Send (Enter)"
-                        };
-                        send.on_hover_text(hint);
-
-                        ui.add_space(2.0);
-                        self.model_picker(ui);
-                    });
-                });
             });
+
+        // Beneath the field, in the open, the way Claude Code lays its base
+        // row on the canvas rather than inside the box.
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            // Attach, on the left, the way all three references place it.
+            let (r, attach) =
+                ui.allocate_exact_size(Vec2::splat(30.0), egui::Sense::click());
+            if attach.hovered() {
+                ui.painter().circle_filled(r.center(), 15.0, theme::FACE);
+            }
+            icons::plus(ui.painter(), r.center(), theme::MUTE);
+            attach.on_hover_text("Name a file with @, or attach one. Both need the daemon.");
+
+            ui.add_space(2.0);
+            self.mode_picker(ui);
+
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let (r, send) =
+                    ui.allocate_exact_size(Vec2::splat(30.0), egui::Sense::click());
+                if ready {
+                    ui.painter().circle_filled(r.center(), 14.0, theme::PERI);
+                    icons::arrow_up(ui.painter(), r.center(), theme::CANVAS);
+                } else {
+                    // Nothing to send yet: an empty ring, the resting
+                    // state Claude Code draws.
+                    ui.painter().circle_stroke(
+                        r.center(),
+                        8.5,
+                        Stroke::new(1.5, theme::FAINTER),
+                    );
+                }
+                let hint = if !self.link.is_open() {
+                    "Nothing to send to: the daemon is not running."
+                } else if self.draft.trim().is_empty() {
+                    "Enter sends once there is something to send."
+                } else {
+                    "Send (Enter)"
+                };
+                send.on_hover_text(hint);
+
+                ui.add_space(2.0);
+                self.model_picker(ui);
+            });
+        });
     }
 
     /// The chips above the field, the way Claude Code states a turn's setup:
@@ -239,10 +241,10 @@ impl App {
             icons::inline(ui, 16.0, theme::FAINTER, icons::search);
             ui.add(
                 egui::TextEdit::singleline(&mut self.model_query)
-                    .desired_width(f32::INFINITY)
-                    .frame(egui::Frame::default())
-                    .font(theme::prose(12.5))
-                    .hint_text(RichText::new("Search models").font(theme::prose(12.5)).color(theme::FAINTER)),
+            .desired_width(f32::INFINITY)
+            .frame(egui::Frame::default())
+            .font(theme::prose(12.5))
+            .hint_text(RichText::new("Search models").font(theme::prose(12.5)).color(theme::FAINTER)),
             );
         });
         let (rule, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), egui::Sense::hover());

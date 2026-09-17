@@ -9,7 +9,7 @@ use crate::theme;
 use crate::workspace;
 
 /// The centred column every surface in the main area shares.
-pub(crate) const COLUMN: f32 = 720.0;
+pub(crate) const COLUMN: f32 = 800.0;
 
 pub(crate) fn column(rect: Rect) -> Rect {
     let w = COLUMN.min(rect.width() - 64.0);
@@ -18,7 +18,17 @@ pub(crate) fn column(rect: Rect) -> Rect {
 
 impl App {
     pub(crate) fn stage(&mut self, ui: &mut egui::Ui, rect: Rect) {
-        let composer_h = 178.0;
+        // The composer is as tall as its text: chips, a field that wraps what
+        // is typed, the base row, and the margins around them.
+        let wrap = column(rect).width() - 16.0 - 10.0 - 40.0 - 2.0;
+        let text = if self.draft.is_empty() { "Ask anything".to_string() } else { self.draft.clone() };
+        let text_h = ui
+            .painter()
+            .layout(text, theme::prose(15.0), theme::INK, wrap)
+            .size()
+            .y
+            .clamp(20.0, 220.0);
+        let composer_h = 120.0 + text_h;
         let body = Rect::from_min_max(rect.min, egui::pos2(rect.right(), rect.bottom() - composer_h));
         let composer_rect = Rect::from_min_max(egui::pos2(rect.left(), body.bottom()), rect.max);
 
