@@ -1,6 +1,6 @@
 # Vitna Code Implementation Status
 
-- Status: Phase 1 Complete (Durable Vertical Slice Verified)
+- Status: Phase 2 Complete (Competitive Solo-Agent Alpha Verified)
 - Date: 2026-09-16
 - Tracking Mode: Evidence-backed milestones (no percentage estimates)
 
@@ -12,10 +12,24 @@
 | **Phase 0B** | Protocol Envelope, Event Store, Runner Journal, Receipt Trust Model | **COMPLETE** | See `docs/PHASE_0B_GATE_REPORT.md` |
 | **Phase 0C** | Platform Proof: Fake Provider & Runner, Hostile Repos, Hardware CI | **COMPLETE** | See `docs/PHASE_0C_GATE_REPORT.md` |
 | **Phase 1** | Durable Vertical Slice (CLI, TUI, Daemon, Guarded Runner, Local Receipt v0) | **COMPLETE** | See `docs/PHASE_1_GATE_REPORT.md` |
-| **Phase 2** | Competitive Solo-Agent Alpha (OpenAI/Anthropic adapters, Git broker, inspect/build) | READY TO START | Exit criteria for Phase 1 certified |
-| **Phase 3** | Trustworthy Solo-Agent Beta (Strong sandbox, MCP, keychain secrets, Playwright) | NOT STARTED | Blocked on Phase 2 exit |
+| **Phase 2** | Competitive Solo-Agent Alpha (OpenAI/Anthropic adapters, Git broker, inspect/build) | **COMPLETE** | See `docs/PHASE_2_GATE_REPORT.md` |
+| **Phase 3** | Trustworthy Solo-Agent Beta (Strong sandbox, MCP, keychain secrets, Playwright) | READY TO START | Exit criteria for Phase 2 certified |
 | **Phase 4** | Durable Multi-Agent Beta (DAG scheduler, per-agent clones, merge queue) | NOT STARTED | Blocked on Phase 3 exit |
 | **Phase 5** | V1 Hardening and Release (Packaging, signed installers, SBOM, public benchmarks) | NOT STARTED | Blocked on Phase 4 exit |
+
+## Phase 2 Deliverables Ledger
+
+| Deliverable | Target Location | Verification Method | Status |
+|---|---|---|---|
+| Anthropic Messages Adapter | `crates/providers/src/anthropic.rs` | Messages API payload builder, SSE parsing, and prompt caching headers tested | Verified |
+| OpenAI Chat Completions Adapter | `crates/providers/src/openai.rs` | Chat Completions payload builder, SSE delta parser, and tool calling tested | Verified |
+| Customer-Held Credential Resolver | `crates/providers/src/credentials.rs` | Local environment resolution (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) and key masking | Verified |
+| Disposable Agent Workspaces | `crates/git-workspaces/src/workspace.rs` | Isolated worktree/branch creation, base commit detection, and safe cleanup tested | Verified |
+| Git Broker & Preimage Validation | `crates/git-broker/src/broker.rs` | Preimage/postimage tracking, concurrent edit conflict detection, and 3-way merge | Verified |
+| Advanced Repository Tools | `crates/tools/` (`search_code.rs`, `git_status.rs`, `apply_patch.rs`) | Fast code search, repository status, and structured patch application tested | Verified |
+| Provider Streaming Tests | `crates/providers/tests/provider_streaming_test.rs` | Golden stream replay and SSE tool call reconstruction tested | Verified |
+| Git Broker Multi-File Tests | `crates/git-broker/tests/git_broker_test.rs` | Multi-file changeset creation, preimage validation, and primary checkout merge | Verified |
+| Phase 2 Gate Report | `docs/PHASE_2_GATE_REPORT.md` | Formal audit certifying Phase 2 deliverables and authorizing Phase 3 progression | Verified |
 
 ## Phase 1 Deliverables Ledger
 

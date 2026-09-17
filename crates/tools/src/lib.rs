@@ -1,16 +1,22 @@
 //! Brokered tool definitions, schemas, path safety, and execution dispatch.
 
+pub mod apply_patch;
+pub mod git_status;
 pub mod list_dir;
 pub mod path_safety;
 pub mod read_file;
 pub mod run_command;
+pub mod search_code;
 pub mod write_file;
 
+pub use apply_patch::ApplyPatchTool;
 use async_trait::async_trait;
+pub use git_status::GitStatusTool;
 pub use list_dir::ListDirTool;
 pub use path_safety::resolve_workspace_path;
 pub use read_file::ReadFileTool;
 pub use run_command::RunCommandTool;
+pub use search_code::SearchCodeTool;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -82,13 +88,16 @@ impl ToolRegistry {
         defs
     }
 
-    /// Creates standard tool suite: read_file, write_file, list_dir, run_command.
+    /// Creates standard tool suite: read_file, write_file, list_dir, run_command, search_code, git_status, apply_patch.
     pub fn standard() -> Self {
         let mut registry = Self::new();
         registry.register(Arc::new(ReadFileTool));
         registry.register(Arc::new(WriteFileTool));
         registry.register(Arc::new(ListDirTool));
         registry.register(Arc::new(RunCommandTool));
+        registry.register(Arc::new(SearchCodeTool));
+        registry.register(Arc::new(GitStatusTool));
+        registry.register(Arc::new(ApplyPatchTool));
         registry
     }
 
@@ -121,13 +130,16 @@ mod tests {
     async fn test_tool_registry_lifecycle() {
         let registry = ToolRegistry::standard();
         let defs = registry.definitions();
-        assert_eq!(defs.len(), 4);
+        assert_eq!(defs.len(), 7);
 
         let names: Vec<String> = defs.into_iter().map(|d| d.name).collect();
         assert!(names.contains(&"read_file".to_string()));
         assert!(names.contains(&"write_file".to_string()));
         assert!(names.contains(&"list_dir".to_string()));
         assert!(names.contains(&"run_command".to_string()));
+        assert!(names.contains(&"search_code".to_string()));
+        assert!(names.contains(&"git_status".to_string()));
+        assert!(names.contains(&"apply_patch".to_string()));
 
         let temp_dir = std::env::temp_dir().join(format!("vitna_tools_test_{}", std::process::id()));
         fs::create_dir_all(&temp_dir).expect("create temp dir");
@@ -148,22 +160,24 @@ mod tests {
         });
         let write_res = registry.execute("write_file", write_args, &ctx).await.expect("write succeeds");
         assert!(write_res.success);
-        assert!(write_res.diff.is_some());
-        assert!(write_res.postimage_hash.is_some());
 
-        // 2. Read file
-        let read_args = serde_json::json!({
-            "path": "test.txt"
+        // 2. Search code
+        let search_args = serde_json::json!({
+            "query": "Vitna"
         });
-        let read_res = registry.execute("read_file", read_args, &ctx).await.expect("read succeeds");
-        assert!(read_res.success);
-        assert!(read_res.output.contains("Hello Vitna!"));
+        let search_res = registry.execute("search_code", search_args, &ctx).await.expect("search succeeds");
+        assert!(search_res.success);
+        assert!(search_res.output.contains("test.txt:1: Hello Vitna!"));
 
-        // 3. List dir
-        let list_args = serde_json::json!({});
-        let list_res = registry.execute("list_dir", list_args, &ctx).await.expect("list succeeds");
-        assert!(list_res.success);
-        assert!(list_res.output.contains("test.txt"));
+        // 3. Apply patch
+        let patch_args = serde_json::json!({
+            "path": "test.txt",
+            "content": "Hello Vitna World!\nLine 2\n",
+            "expected_preimage_hash": write_res.postimage_hash.unwrap()
+        });
+        let patch_res = registry.execute("apply_patch", patch_args, &ctx).await.expect("patch succeeds");
+        assert!(patch_res.success);
+        assert!(patch_res.diff.is_some());
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

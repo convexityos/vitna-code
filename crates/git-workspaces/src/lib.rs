@@ -1,3 +1,5 @@
-﻿//! Disposable agent workspaces and snapshot recreation.
+//! Disposable agent workspaces and isolated checkout management.
 
-pub struct AgentWorkspace;
+pub mod workspace;
+
+pub use workspace::{AgentWorkspace, AgentWorkspaceManager};
