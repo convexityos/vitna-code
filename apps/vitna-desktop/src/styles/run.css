@@ -1,0 +1,478 @@
+/* The transcript. One column, a glyph gutter down its left, mono for what the
+   machine reports and the sans for what a person or the model says at length.
+   The gutter is the terminal's signature and every entry hangs off it. */
+
+.transcript {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.transcript-scroll {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.transcript-column {
+  display: grid;
+  gap: 20px;
+  width: min(100%, var(--column));
+  margin: 0 auto;
+  padding: 28px 28px 32px;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  color: var(--ink-2);
+}
+
+/* Grid rows keep min-width: auto, so one long unbreakable line inside a row
+   (a diff, a path) would push the whole entry past the column. */
+.transcript-column > li {
+  min-width: 0;
+}
+
+.gutter {
+  display: inline-block;
+  flex: none;
+  width: 22px;
+  color: var(--mute);
+  text-align: left;
+  user-select: none;
+}
+
+.t-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  min-width: 0;
+}
+
+.t-line > :last-child {
+  min-width: 0;
+  flex: 1;
+}
+
+/* ---- run rule ---------------------------------------------------------------- */
+
+.t-rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  color: var(--fainter);
+  font-size: var(--fs-meta);
+}
+
+.t-rule::before {
+  content: '';
+  width: 22px;
+  height: 1px;
+  background: var(--hair-2);
+}
+
+.t-rule::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--hair-3);
+}
+
+/* ---- you ----------------------------------------------------------------------- */
+
+.t-you {
+  display: flex;
+  align-items: flex-start;
+  padding: 14px 18px 14px 14px;
+  border-radius: var(--r);
+  background: var(--face);
+}
+
+.t-you .gutter {
+  width: 22px;
+  font-weight: 600;
+}
+
+.t-you-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.t-you-text {
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 1.02rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+/* ---- the model ------------------------------------------------------------------ */
+
+.t-model .gutter {
+  color: var(--mute);
+  font-size: 0.7rem;
+  line-height: 1.6rem;
+}
+
+.prose {
+  max-width: 68ch;
+  color: var(--ink-2);
+  font-family: var(--sans);
+  font-size: 1rem;
+  line-height: 1.62;
+  white-space: pre-wrap;
+  /* A long identifier in a sentence wraps rather than leaving the column. */
+  overflow-wrap: anywhere;
+}
+
+.prose code {
+  font-size: 0.82em;
+}
+
+/* The one continuous motion in the window: a block caret that says text is
+   arriving. It rests solid under prefers-reduced-motion. */
+.caret {
+  display: inline-block;
+  width: 0.55em;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -0.2em;
+  background: var(--peri-2);
+  animation: caret-blink 1s steps(2, jump-none) infinite;
+}
+
+@keyframes caret-blink {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .caret {
+    animation: none;
+  }
+}
+
+.t-reasoning p,
+.reasoning > summary {
+  color: var(--faint);
+  font-family: var(--sans);
+  font-size: var(--fs-small);
+  line-height: 1.5;
+}
+
+.reasoning > summary {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.reasoning > summary::-webkit-details-marker {
+  display: none;
+}
+
+.reasoning > summary::before {
+  display: none;
+}
+
+.reasoning > summary:hover {
+  color: var(--mute);
+}
+
+.reasoning[open] > summary {
+  white-space: normal;
+  color: var(--fainter);
+}
+
+.reasoning[open] > summary + p {
+  margin-top: 4px;
+  color: var(--mute);
+}
+
+.t-child p:first-child {
+  font-family: var(--sans);
+  font-size: var(--fs-small);
+}
+
+/* ---- notes and diagnostics ------------------------------------------------------- */
+
+.t-diag p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.t-diag-text {
+  color: var(--ink-2);
+}
+
+.t-diag-code {
+  font-size: var(--fs-meta);
+}
+
+.t-note {
+  color: var(--mute);
+}
+
+.t-working {
+  color: var(--ink-2);
+}
+
+/* ---- plan ------------------------------------------------------------------------ */
+
+.plan {
+  display: grid;
+  gap: 2px;
+}
+
+.plan-step {
+  display: grid;
+  grid-template-columns: 18px 26px minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 8px;
+  color: var(--faint);
+}
+
+.plan-step[data-state='done'] {
+  color: var(--faint);
+}
+
+.plan-step[data-state='done'] .plan-label {
+  text-decoration: line-through;
+  text-decoration-color: var(--hair);
+}
+
+.plan-step[data-state='active'],
+.plan-step[data-state='waiting'] {
+  color: var(--ink);
+}
+
+.plan-step[data-state='active'] .plan-glyph {
+  color: var(--peri-2);
+}
+
+.plan-step[data-state='waiting'] .plan-glyph,
+.plan-wait {
+  color: var(--rust);
+}
+
+.plan-glyph {
+  text-align: center;
+}
+
+.plan-folio {
+  color: var(--fainter);
+}
+
+.plan-step[data-state='active'] .plan-folio,
+.plan-step[data-state='waiting'] .plan-folio {
+  color: var(--faint);
+}
+
+/* ---- tools ------------------------------------------------------------------------ */
+
+.tool {
+  display: grid;
+  gap: 4px;
+}
+
+/* Same rule one level down: the row's own items must shrink too. */
+.tool > * {
+  min-width: 0;
+}
+
+.tool-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-line .gutter {
+  flex: none;
+  margin-right: -8px;
+  font-size: 0.7rem;
+}
+
+.tool-line:hover .tool-verb,
+.tool-line:focus-visible .tool-verb {
+  color: var(--peri-3);
+}
+
+.tool-verb {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.tool-target {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-effect {
+  flex: none;
+  color: var(--fainter);
+}
+
+.tool-status {
+  flex: none;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.tool-chevron {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  align-self: center;
+  color: var(--fainter);
+  opacity: 0;
+  transition:
+    transform var(--t-fast) var(--ease),
+    opacity var(--t-fast) var(--ease);
+}
+
+.tool-line:hover .tool-chevron,
+.tool-line:focus-visible .tool-chevron,
+.tool-chevron.is-open {
+  opacity: 1;
+}
+
+.tool-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.tool-under {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.tool-under .gutter {
+  flex: none;
+  padding-left: 2px;
+}
+
+.tool-under > :last-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.tool-summary {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--faint);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-summary:hover .tool-first {
+  color: var(--ink-2);
+}
+
+.tool-first {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.tool-detail {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 4px;
+}
+
+.tool-pre {
+  max-height: 380px;
+  overflow: auto;
+  padding: 10px 14px;
+  border-radius: var(--r-sm);
+  background: var(--field);
+  color: var(--mute);
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.stream-err {
+  color: var(--rust-2);
+}
+
+.tool-args > summary {
+  padding: 0;
+  cursor: pointer;
+}
+
+.tool-args > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-args > summary::before {
+  content: '\25b8  ';
+}
+
+.tool-args[open] > summary::before {
+  content: '\25be  ';
+}
+
+.tool-args pre {
+  margin-top: 6px;
+}
+
+/* ---- the dock ------------------------------------------------------------------- */
+
+.dock {
+  padding: 10px 28px 18px;
+  background: var(--ground);
+}
+
+.dock-inner {
+  width: min(100%, calc(var(--column) - 56px));
+  margin: 0 auto;
+}
+
+@media (max-width: 720px) {
+  .transcript-column {
+    padding: 18px 14px 24px;
+  }
+
+  /* The wait tag drops under its label rather than squeezing it. */
+  .plan-step {
+    grid-template-columns: 18px 26px minmax(0, 1fr);
+  }
+
+  .plan-wait {
+    grid-column: 3;
+  }
+
+  .dock {
+    padding: 6px 14px 12px;
+  }
+
+  .tool-status {
+    display: none;
+  }
+}
