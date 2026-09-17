@@ -1,6 +1,6 @@
 //! The sidebar: work, listed by name.
 
-use eframe::egui::{self, Align, Color32, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Stroke, Vec2};
 
 use crate::app::App;
 use crate::icons;
@@ -33,24 +33,28 @@ impl App {
         ui.add_space(16.0);
 
         let linked = self.link.is_open();
-        let new_session = ui.add_enabled(
-            linked,
-            egui::Button::new(
-                RichText::new("New session")
-                    .font(theme::sans(13.5))
-                    .color(if linked { theme::INK } else { theme::MUTE }),
-            )
-            .fill(theme::FACE)
-            .stroke(Stroke::new(1.0, theme::HAIR_2))
-            .corner_radius(CornerRadius::same(8))
-            .min_size(Vec2::new(ui.available_width(), 34.0)),
+        let new_session =
+            ui.allocate_response(Vec2::new(ui.available_width(), 34.0), egui::Sense::click());
+        let r = new_session.rect;
+        ui.painter().rect_filled(
+            r,
+            CornerRadius::same(8),
+            if linked && new_session.hovered() { theme::FACE_2 } else { theme::FACE },
         );
-        // A plus drawn onto the button's left, so it is an icon and not a
-        // character the face may lack.
-        icons::plus(
-            ui.painter(),
-            egui::pos2(new_session.rect.left() + 16.0, new_session.rect.center().y),
-            if linked { theme::INK } else { theme::MUTE },
+        ui.painter().rect_stroke(
+            r,
+            CornerRadius::same(8),
+            Stroke::new(1.0, theme::HAIR_2),
+            egui::StrokeKind::Inside,
+        );
+        let tone = if linked { theme::INK } else { theme::MUTE };
+        icons::plus(ui.painter(), egui::pos2(r.left() + 16.0, r.center().y), tone);
+        ui.painter().text(
+            egui::pos2(r.left() + 32.0, r.center().y),
+            egui::Align2::LEFT_CENTER,
+            "New session",
+            theme::sans(13.5),
+            tone,
         );
         if !linked {
             new_session
@@ -145,7 +149,7 @@ fn row(ui: &mut egui::Ui, label: &str, meta: Option<&str>, enabled: bool, active
 }
 
 fn group(ui: &mut egui::Ui, title: &str) {
-    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+    ui.horizontal(|ui| {
         ui.add_space(10.0);
         ui.label(theme::eyebrow(ui, title));
     });
