@@ -77,6 +77,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # vitna-gui links a window, so the Linux legs need the X11, Wayland and
+      # GL development libraries. macOS and Windows carry theirs in the SDK.
+      - name: Install Linux windowing libraries
+        if: matrix.target.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
