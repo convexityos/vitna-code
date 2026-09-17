@@ -1,0 +1,154 @@
+/* The empty session: the mark, the composer, the workspace, the providers. */
+
+.empty-stage {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: clamp(40px, 15vh, 180px) 24px 0;
+}
+
+.wordmark {
+  margin: 0 0 clamp(26px, 5vh, 54px);
+  color: var(--wordmark);
+  font-family: var(--display);
+  font-size: clamp(64px, 10.5vw, 158px);
+  font-weight: 600;
+  line-height: 0.86;
+  letter-spacing: -0.065em;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.wordmark-gap {
+  display: inline-block;
+  width: 0.2em;
+}
+
+.empty-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(100%, 780px);
+}
+
+.empty-under {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+
+.empty-line {
+  margin-left: auto;
+}
+
+.no-daemon {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 20px 24px;
+  border-radius: var(--r-lg);
+  background: var(--face);
+  color: var(--mute);
+  font-size: var(--fs-small);
+}
+
+.no-daemon-title {
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 1.02rem;
+  font-weight: 500;
+}
+
+.no-daemon-sample {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.empty-foot {
+  margin-top: auto;
+  padding: 44px 0 22px;
+}
+
+.empty-foot-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--faint);
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+
+.empty-foot-link:hover {
+  color: var(--ink);
+}
+
+.empty-foot-link .icon {
+  width: 13px;
+  height: 13px;
+}
+
+/* ---- the workspace menu ------------------------------------------------------ */
+
+.workspace {
+  position: relative;
+}
+
+.workspace-pill {
+  gap: 8px;
+  padding-left: 5px;
+  color: var(--mute);
+}
+
+.workspace-pill .icon {
+  width: 13px;
+  height: 13px;
+  color: var(--fainter);
+}
+
+.workspace-branch {
+  padding-left: 8px;
+  border-left: 1px solid var(--hair);
+  color: var(--faint);
+}
+
+.workspace-pill.is-empty {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fainter);
+  font-size: var(--fs-small);
+}
+
+.workspace-mark {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: var(--control);
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: var(--fs-mark);
+  font-weight: 600;
+}
+
+.popover-row .workspace-mark {
+  width: 22px;
+  height: 22px;
+}
+
+@media (max-width: 720px) {
+  .empty-line {
+    display: none;
+  }
+}
