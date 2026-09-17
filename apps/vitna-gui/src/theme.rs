@@ -18,18 +18,18 @@
 use eframe::egui::{self, Color32, FontFamily, FontId, TextStyle};
 
 pub const CANVAS: Color32 = Color32::from_rgb(0x0a, 0x0d, 0x18);
-pub const RAIL: Color32 = Color32::from_rgb(0x0b, 0x10, 0x20);
-pub const FACE: Color32 = Color32::from_rgb(0x17, 0x1d, 0x31);
+pub const RAIL: Color32 = Color32::from_rgb(0x06, 0x08, 0x0f);
+pub const FACE: Color32 = Color32::from_rgb(0x1e, 0x25, 0x41);
 pub const GROUND: Color32 = Color32::from_rgb(0x10, 0x15, 0x24);
-pub const FACE_2: Color32 = Color32::from_rgb(0x1c, 0x23, 0x39);
-pub const FIELD: Color32 = Color32::from_rgb(0x0c, 0x10, 0x20);
-pub const CONTROL: Color32 = Color32::from_rgb(0x23, 0x2b, 0x45);
+pub const FACE_2: Color32 = Color32::from_rgb(0x28, 0x30, 0x52);
+pub const FIELD: Color32 = Color32::from_rgb(0x13, 0x1a, 0x2c);
+pub const CONTROL: Color32 = Color32::from_rgb(0x2c, 0x35, 0x57);
 
 pub const INK: Color32 = Color32::from_rgb(0xf3, 0xf6, 0xfd);
 pub const INK_2: Color32 = Color32::from_rgb(0xdf, 0xe5, 0xf4);
-pub const MUTE: Color32 = Color32::from_rgb(0xb4, 0xbc, 0xd0);
-pub const FAINT: Color32 = Color32::from_rgb(0x96, 0x9f, 0xb8);
-pub const FAINTER: Color32 = Color32::from_rgb(0x7e, 0x88, 0xa1);
+pub const MUTE: Color32 = Color32::from_rgb(0xc9, 0xd0, 0xe2);
+pub const FAINT: Color32 = Color32::from_rgb(0xa9, 0xb2, 0xca);
+pub const FAINTER: Color32 = Color32::from_rgb(0x8f, 0x99, 0xb4);
 
 pub const PERI: Color32 = Color32::from_rgb(0x71, 0x88, 0xff);
 pub const PERI_2: Color32 = Color32::from_rgb(0x8e, 0xa2, 0xff);
@@ -38,8 +38,8 @@ pub const OK: Color32 = Color32::from_rgb(0x2f, 0xbf, 0x71);
 
 /// Hairlines are the tokens' alpha over the canvas, resolved once here rather
 /// than blended per widget.
-pub const HAIR: Color32 = Color32::from_rgb(0x25, 0x2a, 0x38);
-pub const HAIR_2: Color32 = Color32::from_rgb(0x1a, 0x1f, 0x2c);
+pub const HAIR: Color32 = Color32::from_rgb(0x32, 0x3a, 0x50);
+pub const HAIR_2: Color32 = Color32::from_rgb(0x26, 0x2d, 0x42);
 
 
 /// Widget radii: the field and the button.
