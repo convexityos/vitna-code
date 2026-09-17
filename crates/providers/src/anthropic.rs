@@ -22,12 +22,55 @@ impl AnthropicProvider {
 
     /// Formats request payload adhering to Anthropic Messages API schema.
     pub fn format_request_payload(&self, req: &ProviderRequest) -> serde_json::Value {
-        let mut messages = Vec::new();
+        let mut messages: Vec<serde_json::Value> = Vec::new();
+        let mut pending_results: Vec<serde_json::Value> = Vec::new();
+
+        // Tool results are `user` turns here, and the API requires strictly
+        // alternating roles, so every result answering one assistant turn has
+        // to arrive as blocks of ONE user message. Flushing on the next
+        // non-result message is what keeps two parallel tool calls from
+        // becoming two consecutive user turns, which the API rejects.
         for msg in &req.messages {
-            messages.push(json!({
-                "role": msg.role,
-                "content": msg.content
-            }));
+            if let Some(call_id) = &msg.tool_call_id {
+                pending_results.push(json!({
+                    "type": "tool_result",
+                    "tool_use_id": call_id,
+                    "content": msg.content
+                }));
+                continue;
+            }
+
+            if !pending_results.is_empty() {
+                messages.push(json!({
+                    "role": "user",
+                    "content": std::mem::take(&mut pending_results)
+                }));
+            }
+
+            if msg.tool_calls.is_empty() {
+                messages.push(json!({
+                    "role": msg.role,
+                    "content": msg.content
+                }));
+            } else {
+                let mut blocks: Vec<serde_json::Value> = Vec::new();
+                if !msg.content.is_empty() {
+                    blocks.push(json!({ "type": "text", "text": msg.content }));
+                }
+                for call in &msg.tool_calls {
+                    blocks.push(json!({
+                        "type": "tool_use",
+                        "id": call.id,
+                        "name": call.name,
+                        "input": call.arguments
+                    }));
+                }
+                messages.push(json!({ "role": msg.role, "content": blocks }));
+            }
+        }
+
+        if !pending_results.is_empty() {
+            messages.push(json!({ "role": "user", "content": pending_results }));
         }
 
         let mut payload = json!({
@@ -141,7 +184,13 @@ impl Provider for AnthropicProvider {
     }
 
     async fn complete(&self, req: &ProviderRequest) -> Result<ProviderResponse, String> {
-        let payload = self.format_request_payload(req);
+        let mut payload = self.format_request_payload(req);
+        // format_request_payload asks for SSE, which is right for the streaming
+        // path and fatal here: this function parses one JSON body, and an
+        // event-stream response fails at resp.json(). OpenAI's adapter already
+        // overrode it; this one did not, so its non-streaming path could never
+        // have returned a value. Nothing had ever called it.
+        payload["stream"] = json!(false);
         let endpoint = self.default_endpoint();
 
         let client = reqwest::Client::new();
