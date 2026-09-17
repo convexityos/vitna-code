@@ -71,6 +71,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Native desktop UI
 eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui_extras = { version = "0.36", default-features = false, features = ["svg", "image"] }
+# The Edit menu's Paste reads the clipboard; egui-winit already carries this crate.
+arboard = { version = "3", default-features = false }
 
 # CLI Parsing
 clap = { version = "4.5", features = ["derive", "env"] }

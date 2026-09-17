@@ -104,3 +104,65 @@ pub fn enter(p: &egui::Painter, c: Pos2, tone: Color32) {
     p.line_segment([c + Vec2::new(-3.5, 1.0), c + Vec2::new(-1.0, -1.5)], st);
     p.line_segment([c + Vec2::new(-3.5, 1.0), c + Vec2::new(-1.0, 3.5)], st);
 }
+
+/// Three lines: the menu.
+pub fn hamburger(p: &egui::Painter, c: Pos2, tone: Color32) {
+    let st = s(tone);
+    for dy in [-4.5, 0.0, 4.5] {
+        p.line_segment([c + Vec2::new(-6.0, dy), c + Vec2::new(6.0, dy)], st);
+    }
+}
+
+/// A window with its sidebar: the toggle.
+pub fn sidebar(p: &egui::Painter, c: Pos2, tone: Color32) {
+    let st = s(tone);
+    let r = Rect::from_center_size(c, Vec2::new(14.0, 11.0));
+    p.rect_stroke(r, 2.0, st, egui::StrokeKind::Middle);
+    p.line_segment([Pos2::new(r.left() + 5.0, r.top()), Pos2::new(r.left() + 5.0, r.bottom())], st);
+}
+
+/// A key cap row: shortcuts.
+pub fn keyboard(p: &egui::Painter, c: Pos2, tone: Color32) {
+    let st = s(tone);
+    let r = Rect::from_center_size(c, Vec2::new(14.0, 9.0));
+    p.rect_stroke(r, 2.0, st, egui::StrokeKind::Middle);
+    for dx in [-4.0, 0.0, 4.0] {
+        p.circle_filled(c + Vec2::new(dx, -1.5), 0.9, tone);
+    }
+    p.line_segment([c + Vec2::new(-3.0, 2.0), c + Vec2::new(3.0, 2.0)], st);
+}
+
+/// Two stacked units: the daemon.
+pub fn server(p: &egui::Painter, c: Pos2, tone: Color32) {
+    let st = s(tone);
+    for dy in [-3.0, 3.0] {
+        let r = Rect::from_center_size(c + Vec2::new(0.0, dy), Vec2::new(14.0, 5.0));
+        p.rect_stroke(r, 1.5, st, egui::StrokeKind::Middle);
+        p.circle_filled(c + Vec2::new(-4.5, dy), 0.9, tone);
+    }
+}
+
+/// Four cells: providers.
+pub fn grid(p: &egui::Painter, c: Pos2, tone: Color32) {
+    let st = s(tone);
+    for (dx, dy) in [(-3.5, -3.5), (3.5, -3.5), (-3.5, 3.5), (3.5, 3.5)] {
+        let r = Rect::from_center_size(c + Vec2::new(dx, dy), Vec2::splat(5.0));
+        p.rect_stroke(r, 1.0, st, egui::StrokeKind::Middle);
+    }
+}
+
+/// A four-point star: models.
+pub fn sparkle(p: &egui::Painter, c: Pos2, tone: Color32) {
+    let st = s(tone);
+    p.line_segment([c + Vec2::new(0.0, -6.5), c + Vec2::new(0.0, 6.5)], st);
+    p.line_segment([c + Vec2::new(-6.5, 0.0), c + Vec2::new(6.5, 0.0)], st);
+    p.line_segment([c + Vec2::new(-3.0, -3.0), c + Vec2::new(3.0, 3.0)], Stroke::new(1.0, tone));
+    p.line_segment([c + Vec2::new(3.0, -3.0), c + Vec2::new(-3.0, 3.0)], Stroke::new(1.0, tone));
+}
+
+/// A cross: close.
+pub fn close(p: &egui::Painter, c: Pos2, tone: Color32) {
+    let st = s(tone);
+    p.line_segment([c + Vec2::new(-4.5, -4.5), c + Vec2::new(4.5, 4.5)], st);
+    p.line_segment([c + Vec2::new(4.5, -4.5), c + Vec2::new(-4.5, 4.5)], st);
+}

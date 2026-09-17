@@ -18,17 +18,9 @@ pub(crate) fn column(rect: Rect) -> Rect {
 
 impl App {
     pub(crate) fn stage(&mut self, ui: &mut egui::Ui, rect: Rect) {
-        // The composer is as tall as its text: chips, a field that wraps what
-        // is typed, the base row, and the margins around them.
-        let wrap = column(rect).width() - 16.0 - 10.0 - 40.0 - 2.0;
-        let text = if self.draft.is_empty() { "Ask anything".to_string() } else { self.draft.clone() };
-        let text_h = ui
-            .painter()
-            .layout(text, theme::prose(15.0), theme::INK, wrap)
-            .size()
-            .y
-            .clamp(20.0, 220.0);
-        let composer_h = 120.0 + text_h;
+        // As tall as the composer measured itself last frame; it grows with
+        // the text and asks for a repaint when it does.
+        let composer_h = self.composer_h;
         let body = Rect::from_min_max(rect.min, egui::pos2(rect.right(), rect.bottom() - composer_h));
         let composer_rect = Rect::from_min_max(egui::pos2(rect.left(), body.bottom()), rect.max);
 
@@ -39,19 +31,19 @@ impl App {
 
         // The start state sits in the upper third, the way Codex centres
         // "Let's build": enough space above it to feel like a place, not a form.
-        ui2.add_space((body.height() * 0.24).max(40.0));
+        ui2.add_space((body.height() * 0.22).max(32.0));
 
         ui2.vertical_centered(|ui| {
-            ui.add(egui::Image::new(crate::brand::mark()).fit_to_exact_size(Vec2::splat(44.0)));
-            ui.add_space(14.0);
-            ui.label(RichText::new("Let's build").font(theme::display(30.0)).color(theme::INK));
+            ui.add(egui::Image::new(crate::brand::mark()).fit_to_exact_size(Vec2::splat(40.0)));
+            ui.add_space(10.0);
+            ui.label(RichText::new("Let's build").font(theme::display(28.0)).color(theme::INK));
         });
 
-        ui2.add_space(34.0);
+        ui2.add_space(22.0);
         self.facts_line(&mut ui2);
 
         if let Link::Absent { .. } = &self.link {
-            ui2.add_space(22.0);
+            ui2.add_space(14.0);
             ui2.vertical_centered(|ui| self.absent_line(ui));
         }
 

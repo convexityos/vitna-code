@@ -15,12 +15,12 @@ use crate::workspace::Head;
 impl App {
     pub(crate) fn composer(&mut self, ui: &mut egui::Ui, rect: Rect) {
         let col = column(rect);
-        let inner = Rect::from_min_max(col.min, egui::pos2(col.right(), rect.bottom() - 24.0));
+        let inner = Rect::from_min_max(col.min, egui::pos2(col.right(), rect.bottom() - 18.0));
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
         ui.set_clip_rect(rect);
 
         self.context_row(&mut ui);
-        ui.add_space(10.0);
+        ui.add_space(6.0);
 
         let ready = self.link.is_open() && !self.draft.trim().is_empty();
 
@@ -28,7 +28,7 @@ impl App {
             .fill(theme::FIELD)
             .stroke(Stroke::new(1.0, theme::HAIR))
             .corner_radius(CornerRadius::same(12))
-            .inner_margin(egui::Margin { left: 16, right: 10, top: 10, bottom: 10 })
+            .inner_margin(egui::Margin { left: 14, right: 8, top: 8, bottom: 8 })
             .show(&mut ui, |ui| {
                 ui.horizontal_top(|ui| {
                     // The cap's width is reserved whether or not it shows, so
@@ -37,6 +37,7 @@ impl App {
                     let empty = self.draft.is_empty();
                     ui.add(
                         egui::TextEdit::multiline(&mut self.draft)
+                            .id(crate::app::composer_id())
                             .desired_rows(1)
                             .desired_width(width)
                             .frame(egui::Frame::default())
@@ -65,13 +66,13 @@ impl App {
 
         // Beneath the field, in the open, the way Claude Code lays its base
         // row on the canvas rather than inside the box.
-        ui.add_space(6.0);
+        ui.add_space(2.0);
         ui.horizontal(|ui| {
             // Attach, on the left, the way all three references place it.
             let (r, attach) =
-                ui.allocate_exact_size(Vec2::splat(30.0), egui::Sense::click());
+                ui.allocate_exact_size(Vec2::splat(26.0), egui::Sense::click());
             if attach.hovered() {
-                ui.painter().circle_filled(r.center(), 15.0, theme::FACE);
+                ui.painter().circle_filled(r.center(), 13.0, theme::FACE);
             }
             icons::plus(ui.painter(), r.center(), theme::MUTE);
             attach.on_hover_text("Name a file with @, or attach one. Both need the daemon.");
@@ -81,16 +82,16 @@ impl App {
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let (r, send) =
-                    ui.allocate_exact_size(Vec2::splat(30.0), egui::Sense::click());
+                    ui.allocate_exact_size(Vec2::splat(26.0), egui::Sense::click());
                 if ready {
-                    ui.painter().circle_filled(r.center(), 14.0, theme::PERI);
+                    ui.painter().circle_filled(r.center(), 12.0, theme::PERI);
                     icons::arrow_up(ui.painter(), r.center(), theme::CANVAS);
                 } else {
                     // Nothing to send yet: an empty ring, the resting
                     // state Claude Code draws.
                     ui.painter().circle_stroke(
                         r.center(),
-                        8.5,
+                        8.0,
                         Stroke::new(1.5, theme::FAINTER),
                     );
                 }
@@ -107,6 +108,13 @@ impl App {
                 self.model_picker(ui);
             });
         });
+
+        // What this frame actually used, for the stage to hand back next frame.
+        let want = ui.min_rect().height() + 18.0;
+        if (want - self.composer_h).abs() > 0.5 {
+            self.composer_h = want;
+            ui.ctx().request_repaint();
+        }
     }
 
     /// The chips above the field, the way Claude Code states a turn's setup:
@@ -134,9 +142,9 @@ impl App {
             // this only states the preference.
             let on = self.placement == Placement::Worktree;
             let galley = ui.painter().layout_no_wrap("worktree".to_string(), theme::sans(12.5), theme::INK_2);
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 38.0, 26.0), egui::Sense::click());
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 34.0, 24.0), egui::Sense::click());
             chip_ground(ui, rect, resp.hovered());
-            let b = Rect::from_center_size(egui::pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(12.0));
+            let b = Rect::from_center_size(egui::pos2(rect.left() + 14.0, rect.center().y), Vec2::splat(12.0));
             if on {
                 ui.painter().rect_filled(b, CornerRadius::same(3), theme::PERI);
                 let st = Stroke::new(1.6, theme::CANVAS);
@@ -146,7 +154,7 @@ impl App {
             } else {
                 ui.painter().rect_stroke(b, CornerRadius::same(3), Stroke::new(1.2, theme::FAINT), egui::StrokeKind::Inside);
             }
-            ui.painter().galley(egui::pos2(rect.left() + 28.0, rect.center().y - galley.size().y / 2.0), galley, theme::INK_2);
+            ui.painter().galley(egui::pos2(rect.left() + 26.0, rect.center().y - galley.size().y / 2.0), galley, theme::INK_2);
             if resp.clicked() {
                 self.placement = if on { Placement::Local } else { Placement::Worktree };
             }
@@ -161,7 +169,7 @@ impl App {
     /// The mode, as a plain word that opens a two-row menu.
     fn mode_picker(&mut self, ui: &mut egui::Ui) {
         let galley = ui.painter().layout_no_wrap(self.mode.label().to_string(), theme::sans(13.0), theme::INK_2);
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(galley.size().x + 20.0, 28.0), egui::Sense::click());
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(galley.size().x + 20.0, 24.0), egui::Sense::click());
         if response.hovered() {
             ui.painter().rect_filled(rect, CornerRadius::same(7), theme::FACE);
         }
@@ -210,7 +218,7 @@ impl App {
         };
         let galley = ui.painter().layout_no_wrap(label, theme::sans(13.0), theme::INK_2);
         let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(galley.size().x + 40.0, 28.0), egui::Sense::click());
+            ui.allocate_exact_size(Vec2::new(galley.size().x + 40.0, 24.0), egui::Sense::click());
         if response.hovered() {
             ui.painter().rect_filled(rect, CornerRadius::same(7), theme::FACE);
         }
@@ -274,7 +282,7 @@ impl App {
                     ui.add_space(2.0);
                 }
                 let is_selected = self.model == Some(i);
-                let row = ui.allocate_response(Vec2::new(ui.available_width(), 28.0), egui::Sense::click());
+                let row = ui.allocate_response(Vec2::new(ui.available_width(), 26.0), egui::Sense::click());
                 let r = row.rect;
                 if row.hovered() {
                     ui.painter().rect_filled(r, CornerRadius::same(6), Color32::from_white_alpha(10));
@@ -352,23 +360,25 @@ fn thousands(n: u64) -> String {
 
 /// A provider's mark at `size`, centred on `c`: the licensed SVG when one
 /// exists, otherwise a monogram badge. The menu never invents a logo.
-fn provider_badge(ui: &mut egui::Ui, c: egui::Pos2, size: f32, provider_id: &str, provider_name: &str) {
+pub(crate) fn provider_badge(ui: &mut egui::Ui, c: egui::Pos2, size: f32, provider_id: &str, provider_name: &str) {
     let rect = egui::Rect::from_center_size(c, Vec2::splat(size));
     match crate::brand::provider_mark(provider_id) {
         Some(src) => {
-            ui.put(rect, egui::Image::new(src).fit_to_exact_size(Vec2::splat(size)).tint(theme::INK));
+            // paint_at, not put: put allocates the rect and drags the layout
+            // cursor to the badge's bottom, which folded the settings rows.
+            egui::Image::new(src).tint(theme::INK).paint_at(ui, rect);
         }
         None => {
             ui.painter().rect_filled(rect, CornerRadius::same(4), theme::CONTROL);
             let initial = provider_name.chars().next().unwrap_or('?').to_uppercase().to_string();
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initial, theme::display(size * 0.62), theme::INK);
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initial, theme::display(size * 0.74), theme::INK);
         }
     }
 }
 
 /// The return-key cap at the end of the empty field.
 fn keycap(ui: &mut egui::Ui) {
-    let (r, resp) = ui.allocate_exact_size(Vec2::new(26.0, 20.0), egui::Sense::hover());
+    let (r, resp) = ui.allocate_exact_size(Vec2::new(24.0, 18.0), egui::Sense::hover());
     let r = r.translate(Vec2::new(0.0, 1.0));
     ui.painter().rect_filled(r, CornerRadius::same(5), theme::FACE);
     ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
@@ -379,10 +389,10 @@ fn keycap(ui: &mut egui::Ui) {
 /// A chip: an icon and a word on a quiet ground.
 fn chip(ui: &mut egui::Ui, icon: fn(&egui::Painter, egui::Pos2, Color32), text: &str, tone: Color32, sense: egui::Sense) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(text.to_string(), theme::sans(12.5), tone);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 40.0, 26.0), sense);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 36.0, 24.0), sense);
     chip_ground(ui, rect, resp.hovered() && sense.senses_click());
-    icon(ui.painter(), egui::pos2(rect.left() + 16.0, rect.center().y), theme::FAINT);
-    ui.painter().galley(egui::pos2(rect.left() + 28.0, rect.center().y - galley.size().y / 2.0), galley, tone);
+    icon(ui.painter(), egui::pos2(rect.left() + 14.0, rect.center().y), theme::FAINT);
+    ui.painter().galley(egui::pos2(rect.left() + 26.0, rect.center().y - galley.size().y / 2.0), galley, tone);
     resp
 }
 

@@ -14,7 +14,11 @@ impl App {
             .vline(rect.right(), rect.y_range(), Stroke::new(1.0, theme::HAIR));
 
         let mut ui = ui.new_child(
-            egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(14.0, 16.0))),
+            // Below the menu strip, which app.rs draws over the top-left corner.
+            egui::UiBuilder::new().max_rect(Rect::from_min_max(
+                egui::pos2(rect.left() + 12.0, rect.top() + crate::menu::STRIP_H),
+                egui::pos2(rect.right() - 12.0, rect.bottom() - 12.0),
+            )),
         );
         ui.set_clip_rect(rect);
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
@@ -36,11 +40,11 @@ impl App {
                     .color(theme::INK),
             );
         });
-        ui.add_space(16.0);
+        ui.add_space(12.0);
 
         let linked = self.link.is_open();
         let new_session =
-            ui.allocate_response(Vec2::new(ui.available_width(), 34.0), egui::Sense::click());
+            ui.allocate_response(Vec2::new(ui.available_width(), 30.0), egui::Sense::click());
         let r = new_session.rect;
         ui.painter().rect_filled(
             r,
@@ -54,9 +58,9 @@ impl App {
             egui::StrokeKind::Inside,
         );
         let tone = if linked { theme::INK } else { theme::MUTE };
-        icons::plus(ui.painter(), egui::pos2(r.left() + 16.0, r.center().y), tone);
+        icons::plus(ui.painter(), egui::pos2(r.left() + 14.0, r.center().y), tone);
         ui.painter().text(
-            egui::pos2(r.left() + 32.0, r.center().y),
+            egui::pos2(r.left() + 30.0, r.center().y),
             egui::Align2::LEFT_CENTER,
             "New session",
             theme::sans(13.5),
@@ -67,7 +71,7 @@ impl App {
                 .on_hover_text("Sessions are opened by the daemon, and it is not running.");
         }
 
-        ui.add_space(6.0);
+        ui.add_space(4.0);
         let (ready, total) = self.providers_ready();
         row(
             &mut ui,
@@ -77,7 +81,7 @@ impl App {
             false,
         );
 
-        ui.add_space(22.0);
+        ui.add_space(16.0);
         group(&mut ui, "Sessions");
 
         // The workspace is the group header, the way every reference groups
@@ -90,7 +94,7 @@ impl App {
                     .color(theme::INK_2),
             );
         });
-        ui.add_space(4.0);
+        ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.add_space(22.0);
             ui.label(
@@ -105,7 +109,7 @@ impl App {
             Link::Open { .. } => (theme::OK, "Daemon connected"),
             Link::Absent { .. } => (theme::RUST, "Daemon not running"),
         };
-        let foot = egui::pos2(rect.left() + 20.0, rect.bottom() - 26.0);
+        let foot = egui::pos2(rect.left() + 18.0, rect.bottom() - 20.0);
         ui.painter().circle_filled(foot, 3.0, dot);
         ui.painter().text(
             foot + Vec2::new(12.0, 0.0),
@@ -115,7 +119,7 @@ impl App {
             theme::FAINT,
         );
         ui.painter().text(
-            egui::pos2(rect.right() - 16.0, rect.bottom() - 26.0),
+            egui::pos2(rect.right() - 14.0, rect.bottom() - 20.0),
             egui::Align2::RIGHT_CENTER,
             env!("CARGO_PKG_VERSION"),
             theme::mono(11.0),
@@ -126,7 +130,7 @@ impl App {
 
 /// A sidebar row: a label, an optional trailing meta, hover ground.
 fn row(ui: &mut egui::Ui, label: &str, meta: Option<&str>, enabled: bool, active: bool) -> egui::Response {
-    let response = ui.allocate_response(Vec2::new(ui.available_width(), 30.0), egui::Sense::click());
+    let response = ui.allocate_response(Vec2::new(ui.available_width(), 28.0), egui::Sense::click());
     let r = response.rect;
     if active || (enabled && response.hovered()) {
         ui.painter().rect_filled(
@@ -159,5 +163,5 @@ fn group(ui: &mut egui::Ui, title: &str) {
         ui.add_space(10.0);
         ui.label(theme::eyebrow(ui, title));
     });
-    ui.add_space(6.0);
+    ui.add_space(4.0);
 }
