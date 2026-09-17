@@ -75,6 +75,7 @@ vitna-protocol = { path = "crates/protocol" }
 vitna-store = { path = "crates/store" }
 vitna-policy = { path = "crates/policy" }
 vitna-receipts = { path = "crates/receipts" }
+vitna-receipt-verify = { path = "crates/vitna-receipt-verify" }
 vitna-sandbox = { path = "crates/vitna-sandbox" }
 vitna-runner = { path = "crates/vitna-runner" }
 vitna-context = { path = "crates/context" }
@@ -87,3 +88,4 @@ vitna-mcp = { path = "crates/mcp" }
 vitna-skills = { path = "crates/skills" }
 vitna-telemetry = { path = "crates/telemetry" }
 vitna-evals = { path = "crates/evals" }
+vitna-daemon = { path = "crates/daemon" }
