@@ -98,7 +98,8 @@ impl DaemonServer {
             Err(_) => return Vec::new(),
         };
         let mut list: Vec<SessionInfo> = sessions.values().cloned().collect();
-        list.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        // Newest session first.
+        list.sort_by_key(|s| std::cmp::Reverse(s.created_at_ms));
         list
     }
 
