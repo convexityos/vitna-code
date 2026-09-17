@@ -42,7 +42,10 @@ DECLARED in `protocol/vitna/protocol/v1/*.proto`:
   changed by any later key or click. "Approved" is printed only when the
   daemon reports the tool starting.
 - Show a number it did not receive. Cost prints only when the daemon says it
-  knows it; a model name comes from `UsageUpdated`, never from this app.
+  knows it; a model name comes from `UsageUpdated`, never from this app. The
+  providers dialog does list what each model costs, from the pinned catalog in
+  `../../catalog/` by way of `src/catalog/`, and that is a price list with the
+  date it was taken printed under it, not a claim about your run.
 - Call it verified when it is not. The receipt reader checks an Ed25519
   signature with WebCrypto against a key the reader supplies, and says "not
   checked" without one. The Rust verifier prints PASSED in that case; this

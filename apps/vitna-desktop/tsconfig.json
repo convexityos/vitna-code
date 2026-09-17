@@ -8,6 +8,9 @@
 
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
+    // src/catalog/ imports the pinned price snapshot, which is data the daemon
+    // reads too and so lives at the repository root rather than inside this app.
+    "resolveJsonModule": true,
     "isolatedModules": true,
     "moduleDetection": "force",
     "noEmit": true,
