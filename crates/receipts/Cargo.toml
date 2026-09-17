@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "vitna-receipts"
 version.workspace = true
 edition.workspace = true
@@ -10,5 +10,6 @@ serde_json.workspace = true
 sha2.workspace = true
 ring.workspace = true
 ed25519-dalek.workspace = true
+rand_core.workspace = true
 hex.workspace = true
 vitna-policy.workspace = true

@@ -1,0 +1,12 @@
+{
+  "scenario": "rate_limit_error",
+  "provider": "openai",
+  "status_code": 429,
+  "error": {
+    "message": "Rate limit exceeded. Please retry after 2 seconds.",
+    "type": "requests_rate_limit",
+    "param": null,
+    "code": "rate_limit_exceeded"
+  },
+  "retry_after_seconds": 2
+}

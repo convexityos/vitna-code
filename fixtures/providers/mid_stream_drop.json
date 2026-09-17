@@ -1,0 +1,10 @@
+{
+  "scenario": "mid_stream_drop",
+  "provider": "anthropic",
+  "emitted_chunks": [
+    { "index": 0, "delta": "Executing requested " },
+    { "index": 1, "delta": "architectural inspection" }
+  ],
+  "interrupted_at_chunk": 2,
+  "error_kind": "connection_reset_by_peer"
+}

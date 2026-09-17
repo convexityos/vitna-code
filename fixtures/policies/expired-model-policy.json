@@ -1,0 +1,19 @@
+{
+  "schema_version": "vitna-model-policy-v1",
+  "policy_id": "pol-legacy-2020-v1",
+  "issued_at": 1577836800,
+  "expires_at": 1600000000,
+  "allowed_providers": [
+    "anthropic"
+  ],
+  "lanes": [
+    {
+      "lane": "coding",
+      "model_sku": "claude-legacy-v1",
+      "provider": "anthropic"
+    }
+  ],
+  "required_sandbox_guarantee": "guarded",
+  "public_key": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+  "signature": "4d35b4424c2b60af400443b3165d1d0e594f7a529d030fbacc4e1f615a9aacfbb57fd5cc78d354aefb1f6e2768ee3a0a9a2f28fed8a49db0a79a4ae8c36bda05"
+}

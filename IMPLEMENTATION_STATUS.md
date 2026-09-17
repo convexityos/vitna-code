@@ -1,6 +1,6 @@
 # Vitna Code Implementation Status
 
-- Status: Phase 0B Complete
+- Status: Phase 0 Complete (Phase 0A, 0B, 0C Verified)
 - Date: 2026-09-16
 - Tracking Mode: Evidence-backed milestones (no percentage estimates)
 
@@ -10,12 +10,23 @@
 |---|---|---|---|
 | **Phase 0A** | Authority, Invariants, Threat Model, Platform & Dependency Matrices | **COMPLETE** | See `docs/PHASE_0A_GATE_REPORT.md` |
 | **Phase 0B** | Protocol Envelope, Event Store, Runner Journal, Receipt Trust Model | **COMPLETE** | See `docs/PHASE_0B_GATE_REPORT.md` |
-| **Phase 0C** | Platform Proof: Fake Provider & Runner, Hostile Repos, Hardware CI | NOT STARTED | Blocked on Phase 0B review |
-| **Phase 1** | Durable Vertical Slice (CLI, TUI, Daemon, Guarded Runner, Local Receipt v0) | NOT STARTED | Blocked on Phase 0 exit |
+| **Phase 0C** | Platform Proof: Fake Provider & Runner, Hostile Repos, Hardware CI | **COMPLETE** | See `docs/PHASE_0C_GATE_REPORT.md` |
+| **Phase 1** | Durable Vertical Slice (CLI, TUI, Daemon, Guarded Runner, Local Receipt v0) | READY TO START | Exit criteria for Phase 0 certified |
 | **Phase 2** | Competitive Solo-Agent Alpha (OpenAI/Anthropic adapters, Git broker, inspect/build) | NOT STARTED | Blocked on Phase 1 exit |
 | **Phase 3** | Trustworthy Solo-Agent Beta (Strong sandbox, MCP, keychain secrets, Playwright) | NOT STARTED | Blocked on Phase 2 exit |
 | **Phase 4** | Durable Multi-Agent Beta (DAG scheduler, per-agent clones, merge queue) | NOT STARTED | Blocked on Phase 3 exit |
 | **Phase 5** | V1 Hardening and Release (Packaging, signed installers, SBOM, public benchmarks) | NOT STARTED | Blocked on Phase 4 exit |
+
+## Phase 0C Deliverables Ledger
+
+| Deliverable | Target Location | Verification Method | Status |
+|---|---|---|---|
+| Fake Provider & Streaming Replay | `crates/providers/src/fake.rs`, `fixtures/providers/` | Deterministic replay of 4 golden streams (turn, tool-call, rate-limit, mid-stream-drop) | Verified |
+| Runner Fault Injection Harness | `crates/vitna-runner/src/fake.rs` | Simulation of 4 crash modes (before start, mid-run, unack, timeout) with action journal | Verified |
+| Hostile Repository Corpus | `fixtures/hostile-repos/` | 4 threat vectors covered (path traversal, git hook injection, prompt injection, terminal escapes) | Verified |
+| Platform Sandbox Enforcement | `crates/vitna-sandbox/src/lib.rs` | Linux bwrap, macOS seatbelt, and Windows AppContainer generator proof tests in `sandbox_proof_tests.rs` | Verified |
+| Cryptographic Policy Fixtures | `crates/policy/src/lib.rs`, `fixtures/policies/` | Valid, tampered, and expired signed policy fixtures verified in `crates/receipts/tests/signing_fixtures_test.rs` | Verified |
+| Phase 0C Gate Report | `docs/PHASE_0C_GATE_REPORT.md` | Formal gate report certifying platform proof and authorizing Phase 0 exit | Verified |
 
 ## Phase 0B Deliverables Ledger
 

@@ -1,0 +1,9 @@
+# Hostile Terminal Escape Sequences Fixture
+# Vector 1: OSC 52 write clipboard injection
+\x1b]52;c;bWFsaWNpb3VzX3BheWxvYWQ=\x07
+# Vector 2: Window title modification
+\x1b]0;ADMINISTRATOR COMMAND PROMPT\x07
+# Vector 3: Cursor repositioning and simulated prompt spoofing
+\x1b[2J\x1b[Hvitna: approved by user > [y/N]: y
+# Vector 4: Bidirectional text override (RLO)
+\u202Ereversed text spoofing

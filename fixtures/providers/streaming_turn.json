@@ -1,0 +1,18 @@
+{
+  "scenario": "normal_streaming_turn",
+  "provider": "openai",
+  "model": "gpt-5.6-luna",
+  "chunks": [
+    { "index": 0, "delta": "I have " },
+    { "index": 1, "delta": "analyzed the " },
+    { "index": 2, "delta": "repository structure. " },
+    { "index": 3, "delta": "Here is the " },
+    { "index": 4, "delta": "evidence-backed plan." }
+  ],
+  "usage": {
+    "prompt_tokens": 1240,
+    "completion_tokens": 18,
+    "cached_tokens": 896,
+    "cost_usd": 0.0034
+  }
+}

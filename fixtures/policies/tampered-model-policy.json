@@ -1,0 +1,30 @@
+{
+  "schema_version": "vitna-model-policy-v1",
+  "policy_id": "pol-prod-hardened-v1",
+  "issued_at": 1773600000,
+  "expires_at": 2524608000,
+  "allowed_providers": [
+    "anthropic",
+    "fake"
+  ],
+  "lanes": [
+    {
+      "lane": "coding",
+      "model_sku": "unapproved-external-model-v0",
+      "provider": "anthropic"
+    },
+    {
+      "lane": "fast_eval",
+      "model_sku": "claude-3-5-haiku",
+      "provider": "anthropic"
+    },
+    {
+      "lane": "planning",
+      "model_sku": "claude-3-7-sonnet",
+      "provider": "anthropic"
+    }
+  ],
+  "required_sandbox_guarantee": "strong",
+  "public_key": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+  "signature": "5882f28b8bc50148be48124965c12a6db3276644bc08668c2b285dbc82207bd28c098e447e770468eb2b9a7124f381d096efda6e00e48e5f4be2775a7c400b01"
+}

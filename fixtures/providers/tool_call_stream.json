@@ -1,0 +1,21 @@
+{
+  "scenario": "tool_call_stream",
+  "provider": "anthropic",
+  "model": "claude-opus-4-8",
+  "tool_call": {
+    "tool_id": "call_abc123",
+    "tool_name": "read_file",
+    "chunks": [
+      { "index": 0, "argument_fragment": "{\"path\": \"" },
+      { "index": 1, "argument_fragment": "crates/store/" },
+      { "index": 2, "argument_fragment": "src/lib.rs\"}" }
+    ],
+    "expected_arguments_json": "{\"path\": \"crates/store/src/lib.rs\"}"
+  },
+  "usage": {
+    "prompt_tokens": 1820,
+    "completion_tokens": 24,
+    "cached_tokens": 1536,
+    "cost_usd": 0.0082
+  }
+}
