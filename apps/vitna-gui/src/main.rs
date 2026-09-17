@@ -8,6 +8,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod brand;
 mod catalog;
 mod composer;
 mod icons;
@@ -33,11 +34,17 @@ fn main() -> eframe::Result<()> {
     let workspace = Workspace::open(root);
     let title = format!("Vitna Code  {}", workspace.name);
 
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_inner_size([1180.0, 780.0])
+        .with_min_inner_size([880.0, 560.0])
+        .with_title(title);
+    // The OS takes a bitmap for the window icon; it is the upstream raster of
+    // the same mark, not a second drawing.
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(brand::ICON_PNG) {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 780.0])
-            .with_min_inner_size([880.0, 560.0])
-            .with_title(title),
+        viewport,
         ..Default::default()
     };
 

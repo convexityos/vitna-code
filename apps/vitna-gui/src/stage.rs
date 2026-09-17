@@ -32,8 +32,7 @@ impl App {
         ui2.add_space((body.height() * 0.24).max(40.0));
 
         ui2.vertical_centered(|ui| {
-            let (r, _) = ui.allocate_exact_size(Vec2::splat(44.0), egui::Sense::hover());
-            icons::mark(ui.painter(), r.center(), 15.0, theme::PERI);
+            ui.add(egui::Image::new(crate::brand::mark()).fit_to_exact_size(Vec2::splat(44.0)));
             ui.add_space(14.0);
             ui.label(RichText::new("Let's build").font(theme::sans(28.0)).color(theme::INK));
             ui.add_space(14.0);

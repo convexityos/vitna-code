@@ -65,20 +65,6 @@ pub fn chevron_down(p: &egui::Painter, c: Pos2, tone: Color32) {
     p.line_segment([c + Vec2::new(0.0, 2.0), c + Vec2::new(4.0, -2.0)], st);
 }
 
-/// The product mark: a facet, filled.
-pub fn mark(p: &egui::Painter, c: Pos2, r: f32, tone: Color32) {
-    p.add(egui::Shape::convex_polygon(
-        vec![
-            c + Vec2::new(0.0, -r),
-            c + Vec2::new(r * 0.86, 0.0),
-            c + Vec2::new(0.0, r),
-            c + Vec2::new(-r * 0.86, 0.0),
-        ],
-        tone,
-        Stroke::NONE,
-    ));
-}
-
 /// Allocates a square and draws an icon in it, so an icon can sit inline in a
 /// horizontal row beside text.
 pub fn inline(ui: &mut egui::Ui, size: f32, tone: Color32, draw: fn(&egui::Painter, Pos2, Color32)) {

@@ -67,6 +67,8 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, workspace: Workspace) -> Self {
         theme::install(&cc.egui_ctx);
+        // The SVG loader behind the mark.
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         let repo = Probe::start(&workspace.path);
         let catalog = Catalog::load().ok();
         let choices = catalog.as_ref().map(|c| c.choices()).unwrap_or_default();
