@@ -15,13 +15,13 @@
 
 .transcript-column {
   display: grid;
-  gap: 14px;
+  gap: 20px;
   width: min(100%, var(--column));
   margin: 0 auto;
-  padding: 26px 28px 30px;
+  padding: 28px 28px 32px;
   font-family: var(--mono);
   font-size: 0.8125rem;
-  line-height: 1.6;
+  line-height: 1.65;
   color: var(--ink-2);
 }
 
@@ -67,14 +67,14 @@
   content: '';
   width: 22px;
   height: 1px;
-  background: var(--hair);
+  background: var(--hair-2);
 }
 
 .t-rule::after {
   content: '';
   flex: 1;
   height: 1px;
-  background: var(--hair-2);
+  background: var(--hair-3);
 }
 
 /* ---- you ----------------------------------------------------------------------- */
@@ -82,8 +82,8 @@
 .t-you {
   display: flex;
   align-items: flex-start;
-  padding: 10px 14px 10px 12px;
-  border-radius: var(--r-sm);
+  padding: 14px 18px 14px 14px;
+  border-radius: var(--r);
   background: var(--face);
 }
 
@@ -100,8 +100,8 @@
 .t-you-text {
   color: var(--ink);
   font-family: var(--sans);
-  font-size: var(--fs-body);
-  line-height: 1.5;
+  font-size: 1.02rem;
+  line-height: 1.55;
   white-space: pre-wrap;
 }
 
@@ -114,11 +114,11 @@
 }
 
 .prose {
-  max-width: 72ch;
+  max-width: 68ch;
   color: var(--ink-2);
   font-family: var(--sans);
-  font-size: var(--fs-body);
-  line-height: 1.55;
+  font-size: 1rem;
+  line-height: 1.62;
   white-space: pre-wrap;
   /* A long identifier in a sentence wraps rather than leaving the column. */
   overflow-wrap: anywhere;
@@ -155,11 +155,43 @@
   }
 }
 
-.t-reasoning p {
+.t-reasoning p,
+.reasoning > summary {
   color: var(--faint);
   font-family: var(--sans);
   font-size: var(--fs-small);
   line-height: 1.5;
+}
+
+.reasoning > summary {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.reasoning > summary::-webkit-details-marker {
+  display: none;
+}
+
+.reasoning > summary::before {
+  display: none;
+}
+
+.reasoning > summary:hover {
+  color: var(--mute);
+}
+
+.reasoning[open] > summary {
+  white-space: normal;
+  color: var(--fainter);
+}
+
+.reasoning[open] > summary + p {
+  margin-top: 4px;
+  color: var(--mute);
 }
 
 .t-child p:first-child {
@@ -375,9 +407,8 @@
 .tool-pre {
   max-height: 380px;
   overflow: auto;
-  padding: 8px 12px;
-  border: 1px solid var(--hair-3);
-  border-radius: var(--r-xs);
+  padding: 10px 14px;
+  border-radius: var(--r-sm);
   background: var(--field);
   color: var(--mute);
   font-size: var(--fs-meta);
@@ -414,7 +445,7 @@
 /* ---- the dock ------------------------------------------------------------------- */
 
 .dock {
-  padding: 8px 28px 14px;
+  padding: 10px 28px 18px;
   background: var(--ground);
 }
 

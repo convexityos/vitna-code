@@ -98,6 +98,7 @@ export class SampleTransport implements Transport {
     workspacePath: SAMPLE_WORKSPACE,
     title: 'Rate limiter fails open',
     mode: 'build',
+    branch: 'main',
   };
   readonly host: HostCapabilities = {
     listWorkspaces: async () => SAMPLE_WORKSPACES,

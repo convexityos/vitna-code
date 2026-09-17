@@ -123,16 +123,15 @@
 
 .popover {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 8px);
   left: 0;
   z-index: 30;
   width: 340px;
   max-width: calc(100vw - 32px);
-  padding: 6px;
-  border: 1px solid var(--hair);
+  padding: 8px;
   border-radius: var(--r);
-  background: var(--face);
-  outline: 1px solid rgba(0, 0, 0, 0.55);
+  background: var(--face-2);
+  outline: 1px solid rgba(0, 0, 0, 0.5);
 }
 
 .popover-search {
@@ -246,10 +245,9 @@
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   width: min(640px, 100%);
   max-height: min(78vh, 720px);
-  border: 1px solid var(--hair);
-  border-radius: var(--r);
-  background: var(--face);
-  outline: 1px solid rgba(0, 0, 0, 0.55);
+  border-radius: var(--r-lg);
+  background: var(--face-2);
+  outline: 1px solid rgba(0, 0, 0, 0.5);
 }
 
 .dialog-head {

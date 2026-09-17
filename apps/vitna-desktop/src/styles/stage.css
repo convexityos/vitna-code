@@ -47,11 +47,10 @@
 .no-daemon {
   display: grid;
   gap: 8px;
-  margin-top: 16px;
-  padding: 18px 22px;
-  border: 1px solid var(--hair-2);
-  border-radius: var(--r);
-  background: var(--plate);
+  margin-top: 18px;
+  padding: 20px 24px;
+  border-radius: var(--r-lg);
+  background: var(--face);
   color: var(--mute);
   font-size: var(--fs-small);
 }
@@ -114,6 +113,12 @@
   width: 13px;
   height: 13px;
   color: var(--fainter);
+}
+
+.workspace-branch {
+  padding-left: 8px;
+  border-left: 1px solid var(--hair);
+  color: var(--faint);
 }
 
 .workspace-pill.is-empty {

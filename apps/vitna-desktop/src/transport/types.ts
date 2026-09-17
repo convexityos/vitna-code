@@ -11,6 +11,8 @@ export interface HostSession {
   title: string;
   /** CreateSession.initial_mode, as the host created it. */
   mode: string;
+  /** The checked-out branch, when the host knows it. The protocol carries none, so this is the host's fact alone. */
+  branch?: string;
 }
 
 export interface HostWorkspace {

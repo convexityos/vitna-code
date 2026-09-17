@@ -55,9 +55,13 @@
 
   --focus: var(--peri-2);
 
-  --r: 14px;
-  --r-sm: 10px;
-  --r-xs: 7px;
+  /* Radii from Vitna's range (5px to 24px). Softer than the console's 14 on
+     purpose: this window is read by one person for hours, and the reviewer's
+     word for the 7 to 10px version was "rectangular". */
+  --r-lg: 20px;
+  --r: 16px;
+  --r-sm: 12px;
+  --r-xs: 8px;
 
   --ease: cubic-bezier(0.2, 0.7, 0.1, 1);
   --t-fast: 160ms;

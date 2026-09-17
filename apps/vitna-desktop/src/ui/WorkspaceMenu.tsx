@@ -82,6 +82,7 @@ export function WorkspaceMenu({ session, host }: WorkspaceMenuProps) {
           {basename(session.workspacePath).slice(0, 1).toUpperCase() || '?'}
         </span>
         {basename(session.workspacePath)}
+        {session.branch ? <span className="workspace-branch mono">{session.branch}</span> : null}
         <ChevronDownIcon />
       </button>
 

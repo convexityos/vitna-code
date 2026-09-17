@@ -65,7 +65,8 @@ export function Drawer({ session, link, isSample, activeView, onView, onProvider
               <div className="drawer-session">
                 <p className="drawer-session-title">{session.title}</p>
                 <p className="mono faint" title={session.workspacePath}>
-                  {basename(session.workspacePath)} · {session.mode || 'mode not stated'}
+                  {basename(session.workspacePath)}
+                  {session.branch ? ` · ${session.branch}` : ''} · {session.mode || 'mode not stated'}
                 </p>
               </div>
             ) : (
