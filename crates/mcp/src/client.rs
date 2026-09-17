@@ -1,6 +1,4 @@
-use crate::protocol::{
-    JsonRpcRequest, JsonRpcResponse, McpToolCallResult, McpToolDescriptor, McpToolsListResult,
-};
+use crate::protocol::{JsonRpcRequest, McpToolCallResult, McpToolDescriptor};
 use serde_json::json;
 use std::collections::HashMap;
 
