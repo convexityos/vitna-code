@@ -466,7 +466,7 @@ impl App {
         // One row, fixed height, explicit column widths. The first version let
         // the stats flow, so the eyebrow wrapped in half and the last column
         // fell off the right edge entirely.
-        const STATS: f32 = 350.0;
+        const STATS: f32 = 326.0;
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), 50.0),
             Layout::left_to_right(Align::Min),
@@ -487,7 +487,7 @@ impl App {
                         };
                         ui.add(
                             egui::Label::new(
-                                RichText::new(head).font(theme::mono(24.0)).color(tone),
+                                RichText::new(head).font(theme::mono(22.0)).color(tone),
                             )
                             .truncate(),
                         );
@@ -519,10 +519,10 @@ impl App {
                 };
 
                 for (label, value, tone, w) in [
-                    ("ahead", &ahead, theme::PERI_2, 58.0),
-                    ("behind", &behind, theme::RUST, 62.0),
-                    ("staged", &staged, theme::INK_2, 62.0),
-                    ("modified", &modified, theme::INK_2, 78.0),
+                    ("ahead", &ahead, theme::PERI_2, 54.0),
+                    ("behind", &behind, theme::RUST, 58.0),
+                    ("staged", &staged, theme::INK_2, 58.0),
+                    ("modified", &modified, theme::INK_2, 72.0),
                     ("untracked", &untracked, theme::INK_2, 84.0),
                 ] {
                     theme::stat(
@@ -585,6 +585,7 @@ impl App {
             "Recent history",
             Some(&match facts {
                 None => "reading".to_string(),
+                Some(_) if count == 1 => "1 commit".to_string(),
                 Some(_) => format!("{count} commits"),
             }),
         );
