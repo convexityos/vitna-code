@@ -21,9 +21,17 @@ impl App {
 
         // Mark and name.
         ui.horizontal(|ui| {
+            // The lockup: symbol, then the wordmark at the height the site chrome
+            // uses, then the product word in the display cut. The wordmark is
+            // white ink on transparent, so it takes the ink token as a tint.
             ui.add(egui::Image::new(crate::brand::mark()).fit_to_exact_size(Vec2::splat(18.0)));
+            ui.add(
+                egui::Image::new(crate::brand::wordmark())
+                    .fit_to_exact_size(Vec2::new(20.0 * 376.0 / 104.0, 20.0))
+                    .tint(theme::INK),
+            );
             ui.label(
-                RichText::new("Vitna Code")
+                RichText::new("Code")
                     .font(theme::display(14.5))
                     .color(theme::INK),
             );

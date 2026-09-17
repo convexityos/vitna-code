@@ -74,7 +74,7 @@ const JETBRAINS_MONO: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Vari
 /// reads thin; these are the cuts the window actually uses.
 const WGHT_UI: f32 = 500.0;
 const WGHT_DISPLAY: f32 = 600.0;
-const WGHT_PROSE: f32 = 500.0;
+const WGHT_PROSE: f32 = 400.0;
 const WGHT_MONO: f32 = 500.0;
 
 /// Space Grotesk is what a view says: headings, labels, controls, chips. It is
