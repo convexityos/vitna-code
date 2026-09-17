@@ -44,11 +44,21 @@ export function Composer(props: ComposerProps) {
   const disabled = disabledReason !== null;
   const hints = commandsMatching(text);
 
+  // The box fits its text, and refits when its width changes: a measurement
+  // taken at one width is wrong at another, and a pane that is resized after
+  // load would otherwise keep the wrap height of the old width.
   useLayoutEffect(() => {
     const el = area.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT)}px`;
+    if (!el) return undefined;
+    const fit = () => {
+      el.style.height = 'auto';
+      el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT)}px`;
+    };
+    fit();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => fit());
+    observer.observe(el.parentElement ?? el);
+    return () => observer.disconnect();
   }, [text]);
 
   useEffect(() => {
