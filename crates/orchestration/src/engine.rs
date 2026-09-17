@@ -2,7 +2,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use vitna_context::{ContextAssembler, ContextMessage};
@@ -231,7 +231,7 @@ impl OrchestrationEngine {
             self.accumulated_diffs.push(diff.clone());
         }
 
-        if let Some(exit_code) = result.exit_code {
+        if result.exit_code.is_some() {
             let stmt_digest = hex::encode(Sha256::digest(result.output.as_bytes()));
             self.runner_statements.push(RunnerExecutionStatementRecord {
                 action_id: format!("act-{}", self.runner_statements.len() + 1),
@@ -313,6 +313,7 @@ impl OrchestrationEngine {
                 diff_digest,
             },
             runner_execution_statements: self.runner_statements.clone(),
+            child_receipt_roots: Vec::new(),
             device_signature: String::new(),
         };
 
