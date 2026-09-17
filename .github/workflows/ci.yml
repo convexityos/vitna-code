@@ -46,6 +46,69 @@ jobs:
       # session and a Content-Security-Policy in the production bundle.
       - run: npm run build
 
+  # Compiling a window proves nothing about whether it opens. This starts the
+  # real binary on a virtual display, waits for it to map a window, and
+  # photographs it. A crash on startup, a failed GL context or a window that
+  # never maps all fail here, and the screenshot is kept either way so a
+  # regression can be looked at rather than guessed at.
+  gui-smoke:
+    name: Desktop window opens
+    needs: check-rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install windowing and capture tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev xvfb x11-utils imagemagick libgl1-mesa-dri
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gui-smoke
+
+      - name: Build the window
+        run: cargo build -p vitna-gui --bin vitna-code
+
+      - name: Open it and photograph it
+        env:
+          # llvmpipe: the runner has no GPU, and a software context is still a
+          # real one as far as the application is concerned.
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          RUST_BACKTRACE: "1"
+        run: |
+          set -euo pipefail
+          Xvfb :99 -screen 0 1280x860x24 &
+          export DISPLAY=:99
+          sleep 2
+          ./target/debug/vitna-code "$GITHUB_WORKSPACE" &
+          APP_PID=$!
+          for i in $(seq 1 30); do
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              echo "the window process exited before it mapped a window"
+              wait "$APP_PID" || true
+              exit 1
+            fi
+            if xwininfo -root -children | grep -qi "vitna"; then
+              echo "window mapped after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          sleep 3
+          import -window root vitna-code-window.png
+          xwininfo -root -children | head -20
+          kill "$APP_PID" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vitna-code-window
+          path: vitna-code-window.png
+          if-no-files-found: error
+
   matrix-build:
     name: Build & Test (${{ matrix.target.os }} - ${{ matrix.target.arch }})
     needs: check-rules
