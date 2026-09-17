@@ -28,11 +28,13 @@ impl App {
                         .desired_rows(2)
                         .desired_width(f32::INFINITY)
                         .frame(egui::Frame::default())
-                        .font(theme::sans(15.0))
+                        // What you type is a paragraph, and so is the prompt
+                        // that stands in for it; both read in the prose face.
+                        .font(theme::prose(15.0))
                         .text_color(theme::INK)
                         .hint_text(
                             RichText::new("Ask anything")
-                                .font(theme::sans(15.0))
+                                .font(theme::prose(15.0))
                                 .color(theme::FAINTER),
                         ),
                 );
