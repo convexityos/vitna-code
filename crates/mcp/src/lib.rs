@@ -1,3 +1,9 @@
-﻿//! Model Context Protocol (MCP) host manager and capability principal isolation.
+//! Model Context Protocol (MCP) client, tool discovery, and exact-action capability brokering.
 
-pub struct McpHost;
+pub mod broker;
+pub mod client;
+pub mod protocol;
+
+pub use broker::McpToolBridge;
+pub use client::McpClient;
+pub use protocol::{McpContentItem, McpToolCallResult, McpToolDescriptor};

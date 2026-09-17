@@ -1,6 +1,6 @@
 # Vitna Code Implementation Status
 
-- Status: Phase 2 Complete (Competitive Solo-Agent Alpha Verified)
+- Status: Phase 3 Complete (Trustworthy Solo-Agent Beta Verified)
 - Date: 2026-09-16
 - Tracking Mode: Evidence-backed milestones (no percentage estimates)
 
@@ -13,9 +13,22 @@
 | **Phase 0C** | Platform Proof: Fake Provider & Runner, Hostile Repos, Hardware CI | **COMPLETE** | See `docs/PHASE_0C_GATE_REPORT.md` |
 | **Phase 1** | Durable Vertical Slice (CLI, TUI, Daemon, Guarded Runner, Local Receipt v0) | **COMPLETE** | See `docs/PHASE_1_GATE_REPORT.md` |
 | **Phase 2** | Competitive Solo-Agent Alpha (OpenAI/Anthropic adapters, Git broker, inspect/build) | **COMPLETE** | See `docs/PHASE_2_GATE_REPORT.md` |
-| **Phase 3** | Trustworthy Solo-Agent Beta (Strong sandbox, MCP, keychain secrets, Playwright) | READY TO START | Exit criteria for Phase 2 certified |
-| **Phase 4** | Durable Multi-Agent Beta (DAG scheduler, per-agent clones, merge queue) | NOT STARTED | Blocked on Phase 3 exit |
+| **Phase 3** | Trustworthy Solo-Agent Beta (Strong sandbox, MCP, keychain secrets, Playwright) | **COMPLETE** | See `docs/PHASE_3_GATE_REPORT.md` |
+| **Phase 4** | Durable Multi-Agent Beta (DAG scheduler, per-agent clones, merge queue) | READY TO START | Exit criteria for Phase 3 certified |
 | **Phase 5** | V1 Hardening and Release (Packaging, signed installers, SBOM, public benchmarks) | NOT STARTED | Blocked on Phase 4 exit |
+
+## Phase 3 Deliverables Ledger
+
+| Deliverable | Target Location | Verification Method | Status |
+|---|---|---|---|
+| Strong Sandbox Execution Engine | `crates/vitna-sandbox/src/executor.rs` | Bubblewrap, Seatbelt, and Windows AppContainer execution with timeout tests | Verified |
+| MCP Protocol & Client | `crates/mcp/src/protocol.rs`, `client.rs` | JSON-RPC 2.0 handshake, capability negotiation, and tool discovery tested | Verified |
+| MCP Exact-Action Capability Broker | `crates/mcp/src/broker.rs` | Untrusted MCP tool bridging with exact-action digests and operator approval | Verified |
+| OS Keychain Secret Store | `crates/providers/src/keyring.rs` | Unified secret vault (`wincred`, Keychain, Secret Service) with zero disk leaks | Verified |
+| Browser Verification Evidence Capture | `crates/tools/src/browser_verify.rs` | Web and DOM snapshot verification emitting `sandbox_captured` evidence | Verified |
+| Sandbox Execution Tests | `crates/vitna-sandbox/tests/sandbox_execution_test.rs` | Command execution, ambient variable scrubbing, and hard timeout termination | Verified |
+| MCP Client & Bridge Tests | `crates/mcp/tests/mcp_client_test.rs` | Handshake, tool list, and brokered tool invocation tests | Verified |
+| Phase 3 Gate Report | `docs/PHASE_3_GATE_REPORT.md` | Formal audit certifying Phase 3 deliverables and authorizing Phase 4 progression | Verified |
 
 ## Phase 2 Deliverables Ledger
 

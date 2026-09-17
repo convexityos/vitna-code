@@ -3,12 +3,14 @@
 pub mod anthropic;
 pub mod credentials;
 pub mod fake;
+pub mod keyring;
 pub mod openai;
 
 pub use anthropic::AnthropicProvider;
 use async_trait::async_trait;
 pub use credentials::{CredentialResolver, ProviderCredentials};
 pub use fake::{FakeProvider, FakeProviderConfig, StreamItem};
+pub use keyring::KeyringStore;
 pub use openai::OpenAIProvider;
 use serde::{Deserialize, Serialize};
 

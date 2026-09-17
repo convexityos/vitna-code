@@ -1,6 +1,7 @@
 //! Brokered tool definitions, schemas, path safety, and execution dispatch.
 
 pub mod apply_patch;
+pub mod browser_verify;
 pub mod git_status;
 pub mod list_dir;
 pub mod path_safety;
@@ -11,6 +12,7 @@ pub mod write_file;
 
 pub use apply_patch::ApplyPatchTool;
 use async_trait::async_trait;
+pub use browser_verify::BrowserVerifyTool;
 pub use git_status::GitStatusTool;
 pub use list_dir::ListDirTool;
 pub use path_safety::resolve_workspace_path;
@@ -88,7 +90,7 @@ impl ToolRegistry {
         defs
     }
 
-    /// Creates standard tool suite: read_file, write_file, list_dir, run_command, search_code, git_status, apply_patch.
+    /// Creates standard tool suite: read_file, write_file, list_dir, run_command, search_code, git_status, apply_patch, browser_verify.
     pub fn standard() -> Self {
         let mut registry = Self::new();
         registry.register(Arc::new(ReadFileTool));
@@ -98,6 +100,7 @@ impl ToolRegistry {
         registry.register(Arc::new(SearchCodeTool));
         registry.register(Arc::new(GitStatusTool));
         registry.register(Arc::new(ApplyPatchTool));
+        registry.register(Arc::new(BrowserVerifyTool));
         registry
     }
 
@@ -130,7 +133,7 @@ mod tests {
     async fn test_tool_registry_lifecycle() {
         let registry = ToolRegistry::standard();
         let defs = registry.definitions();
-        assert_eq!(defs.len(), 7);
+        assert_eq!(defs.len(), 8);
 
         let names: Vec<String> = defs.into_iter().map(|d| d.name).collect();
         assert!(names.contains(&"read_file".to_string()));
@@ -140,6 +143,7 @@ mod tests {
         assert!(names.contains(&"search_code".to_string()));
         assert!(names.contains(&"git_status".to_string()));
         assert!(names.contains(&"apply_patch".to_string()));
+        assert!(names.contains(&"browser_verify".to_string()));
 
         let temp_dir = std::env::temp_dir().join(format!("vitna_tools_test_{}", std::process::id()));
         fs::create_dir_all(&temp_dir).expect("create temp dir");

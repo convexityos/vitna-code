@@ -1,5 +1,8 @@
 //! Platform-specific OS sandbox enforcement abstractions (Bubblewrap, AppContainer, Landlock).
 
+pub mod executor;
+
+pub use executor::{SandboxExecutionResult, SandboxExecutor};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::path::{Path, PathBuf};
