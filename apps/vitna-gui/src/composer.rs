@@ -386,4 +386,5 @@ fn chip(ui: &mut egui::Ui, icon: fn(&egui::Painter, egui::Pos2, Color32), text: 
 
 fn chip_ground(ui: &egui::Ui, rect: Rect, hot: bool) {
     ui.painter().rect_filled(rect, CornerRadius::same(7), if hot { theme::FACE_2 } else { theme::FACE });
+    ui.painter().rect_stroke(rect, CornerRadius::same(7), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
 }

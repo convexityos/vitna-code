@@ -11,7 +11,7 @@ impl App {
     pub(crate) fn sidebar(&mut self, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().rect_filled(rect, CornerRadius::ZERO, theme::RAIL);
         ui.painter()
-            .vline(rect.right(), rect.y_range(), Stroke::new(1.0, theme::HAIR_2));
+            .vline(rect.right(), rect.y_range(), Stroke::new(1.0, theme::HAIR));
 
         let mut ui = ui.new_child(
             egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(14.0, 16.0))),
