@@ -18,19 +18,21 @@
 
 use eframe::egui::{self, Color32, FontFamily, FontId, TextStyle};
 
-pub const CANVAS: Color32 = Color32::from_rgb(0x1d, 0x2d, 0x4f);
-pub const RAIL: Color32 = Color32::from_rgb(0x17, 0x25, 0x43);
-pub const FACE: Color32 = Color32::from_rgb(0x30, 0x44, 0x70);
-pub const GROUND: Color32 = Color32::from_rgb(0x24, 0x35, 0x59);
-pub const FACE_2: Color32 = Color32::from_rgb(0x3a, 0x50, 0x80);
-pub const FIELD: Color32 = Color32::from_rgb(0x26, 0x3a, 0x61);
-pub const CONTROL: Color32 = Color32::from_rgb(0x3e, 0x54, 0x84);
+// The ladder tops out at #1d2d4f (the owner's ceiling): the hovered chip and
+// the hairline sit there, and every ground steps darker from it.
+pub const CANVAS: Color32 = Color32::from_rgb(0x0e, 0x18, 0x30);
+pub const RAIL: Color32 = Color32::from_rgb(0x0a, 0x12, 0x26);
+pub const FACE: Color32 = Color32::from_rgb(0x18, 0x26, 0x43);
+pub const GROUND: Color32 = Color32::from_rgb(0x12, 0x1e, 0x37);
+pub const FACE_2: Color32 = Color32::from_rgb(0x1d, 0x2d, 0x4f);
+pub const FIELD: Color32 = Color32::from_rgb(0x14, 0x21, 0x3b);
+pub const CONTROL: Color32 = Color32::from_rgb(0x1d, 0x2d, 0x4f);
 
 pub const INK: Color32 = Color32::from_rgb(0xf3, 0xf6, 0xfd);
 pub const INK_2: Color32 = Color32::from_rgb(0xdf, 0xe5, 0xf4);
 pub const MUTE: Color32 = Color32::from_rgb(0xc9, 0xd0, 0xe2);
 pub const FAINT: Color32 = Color32::from_rgb(0xa9, 0xb2, 0xca);
-pub const FAINTER: Color32 = Color32::from_rgb(0x99, 0xa3, 0xbd);
+pub const FAINTER: Color32 = Color32::from_rgb(0x8f, 0x99, 0xb4);
 
 pub const PERI: Color32 = Color32::from_rgb(0x71, 0x88, 0xff);
 pub const PERI_2: Color32 = Color32::from_rgb(0x8e, 0xa2, 0xff);
@@ -39,8 +41,8 @@ pub const OK: Color32 = Color32::from_rgb(0x2f, 0xbf, 0x71);
 
 /// Hairlines are the tokens' alpha over the canvas, resolved once here rather
 /// than blended per widget.
-pub const HAIR: Color32 = Color32::from_rgb(0x42, 0x56, 0x82);
-pub const HAIR_2: Color32 = Color32::from_rgb(0x38, 0x4b, 0x74);
+pub const HAIR: Color32 = Color32::from_rgb(0x1d, 0x2d, 0x4f);
+pub const HAIR_2: Color32 = Color32::from_rgb(0x1b, 0x2a, 0x4a);
 
 
 /// Widget radii: the field and the button.
@@ -155,7 +157,7 @@ pub fn install(ctx: &egui::Context) {
         v.faint_bg_color = FACE;
         v.override_text_color = Some(INK_2);
         v.window_stroke = egui::Stroke::new(1.0, HAIR);
-        v.selection.bg_fill = Color32::from_rgb(0x3e, 0x52, 0x8a);
+        v.selection.bg_fill = Color32::from_rgb(0x1d, 0x2d, 0x4f);
         v.selection.stroke = egui::Stroke::new(1.0, PERI_2);
         v.hyperlink_color = PERI_2;
 
