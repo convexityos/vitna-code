@@ -9,7 +9,7 @@ pub mod openai;
 pub use anthropic::AnthropicProvider;
 use async_trait::async_trait;
 pub use credentials::{CredentialResolver, ProviderCredentials};
-pub use fake::{FakeProvider, FakeProviderConfig, StreamItem};
+pub use fake::{FakeProvider, FakeProviderConfig, ReplayEvent, StreamItem};
 pub use keyring::KeyringStore;
 pub use openai::OpenAIProvider;
 use serde::{Deserialize, Serialize};
