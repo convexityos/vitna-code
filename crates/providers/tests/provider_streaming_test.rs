@@ -55,14 +55,16 @@ fn test_anthropic_sse_stream_sequence() {
     for (event_type, data) in lines {
         let events = provider.parse_sse_event_line(event_type, data).expect("parse sse");
         for ev in events {
-            match ev {
-                ProviderStreamEvent::ToolCallDelta { name, arguments_delta, .. } => {
-                    if let Some(n) = name {
-                        tool_name = Some(n);
-                    }
-                    accumulated_args.push_str(&arguments_delta);
+            if let ProviderStreamEvent::ToolCallDelta {
+                name,
+                arguments_delta,
+                ..
+            } = ev
+            {
+                if let Some(n) = name {
+                    tool_name = Some(n);
                 }
-                _ => {}
+                accumulated_args.push_str(&arguments_delta);
             }
         }
     }
