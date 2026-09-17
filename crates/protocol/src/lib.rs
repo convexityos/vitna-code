@@ -1,7 +1,12 @@
 //! Vitna Agent Protocol definitions, wire framing, and envelope serialization.
 
+pub mod api;
+pub mod client;
+pub mod endpoint;
+
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 
 pub const PROTOCOL_VERSION_MAJOR: u32 = 1;
 pub const PROTOCOL_VERSION_MINOR: u32 = 0;
@@ -81,6 +86,49 @@ impl ProtocolEnvelope {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         Ok(envelope)
+    }
+}
+
+/// Typed payload access, so neither side hand-rolls `serde_json` around the
+/// `payload` bytes and disagrees about the error type when it fails.
+impl ProtocolEnvelope {
+    /// Builds an envelope whose payload is `payload` serialized as JSON.
+    ///
+    /// `session_id` and `run_id` are empty for calls that do not belong to
+    /// either yet, such as a health check or a session creation.
+    pub fn with_payload<T: Serialize>(
+        type_url: impl Into<String>,
+        session_id: impl Into<String>,
+        run_id: impl Into<String>,
+        sequence: u64,
+        idempotency_key: impl Into<String>,
+        payload: &T,
+    ) -> Result<Self, io::Error> {
+        let bytes = serde_json::to_vec(payload)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        Ok(Self::new(
+            type_url,
+            session_id,
+            run_id,
+            sequence,
+            idempotency_key,
+            bytes,
+        ))
+    }
+
+    /// Reads the payload back as `T`.
+    pub fn payload_as<T: DeserializeOwned>(&self) -> Result<T, io::Error> {
+        serde_json::from_slice(&self.payload)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    /// Writes the length-prefixed frame and flushes it.
+    ///
+    /// The flush is the point: a caller that writes a request and then blocks
+    /// reading the reply deadlocks on a buffered stream otherwise.
+    pub fn write_frame<W: Write>(&self, w: &mut W) -> Result<(), io::Error> {
+        w.write_all(&self.encode_frame()?)?;
+        w.flush()
     }
 }
 
