@@ -75,14 +75,49 @@ impl Dest {
         }
     }
 
-    /// A glyph drawn from primitives rather than an icon font, so the window
-    /// carries no font dependency it cannot verify.
-    fn glyph(self) -> &'static str {
+    /// Drawn from primitives rather than from a font. The first version used
+    /// box-drawing and arrow marks, and the bundled face has no coverage for
+    /// them, so every one rendered as a tofu box.
+    fn draw_glyph(self, painter: &egui::Painter, c: egui::Pos2, tone: Color32) {
+        let s = Stroke::new(1.4, tone);
         match self {
-            Dest::Session => "\u{276f}",
-            Dest::Changes => "\u{00b1}",
-            Dest::Receipts => "\u{25a4}",
-            Dest::Providers => "\u{25c8}",
+            // A prompt caret.
+            Dest::Session => {
+                painter.line_segment([c + Vec2::new(-4.0, -4.0), c + Vec2::new(1.0, 0.0)], s);
+                painter.line_segment([c + Vec2::new(1.0, 0.0), c + Vec2::new(-4.0, 4.0)], s);
+                painter.line_segment([c + Vec2::new(3.0, 4.5), c + Vec2::new(7.0, 4.5)], s);
+            }
+            // A plus over a minus: what a diff is.
+            Dest::Changes => {
+                painter.line_segment([c + Vec2::new(-6.0, -3.0), c + Vec2::new(0.0, -3.0)], s);
+                painter.line_segment([c + Vec2::new(-3.0, -6.0), c + Vec2::new(-3.0, 0.0)], s);
+                painter.line_segment([c + Vec2::new(1.0, 4.0), c + Vec2::new(7.0, 4.0)], s);
+            }
+            // A stamped record: a sheet with two ruled lines.
+            Dest::Receipts => {
+                painter.rect_stroke(
+                    Rect::from_center_size(c, Vec2::new(11.0, 13.0)),
+                    CornerRadius::same(2),
+                    s,
+                    egui::StrokeKind::Inside,
+                );
+                painter.line_segment([c + Vec2::new(-3.0, -2.0), c + Vec2::new(3.0, -2.0)], s);
+                painter.line_segment([c + Vec2::new(-3.0, 2.0), c + Vec2::new(1.0, 2.0)], s);
+            }
+            // A facet: one choice among several.
+            Dest::Providers => {
+                let r = 6.0;
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        c + Vec2::new(0.0, -r),
+                        c + Vec2::new(r, 0.0),
+                        c + Vec2::new(0.0, r),
+                        c + Vec2::new(-r, 0.0),
+                    ],
+                    Color32::TRANSPARENT,
+                    s,
+                ));
+            }
         }
     }
 }
@@ -232,11 +267,9 @@ impl App {
                     );
                 }
 
-                ui.painter().text(
+                dest.draw_glyph(
+                    ui.painter(),
                     egui::pos2(rect.center().x, rect.top() + 16.0),
-                    egui::Align2::CENTER_CENTER,
-                    dest.glyph(),
-                    theme::sans(14.0),
                     fg,
                 );
                 ui.painter().text(
@@ -430,79 +463,79 @@ impl App {
 
         theme::section_header(ui, "Workspace", Some(&self.workspace.name));
 
-        // The hero line: the branch at display scale, with its counts composed
-        // around it rather than captioned beneath it.
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(theme::eyebrow(ui, "head"));
-                ui.add_space(2.0);
-                let (head, tone) = match &self.workspace.head {
-                    Some(workspace::Head::Branch(b)) => (b.clone(), theme::INK),
-                    Some(h) => (h.label(), theme::RUST),
-                    None => ("not a repository".to_string(), theme::FAINT),
-                };
-                ui.label(RichText::new(head).font(theme::mono(26.0)).color(tone));
-            });
+        // One row, fixed height, explicit column widths. The first version let
+        // the stats flow, so the eyebrow wrapped in half and the last column
+        // fell off the right edge entirely.
+        const STATS: f32 = 350.0;
+        ui.allocate_ui_with_layout(
+            Vec2::new(ui.available_width(), 50.0),
+            Layout::left_to_right(Align::Min),
+            |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
 
-            ui.add_space(26.0);
-
-            let (ahead, behind) = match &facts {
-                Some(f) => (
-                    f.ahead.map(|n| n.to_string()),
-                    f.behind.map(|n| n.to_string()),
-                ),
-                None => (None, None),
-            };
-            theme::stat(
-                ui,
-                "ahead",
-                ahead.as_deref().unwrap_or(theme::UNKNOWN),
-                if ahead.as_deref().is_some_and(|v| v != "0") {
-                    theme::PERI_2
-                } else {
-                    theme::MUTE
-                },
-                18.0,
-            );
-            ui.add_space(18.0);
-            theme::stat(
-                ui,
-                "behind",
-                behind.as_deref().unwrap_or(theme::UNKNOWN),
-                if behind.as_deref().is_some_and(|v| v != "0") {
-                    theme::RUST
-                } else {
-                    theme::MUTE
-                },
-                18.0,
-            );
-            ui.add_space(26.0);
-
-            let counts = |v: Option<usize>| v.map(|n| n.to_string());
-            let (staged, modified, untracked) = match &facts {
-                Some(f) => (
-                    counts(f.staged),
-                    counts(f.modified),
-                    counts(f.untracked),
-                ),
-                None => (None, None, None),
-            };
-            for (label, value) in [
-                ("staged", staged),
-                ("modified", modified),
-                ("untracked", untracked),
-            ] {
-                let dirty = value.as_deref().is_some_and(|v| v != "0");
-                theme::stat(
-                    ui,
-                    label,
-                    value.as_deref().unwrap_or(theme::UNKNOWN),
-                    if dirty { theme::INK_2 } else { theme::MUTE },
-                    18.0,
+                let head_w = (ui.available_width() - STATS).max(180.0);
+                ui.allocate_ui_with_layout(
+                    Vec2::new(head_w, 50.0),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        ui.label(theme::eyebrow(ui, "head"));
+                        ui.add_space(1.0);
+                        let (head, tone) = match &self.workspace.head {
+                            Some(workspace::Head::Branch(b)) => (b.clone(), theme::INK),
+                            Some(h) => (h.label(), theme::RUST),
+                            None => ("not a repository".to_string(), theme::FAINT),
+                        };
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(head).font(theme::mono(24.0)).color(tone),
+                            )
+                            .truncate(),
+                        );
+                    },
                 );
-                ui.add_space(16.0);
-            }
-        });
+
+                let num = |v: Option<u32>| v.map(|n| n.to_string());
+                let cnt = |v: Option<usize>| v.map(|n| n.to_string());
+                let (ahead, behind, staged, modified, untracked) = match &facts {
+                    Some(f) => (
+                        num(f.ahead),
+                        num(f.behind),
+                        cnt(f.staged),
+                        cnt(f.modified),
+                        cnt(f.untracked),
+                    ),
+                    None => (None, None, None, None, None),
+                };
+
+                // Periwinkle for work of yours that is ahead, rust for work you
+                // are behind by, and plain ink for a count that is merely a
+                // count. A zero is never coloured.
+                let live = |v: &Option<String>, tone: Color32| {
+                    if v.as_deref().is_some_and(|s| s != "0") {
+                        tone
+                    } else {
+                        theme::MUTE
+                    }
+                };
+
+                for (label, value, tone, w) in [
+                    ("ahead", &ahead, theme::PERI_2, 58.0),
+                    ("behind", &behind, theme::RUST, 62.0),
+                    ("staged", &staged, theme::INK_2, 62.0),
+                    ("modified", &modified, theme::INK_2, 78.0),
+                    ("untracked", &untracked, theme::INK_2, 84.0),
+                ] {
+                    theme::stat(
+                        ui,
+                        label,
+                        value.as_deref().unwrap_or(theme::UNKNOWN),
+                        live(value, tone),
+                        18.0,
+                        w,
+                    );
+                }
+            },
+        );
 
         ui.add_space(6.0);
         let upstream = facts
@@ -619,10 +652,13 @@ impl App {
                         );
                     },
                 );
-                ui.label(
-                    RichText::new(&commit.subject)
-                        .font(theme::sans(theme::FS_META))
-                        .color(theme::INK_2),
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&commit.subject)
+                            .font(theme::sans(theme::FS_META))
+                            .color(theme::INK_2),
+                    )
+                    .truncate(),
                 );
             });
             ui.add_space(5.0);

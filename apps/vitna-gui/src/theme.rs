@@ -185,6 +185,12 @@ pub fn install(ctx: &egui::Context) {
         v.popup_shadow = egui::epaint::Shadow::NONE;
         v.window_corner_radius = (R as u8).into();
 
+        // A thin, floating scrollbar. The default draws a pale strip down the
+        // middle of the console, which reads as a seam in the layout.
+        style.spacing.scroll = egui::style::ScrollStyle::thin();
+        style.spacing.scroll.floating = true;
+        style.spacing.scroll.bar_width = 5.0;
+
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
         style.spacing.button_padding = egui::vec2(10.0, 6.0);
         style.spacing.window_margin = egui::Margin::same(12);
@@ -247,7 +253,16 @@ pub fn section_header(ui: &mut egui::Ui, title: &str, meta: Option<&str>) {
                 .color(INK_2)
                 .strong(),
         );
-        let meta_w = meta.map(|m| m.len() as f32 * 6.5 + 10.0).unwrap_or(0.0);
+        // Measure the meta rather than estimating from its length, which is
+        // what clipped it to "1 comm".
+        let meta_galley = meta.map(|m| {
+            ui.painter()
+                .layout_no_wrap(m.to_string(), mono(FS_MARK), FAINTER)
+        });
+        let meta_w = meta_galley
+            .as_ref()
+            .map(|g| g.size().x + 10.0)
+            .unwrap_or(0.0);
         let rule_w = (ui.available_width() - meta_w - 10.0).max(0.0);
         let (rect, _) = ui.allocate_exact_size(egui::vec2(rule_w, 1.0), egui::Sense::hover());
         ui.painter().hline(
@@ -255,8 +270,9 @@ pub fn section_header(ui: &mut egui::Ui, title: &str, meta: Option<&str>) {
             rect.center().y,
             egui::Stroke::new(1.0, HAIR_2),
         );
-        if let Some(m) = meta {
-            ui.label(egui::RichText::new(m).font(mono(FS_MARK)).color(FAINTER));
+        if let Some(g) = meta_galley {
+            let (rect, _) = ui.allocate_exact_size(g.size(), egui::Sense::hover());
+            ui.painter().galley(rect.min, g, FAINTER);
         }
     });
     ui.add_space(8.0);
@@ -264,12 +280,20 @@ pub fn section_header(ui: &mut egui::Ui, title: &str, meta: Option<&str>) {
 
 /// A value and the quiet label above it. The scale contrast between the two is
 /// what makes density read as deliberate.
-pub fn stat(ui: &mut egui::Ui, label: &str, value: &str, tone: Color32, size: f32) {
-    ui.vertical(|ui| {
-        ui.label(eyebrow(ui, label));
-        ui.add_space(1.0);
-        ui.label(egui::RichText::new(value).font(mono(size)).color(tone));
-    });
+pub fn stat(ui: &mut egui::Ui, label: &str, value: &str, tone: Color32, size: f32, width: f32) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, 44.0),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.set_min_width(width);
+            // No wrapping: an eyebrow that breaks in half reads as a defect,
+            // and it was one.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            ui.label(eyebrow(ui, label));
+            ui.add_space(1.0);
+            ui.label(egui::RichText::new(value).font(mono(size)).color(tone));
+        },
+    );
 }
 
 /// A dash, for a number this window does not know. Never a zero.
