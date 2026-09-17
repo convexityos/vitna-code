@@ -1,8 +1,6 @@
-use std::fs;
 use std::path::PathBuf;
 use vitna_providers::{
-    AnthropicProvider, FakeProvider, FakeProviderConfig, OpenAIProvider, ProviderCredentials,
-    ProviderStreamEvent,
+    AnthropicProvider, FakeProvider, OpenAIProvider, ProviderCredentials, ProviderStreamEvent,
 };
 
 fn get_fixtures_dir() -> PathBuf {
@@ -18,11 +16,20 @@ fn test_fake_provider_streaming_turn_replay() {
     let provider = FakeProvider::from_fixture_file(&fixture_path).expect("load fixture");
     let stream = provider.replay_stream();
 
-    assert_eq!(stream.len(), 4);
-    assert_eq!(stream[0].delta_text, "Here is ");
-    assert_eq!(stream[1].delta_text, "the requested ");
-    assert_eq!(stream[2].delta_text, "solution.");
-    assert_eq!(stream[3].finish_reason, Some("end_turn".to_string()));
+    let deltas: Vec<&str> = stream.iter().map(|e| e.delta_text.as_str()).collect();
+    assert_eq!(
+        deltas,
+        vec![
+            "I have ",
+            "analyzed the ",
+            "repository structure. ",
+            "Here is the ",
+            "evidence-backed plan.",
+        ]
+    );
+
+    // streaming_turn.json declares no finish reason, so the replay states none.
+    assert!(stream.iter().all(|e| e.finish_reason.is_none()));
 }
 
 #[test]

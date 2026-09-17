@@ -125,6 +125,7 @@ mod tests {
                 diff_digest: "diff-99".to_string(),
             },
             runner_execution_statements: vec![],
+            child_receipt_roots: vec![],
             device_signature: String::new(),
         };
 
