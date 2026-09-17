@@ -21,8 +21,7 @@ impl App {
 
         // Mark and name.
         ui.horizontal(|ui| {
-            let (r, _) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
-            icons::mark(ui.painter(), r.center(), 7.0, theme::PERI);
+            ui.add(egui::Image::new(crate::brand::mark()).fit_to_exact_size(Vec2::splat(18.0)));
             ui.label(
                 RichText::new("Vitna Code")
                     .font(theme::sans(14.0))
