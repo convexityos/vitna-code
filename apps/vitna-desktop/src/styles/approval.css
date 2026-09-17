@@ -1,36 +1,32 @@
-/* The approval box: a bordered box in the flow of the transcript, rust down
-   its left edge while it waits, with numbered choices under a cursor glyph
-   the way a terminal asks. Once answered it folds to one line. */
+/* The approval box: a raised card in the flow of the transcript with one
+   pixel of light along its top, its tag in rust while it waits, and numbered
+   choices under a cursor glyph the way a terminal asks. Once answered it
+   folds to one line. No border and no sunk plate: tone and air set it apart. */
 
 .abox {
   position: relative;
   min-width: 0;
   max-width: 100%;
-  margin: 6px 0 4px;
-  padding: 10px 16px 12px 18px;
-  border: 1px solid var(--hair);
-  border-radius: var(--r-xs);
-  background: var(--plate);
+  margin: 8px 0 4px;
+  padding: 14px 20px 16px;
+  border-radius: var(--r);
+  background: var(--face);
   outline: none;
+  transition: box-shadow var(--t-fast) var(--ease);
 }
 
 .abox::before {
   content: '';
   position: absolute;
-  top: -1px;
-  bottom: -1px;
-  left: -1px;
-  width: 2px;
-  border-radius: 2px 0 0 2px;
-  background: var(--rust);
-}
-
-.abox[data-expired]::before {
-  background: var(--hair);
+  top: 0;
+  right: 18px;
+  left: 18px;
+  height: 1px;
+  background: var(--top-light);
 }
 
 .abox:focus-visible {
-  border-color: rgba(142, 162, 255, 0.55);
+  box-shadow: 0 0 0 2px var(--focus);
 }
 
 .abox-head {
@@ -111,15 +107,15 @@
 }
 
 .abox-diff {
-  margin-top: 12px;
-  border: 1px solid var(--hair-3);
-  border-radius: var(--r-xs);
+  margin-top: 14px;
+  overflow: hidden;
+  border-radius: var(--r-sm);
   background: var(--field);
 }
 
 .abox-diff-head {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--hair-3);
+  padding: 8px 12px;
+  background: rgba(243, 246, 253, 0.03);
   color: var(--ink-2);
 }
 
@@ -167,7 +163,7 @@
   align-items: baseline;
   column-gap: 6px;
   width: 100%;
-  padding: 2px 6px 2px 0;
+  padding: 5px 10px 5px 8px;
   border: 0;
   border-radius: var(--r-xs);
   background: none;
@@ -175,6 +171,7 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease);
 }
 
 .abox-option:disabled {
@@ -182,7 +179,9 @@
   opacity: 0.55;
 }
 
+/* Where the cursor stands is a soft bar, not a bare glyph on its own. */
 .abox-option[data-cursor] {
+  background: var(--hair-3);
   color: var(--ink);
 }
 
@@ -204,6 +203,11 @@
   color: var(--fainter);
 }
 
+.abox-legend {
+  margin-top: 8px;
+  font-size: var(--fs-mark);
+}
+
 .abox-note {
   margin-top: 8px;
   color: var(--faint);
@@ -221,9 +225,9 @@
 .abox-input {
   flex: 1;
   min-width: 0;
-  padding: 4px 8px;
-  border: 1px solid var(--hair-2);
-  border-radius: var(--r-xs);
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
   background: var(--field);
   color: var(--ink);
   font: inherit;
@@ -265,9 +269,10 @@
 .abox-done-body {
   display: grid;
   gap: 4px;
-  margin-top: 6px;
-  padding: 8px 12px;
-  border-left: 1px solid var(--hair-2);
+  margin-top: 8px;
+  padding: 10px 14px;
+  border-radius: var(--r-sm);
+  background: var(--face);
   color: var(--faint);
   font-size: var(--fs-meta);
 }

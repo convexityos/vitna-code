@@ -144,11 +144,13 @@ function Entry({ item, view, echoed, diffFiles, connected, actions, streaming }:
     case 'run': {
       const run = view.runs[item.id];
       const word = runStateWord(run?.state);
+      const ended = Boolean(run?.state && TERMINAL_RUN_STATES.has(run.state));
       return (
         <li className="t-rule" aria-label={`Run ${item.id}: ${word.word}`}>
           <span className="t-rule-text">
             {item.id} · <span className={word.tone === 'rust' ? 'tone-rust' : ''}>{word.word.toLowerCase()}</span>
-            {run?.reason && run.state && TERMINAL_RUN_STATES.has(run.state) ? ` · ${run.reason}` : ''}
+            {ended && run ? ` · ${formatElapsed(run.changedAt - run.firstSeenAt)}` : ''}
+            {ended && run?.reason ? ` · ${run.reason}` : ''}
           </span>
         </li>
       );
@@ -210,12 +212,27 @@ function Entry({ item, view, echoed, diffFiles, connected, actions, streaming }:
     case 'reasoning': {
       const reasoning = view.reasoning[item.id];
       if (!reasoning) return null;
+      // One line, the way every reference collapses it; the whole summary a click away.
+      const firstLine = reasoning.text.split(/(?<=[.!?])\s|\n/)[0] ?? reasoning.text;
+      const short = firstLine.length > 96 ? `${firstLine.slice(0, 95)}…` : firstLine;
+      const more = short !== reasoning.text;
       return (
         <li className="t-line t-reasoning">
           <span className="gutter fainter" aria-hidden="true">
             {'∴'}
           </span>
-          <p>{reasoning.text}</p>
+          {more ? (
+            <details className="reasoning">
+              <summary>
+                <span className="fainter">reasoning</span> {short}
+              </summary>
+              <p>{reasoning.text}</p>
+            </details>
+          ) : (
+            <p>
+              <span className="fainter">reasoning</span> {reasoning.text}
+            </p>
+          )}
         </li>
       );
     }

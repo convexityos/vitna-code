@@ -242,6 +242,9 @@ export function ApprovalBox({ approval, tool, diff, connected, actions }: Approv
             ))}
           </ol>
           {current.meaning ? <p className="abox-note tone-rust">{current.meaning}</p> : null}
+          <p className="abox-legend fainter" aria-hidden="true">
+            {'↑↓'} move · enter choose · y approve once · n reject · 1-5 pick
+          </p>
           {askReason ? (
             <label className="abox-reason">
               <span className="fainter">reason</span>
