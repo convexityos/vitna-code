@@ -138,7 +138,9 @@ pub fn install(ctx: &egui::Context) {
 
         style.text_styles = [
             (TextStyle::Heading, sans(20.0)),
-            (TextStyle::Body, sans(FS_BODY)),
+            // Body is what an unstyled label and every hover text draws in, so it
+        // is the paragraph face: any sentence nobody styled explicitly is prose.
+        (TextStyle::Body, prose(FS_BODY)),
             (TextStyle::Monospace, mono(FS_SMALL)),
             (TextStyle::Button, sans(FS_SMALL)),
             (TextStyle::Small, sans(FS_META)),
