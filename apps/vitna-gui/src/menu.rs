@@ -13,6 +13,7 @@ use crate::icons;
 use crate::theme;
 
 pub const SC_SETTINGS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma);
+pub const SC_SEARCH: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::K);
 pub const SC_CLOSE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::W);
 pub const SC_SIDEBAR: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::B);
 pub const SC_ZOOM_IN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Equals);
@@ -32,6 +33,12 @@ pub const REPO_URL: &str = "https://github.com/convexityos/vitna-code";
 impl App {
     /// The window's own shortcuts. Keyboard zoom is egui's and needs nothing here.
     pub(crate) fn shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.input_mut(|i| i.consume_shortcut(&SC_SEARCH)) {
+            self.search = match self.search {
+                Some(_) => None,
+                None => Some(crate::search::Search::new(String::new())),
+            };
+        }
         if ctx.input_mut(|i| i.consume_shortcut(&SC_SETTINGS)) {
             self.settings = Some(self.settings.unwrap_or(SettingsPage::General));
         }
@@ -72,9 +79,10 @@ impl App {
         ctx.input_mut(|i| i.events.push(event));
     }
 
-    /// Two buttons in the top-left corner: the menu, and the sidebar toggle.
+    /// Three buttons in the top-left corner: the menu, the sidebar toggle and
+    /// search.
     pub(crate) fn strip(&mut self, ui: &mut egui::Ui, full: Rect) {
-        let rect = Rect::from_min_size(full.min + Vec2::new(8.0, 6.0), Vec2::new(64.0, 28.0));
+        let rect = Rect::from_min_size(full.min + Vec2::new(8.0, 6.0), Vec2::new(94.0, 28.0));
         let mut ui = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(rect)
@@ -89,6 +97,10 @@ impl App {
         );
         if toggle.clicked() {
             self.sidebar_open = !self.sidebar_open;
+        }
+        let hint = format!("Search ({})", ui.ctx().format_shortcut(&SC_SEARCH));
+        if icon_button(&mut ui, icons::search, &hint).clicked() {
+            self.search = Some(crate::search::Search::new(String::new()));
         }
         self.menu(&burger);
     }

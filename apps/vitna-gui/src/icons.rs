@@ -38,6 +38,15 @@ pub fn commit(p: &egui::Painter, c: Pos2, tone: Color32) {
     p.line_segment([c + Vec2::new(3.0, 0.0), c + Vec2::new(7.0, 0.0)], st);
 }
 
+/// A session: a speech bubble, a conversation with the agent.
+pub fn bubble(p: &egui::Painter, c: Pos2, tone: Color32) {
+    let st = s(tone);
+    let r = Rect::from_center_size(c + Vec2::new(0.0, -1.0), Vec2::new(13.0, 9.5));
+    p.rect_stroke(r, 3.0, st, egui::StrokeKind::Middle);
+    p.line_segment([pos2(r.left() + 3.0, r.bottom()), pos2(r.left() + 2.0, r.bottom() + 3.5)], st);
+    p.line_segment([pos2(r.left() + 2.0, r.bottom() + 3.5), pos2(r.left() + 6.5, r.bottom())], st);
+}
+
 pub fn clock(p: &egui::Painter, c: Pos2, tone: Color32) {
     let st = s(tone);
     p.circle_stroke(c, 6.5, st);

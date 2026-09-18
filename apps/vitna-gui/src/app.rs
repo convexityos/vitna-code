@@ -149,6 +149,8 @@ pub struct App {
     pub(crate) placement: Placement,
     /// The open settings page, or None while the modal is closed.
     pub(crate) settings: Option<SettingsPage>,
+    /// The search palette, while it is open.
+    pub(crate) search: Option<crate::search::Search>,
     pub(crate) sidebar_open: bool,
     pub(crate) pending_edit: Option<EditAction>,
     /// The height the composer used last frame, plus its bottom pad. The
@@ -203,6 +205,11 @@ impl App {
             settings: std::env::var("VITNA_GUI_OPEN_SETTINGS")
                 .ok()
                 .map(|v| SettingsPage::from_name(&v)),
+            // VITNA_GUI_OPEN_SEARCH=1 opens search on the first frame for a
+            // capture; any other value opens it with that text typed.
+            search: std::env::var("VITNA_GUI_OPEN_SEARCH").ok().map(|v| {
+                crate::search::Search::new(if v == "1" { String::new() } else { v })
+            }),
             sidebar_open: true,
             pending_edit: None,
             composer_h: 132.0,
@@ -366,5 +373,6 @@ impl eframe::App for App {
         // The strip goes last so its menu sits over everything else.
         self.strip(ui, full);
         self.settings_modal(ui);
+        self.search_palette(ui);
     }
 }

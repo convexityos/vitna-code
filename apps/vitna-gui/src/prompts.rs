@@ -45,6 +45,11 @@ impl Prompts {
         self.first_by_session.get(session_id)
     }
 
+    /// How many turns the log holds for a session.
+    pub fn turns_in(&self, session_id: &str) -> usize {
+        self.by_run.values().filter(|t| t.session_id == session_id).count()
+    }
+
     pub fn unreadable(&self, run_id: &str) -> Option<&str> {
         self.unreadable.get(run_id).map(String::as_str)
     }

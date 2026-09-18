@@ -42,6 +42,8 @@ pub(crate) fn completion(state: &str) -> (&'static str, String, Color32) {
 pub(crate) struct Row {
     /// Index into the ledger's runs, or None for a file that would not parse.
     pub run: Option<usize>,
+    /// The run id, or the file's name when it is not a receipt.
+    pub id: String,
     pub title: String,
     /// True when the title is the prompt, not a stand-in for one.
     pub titled: bool,
@@ -106,6 +108,7 @@ impl App {
             };
             rows.push(Row {
                 run: Some(i),
+                id: id.clone(),
                 title,
                 titled,
                 title_hint,
@@ -127,6 +130,7 @@ impl App {
                 .unwrap_or_else(|| u.path.display().to_string());
             rows.push(Row {
                 run: None,
+                id: name.clone(),
                 title: name,
                 titled: false,
                 title_hint: u.path.display().to_string(),

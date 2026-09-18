@@ -14,7 +14,7 @@ use crate::composer::provider_badge;
 use crate::icons;
 use crate::link::Link;
 use crate::menu::{
-    SC_CLOSE, SC_COPY, SC_CUT, SC_PASTE, SC_REDO, SC_SELECT_ALL, SC_SETTINGS, SC_SIDEBAR, SC_UNDO,
+    SC_CLOSE, SC_COPY, SC_CUT, SC_PASTE, SC_REDO, SC_SEARCH, SC_SELECT_ALL, SC_SETTINGS, SC_SIDEBAR, SC_UNDO,
     SC_ZOOM_IN, SC_ZOOM_OUT, SC_ZOOM_RESET,
 };
 use crate::theme;
@@ -361,6 +361,7 @@ fn page_shortcuts(ui: &mut egui::Ui) {
     section(ui, "Window");
     card(ui, |ui| {
         let rows = [
+            ("Search", f(&SC_SEARCH)),
             ("Settings", f(&SC_SETTINGS)),
             ("Toggle sidebar", f(&SC_SIDEBAR)),
             ("Close window", f(&SC_CLOSE)),

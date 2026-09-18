@@ -22,6 +22,7 @@ mod repo;
 mod run_list;
 mod run_view;
 mod runs;
+mod search;
 mod settings;
 mod sidebar;
 mod stage;
