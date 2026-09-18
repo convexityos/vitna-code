@@ -139,10 +139,19 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
 /// Runs git and returns its exit code with both streams, for the one command
 /// (merge-tree) whose non-zero exit is an answer rather than a failure.
 fn git_raw(root: &Path, args: &[&str]) -> Result<(i32, String, String), String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
+    let mut command = Command::new("git");
+    command.arg("-C").arg(root).args(args);
+    // A windowed program that starts a console program gets a console window
+    // of its own for every run unless it asks for none, and this runs git every
+    // few seconds: in a release build the screen would flash on each read.
+    // Debug builds carry a console, which is why a capture never shows it.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = command
         .output()
         .map_err(|e| format!("git could not be run: {e}"))?;
     Ok((
