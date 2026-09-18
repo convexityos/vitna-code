@@ -102,46 +102,95 @@ pub fn empty_hooks_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Repository-scoped filter driver names, as `git config` reports them.
+/// Keys that decide how git reads and compares the working tree, and that run
+/// nothing.
 ///
-/// Only `local` and `worktree` scopes are collected. Global and system scopes
-/// are the operator's own configuration and are trusted; neutralizing those
-/// would break a working git-lfs install for every repository. Includes are
-/// followed, so a `include.path` in `.git/config` pointing at a file inside the
-/// working tree is covered.
+/// `GIT_CONFIG_NOSYSTEM` hides the whole system file, and Git for Windows'
+/// installer writes `core.autocrlf=true` and `core.symlinks=false` there and
+/// nowhere else. Hiding them changes git's answers, not just its speed:
+/// measured on git 2.55, a one-line edit to a CRLF checkout read as eight
+/// changed lines of eight, and a file whose mtime moved with its bytes
+/// untouched read as modified. So these keys alone are carried over from the
+/// system file, and only when no scope above it sets them, which leaves
+/// precedence exactly where git puts it. Nothing on this list names a
+/// program, and a key that does never belongs here.
+const WORKING_TREE_KEYS: &[&str] = &[
+    "core.autocrlf",
+    "core.eol",
+    "core.symlinks",
+    "core.ignorecase",
+    "core.filemode",
+    "core.longpaths",
+    "core.precomposeunicode",
+    "core.fscache",
+];
+
+/// What one read of the repository's configuration found.
+struct Scoped {
+    /// Filter drivers declared in `local` or `worktree` scope.
+    drivers: Vec<String>,
+    /// Working-tree keys only the system file sets, with the value it gives
+    /// each (`None` for a bare key, which git reads as true).
+    carried: Vec<(String, Option<String>)>,
+}
+
+/// Reads what a host-side git call needs to know of the configuration, in one
+/// `git config` call.
+///
+/// Filter drivers: only `local` and `worktree` scopes are collected. Global
+/// and system scopes are the operator's own configuration and are trusted;
+/// neutralizing those would break a working git-lfs install for every
+/// repository. Includes are followed, so a `include.path` in `.git/config`
+/// pointing at a file inside the working tree is covered.
 ///
 /// Reading configuration executes nothing, so this call only needs the
-/// protections that keep it from being the thing that runs a hook.
-fn repo_scoped_filter_drivers(repo_dir: &Path, hooks_dir: &Path) -> Result<Vec<String>, String> {
-    let output = base_command(repo_dir, hooks_dir)
-        .args([
-            "config",
-            "--show-scope",
-            "--name-only",
-            "--get-regexp",
-            r"^filter\.",
-        ])
+/// protections that keep it from being the thing that runs a hook, and it may
+/// see the system file, which is how [`WORKING_TREE_KEYS`] are carried over.
+/// An operator who set `GIT_CONFIG_NOSYSTEM` themselves keeps it hidden.
+fn read_scoped(repo_dir: &Path, hooks_dir: &Path) -> Result<Scoped, String> {
+    let mut lookup = base_command(repo_dir, hooks_dir);
+    if std::env::var_os("GIT_CONFIG_NOSYSTEM").is_none() {
+        lookup.env_remove("GIT_CONFIG_NOSYSTEM");
+    }
+    let keys: Vec<String> = WORKING_TREE_KEYS.iter().map(|k| k.replace('.', r"\.")).collect();
+    let pattern = format!(r"^(filter\..*|{})$", keys.join("|"));
+    let output = lookup
+        .args(["config", "--show-scope", "-z", "--get-regexp", &pattern])
         .output();
 
+    let mut scoped = Scoped { drivers: Vec::new(), carried: Vec::new() };
     let output = match output {
         Ok(o) => o,
         // git missing entirely is not this function's problem to report; the
         // caller's own invocation will fail with a better message.
-        Err(_) => return Ok(Vec::new()),
+        Err(_) => return Ok(scoped),
     };
 
     // Exit code 1 with no output is "no matches", which is the common case.
     if !output.status.success() {
-        return Ok(Vec::new());
+        return Ok(scoped);
     }
 
+    // `-z` gives `scope NUL key LF value NUL`, or `scope NUL key NUL` for a
+    // bare key, in precedence order: system first, command line last.
     let text = String::from_utf8_lossy(&output.stdout);
-    let mut drivers: Vec<String> = Vec::new();
-
-    for line in text.lines() {
-        let mut parts = line.splitn(2, '\t');
-        let scope = parts.next().unwrap_or_default().trim();
-        let key = parts.next().unwrap_or_default().trim();
+    let mut system: Vec<(String, Option<String>)> = Vec::new();
+    let mut above: Vec<String> = Vec::new();
+    let mut fields = text.split('\0');
+    while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
+        let (key, value) = match entry.split_once('\n') {
+            Some((k, v)) => (k, Some(v.to_string())),
+            None => (entry, None),
+        };
+        if WORKING_TREE_KEYS.contains(&key) {
+            if scope == "system" {
+                system.retain(|(k, _)| k != key);
+                system.push((key.to_string(), value));
+            } else {
+                above.push(key.to_string());
+            }
+            continue;
+        }
         if scope != "local" && scope != "worktree" {
             continue;
         }
@@ -159,18 +208,37 @@ fn repo_scoped_filter_drivers(repo_dir: &Path, hooks_dir: &Path) -> Result<Vec<S
                 driver
             ));
         }
-        if !drivers.iter().any(|d| d == driver) {
-            drivers.push(driver.to_string());
+        if !scoped.drivers.iter().any(|d| d == driver) {
+            scoped.drivers.push(driver.to_string());
         }
     }
+    scoped.carried = system.into_iter().filter(|(k, _)| !above.contains(k)).collect();
 
-    Ok(drivers)
+    Ok(scoped)
 }
+
+/// Starts git with no console window of its own.
+///
+/// A windowed program that spawns a console program gets a fresh console
+/// window per spawn unless it asks for none, and the desktop window reads the
+/// repository every few seconds, each read spawning several gits, the lookup
+/// in [`command`] among them. Git's output reaches the caller through its
+/// streams either way; the console window is never used.
+#[cfg(windows)]
+fn without_console(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn without_console(_: &mut Command) {}
 
 /// The protections that do not depend on reading the repository first.
 fn base_command(repo_dir: &Path, hooks_dir: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.current_dir(repo_dir);
+    without_console(&mut cmd);
 
     // Ignore /etc/gitconfig. Note that on Git for Windows this is also where a
     // git-lfs install writes its filter driver, so an LFS working tree may
@@ -205,13 +273,26 @@ fn base_command(repo_dir: &Path, hooks_dir: &Path) -> Command {
 /// Subcommands that produce diffs must additionally pass `--no-ext-diff` and
 /// `--no-textconv`; `diff.external` is cleared here, but `diff.<driver>.textconv`
 /// is selected by attributes and is not enumerable the way filter drivers are.
+///
+/// The system file stays hidden, except for the [`WORKING_TREE_KEYS`] it alone
+/// sets, which are passed on so that git reads the checkout the way the
+/// operator's own git does.
 pub fn command<P: AsRef<Path>>(repo_dir: P) -> Result<Command, String> {
     let repo_dir = repo_dir.as_ref();
     let hooks_dir = empty_hooks_dir()?;
 
     let mut cmd = base_command(repo_dir, &hooks_dir);
+    let scoped = read_scoped(repo_dir, &hooks_dir)?;
 
-    for driver in repo_scoped_filter_drivers(repo_dir, &hooks_dir)? {
+    for (key, value) in scoped.carried {
+        cmd.arg("-c");
+        cmd.arg(match value {
+            Some(value) => format!("{}={}", key, value),
+            None => key,
+        });
+    }
+
+    for driver in scoped.drivers {
         for key in ["clean", "smudge", "process"] {
             cmd.arg("-c");
             cmd.arg(format!("filter.{}.{}=", driver, key));
@@ -231,7 +312,9 @@ pub fn command<P: AsRef<Path>>(repo_dir: P) -> Result<Command, String> {
 /// is not a way in. It lives here anyway so that "nothing builds git directly"
 /// stays a rule with no exceptions for a reader to weigh.
 pub fn version() -> Option<String> {
-    let output = Command::new("git")
+    let mut cmd = Command::new("git");
+    without_console(&mut cmd);
+    let output = cmd
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .arg("--no-pager")
