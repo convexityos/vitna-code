@@ -1,14 +1,13 @@
-//! Vitna's material, ported from `apps/vitna-desktop/src/styles/tokens.css`,
-//! with the three faces it names bundled under `assets/fonts/`.
+//! Vitna's material. It began as a port of
+//! `apps/vitna-desktop/src/styles/tokens.css` and has since been re-stepped
+//! here, rung by rung on the owner's word, so the two no longer match: this
+//! file is the window's own, and copying the stylesheet's hexes back would
+//! undo those decisions. Inter, bundled under `assets/fonts/`, sets all text.
 //!
-//! The values are the same hexes rather than an approximation, so the native
-//! window and the reference surface cannot drift into two different products.
-//! What the tokens say, and this module keeps:
-//!
-//!   Grounds  blue-black canvas, a charcoal-blue working ground a step up,
-//!            faces above that, fields sunk below, and a plate a step BELOW
-//!            the ground for the one object that is a record rather than
-//!            furniture.
+//!   Grounds  neutral with a whisper of cool, the side you work in a step
+//!            lighter than the rail, and what is raised a step over that.
+//!   Inks     three, and warm: a white, and two greys that are that white
+//!            dimmed.
 //!   Accents  periwinkle for what the window asks of a person and where they
 //!            stand; rust for a state somebody has to act on; green as one dot.
 //!   Rule     colour carries state and never decoration, and the word is
@@ -43,9 +42,16 @@ pub const CONTROL: Color32 = Color32::from_rgb(0x2d, 0x2f, 0x38);
 // 13 pixels no eye can tell apart; they read as noise, not as hierarchy. A
 // chosen row, a pressed control or an open page says so with its ground, not
 // with a fourth ink.
-pub const INK: Color32 = Color32::from_rgb(0xf2, 0xf3, 0xf6);
-pub const FAINT: Color32 = Color32::from_rgb(0xa5, 0xa9, 0xb5);
-pub const FAINTER: Color32 = Color32::from_rgb(0x8c, 0x90, 0x9c);
+//
+// The whites are warm where the grounds are cool: INK is the owner's #efeeeb
+// (2026-09-18), and the greys under it are that white dimmed rather than
+// greys of their own. Each keeps the lightness it had as a cool grey, so its
+// contrast on every ground holds to a hundredth, and takes INK's exact tint,
+// one point of red over the green and three of blue under it. Warmer and they
+// turn khaki; left cool, a meta line reads bluer than the title above it.
+pub const INK: Color32 = Color32::from_rgb(0xef, 0xee, 0xeb);
+pub const FAINT: Color32 = Color32::from_rgb(0xaa, 0xa9, 0xa6);
+pub const FAINTER: Color32 = Color32::from_rgb(0x91, 0x90, 0x8d);
 
 pub const PERI: Color32 = Color32::from_rgb(0x71, 0x88, 0xff);
 pub const PERI_2: Color32 = Color32::from_rgb(0x8e, 0xa2, 0xff);
@@ -316,6 +322,24 @@ pub fn eyebrow(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
     job
 }
 
+
+#[cfg(test)]
+mod ink_tests {
+    use super::{FAINT, FAINTER, INK};
+
+    /// The greys are the white dimmed, so they carry its tint exactly. A white
+    /// changed on its own leaves every meta line a different colour from the
+    /// title above it; a hex named for one rung re-steps the other two.
+    #[test]
+    fn the_three_inks_are_one_white_at_three_lightnesses() {
+        let tint = |c: eframe::egui::Color32| {
+            (i16::from(c.r()) - i16::from(c.g()), i16::from(c.b()) - i16::from(c.g()))
+        };
+        assert_eq!(tint(FAINT), tint(INK), "FAINT does not carry INK's tint; re-step it with INK");
+        assert_eq!(tint(FAINTER), tint(INK), "FAINTER does not carry INK's tint; re-step it with INK");
+        assert!(INK.g() > FAINT.g() && FAINT.g() > FAINTER.g(), "the inks no longer step down");
+    }
+}
 
 #[cfg(test)]
 mod scale_tests {
