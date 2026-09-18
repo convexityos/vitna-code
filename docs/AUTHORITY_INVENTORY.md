@@ -22,7 +22,7 @@ This inventory specifies every effect and access entry point mediated by Vitna C
 - **Action**: `repo:read_file`, `repo:read_range`, `repo:list_directory`, `repo:search_ripgrep`.
 - **Resource**: Files and directories inside the active workspace clone.
 - **Deciding Authority**: Execution policy (`execution-policy.toml`), workspace bounds rules.
-- **Enforcement Mechanism**: `vitna-runner` canonicalizes the path against the agent workspace root. Traversal attempts (`../`, symlinks to external host paths) are rejected by path normalization before OS file handle open.
+- **Enforcement Mechanism**: `vitna-tools` (`workspace_fs.rs`) rejects lexical traversal (`../`, absolute paths outside the root) in `path_safety.rs`, then canonicalizes the requested path and requires the real location, every link resolved, to lie inside the canonicalized workspace root. Only regular files are opened (never a FIFO, socket, device or directory), without following a final link and without blocking. The opened handle is then asked where it lives (`/proc/self/fd` on Linux, `F_GETPATH` on macOS, `GetFinalPathNameByHandleW` on Windows) and must still be inside the root, so a link swapped in between the check and the open is refused. `read_file` loads at most 16 MiB and returns at most 256 KiB per call, with an explicit truncation notice; `search_code` never follows links and reports unreadable paths as a partial result rather than as no matches.
 - **Receipt Statement**: Emits `context_receipt` and `tool_call` event recording relative path, byte offset, length, and content SHA-256 hash.
 - **Failure/Denial Behavior**: Returns structured `AccessDenied` or `NotFound` error to model. Never falls back to unconstrained host filesystem.
 
@@ -34,7 +34,7 @@ This inventory specifies every effect and access entry point mediated by Vitna C
 - **Action**: `repo:write_file`, `repo:apply_patch`.
 - **Resource**: Target file path within the agent workspace clone.
 - **Deciding Authority**: Execution policy; User approval (if outside pre-approved policy rule).
-- **Enforcement Mechanism**: `vitna-runner` verifies the expected preimage SHA-256 hash. Performs atomic write via temporary file followed by atomic rename within the same filesystem mount. Enforces preserved line endings and UTF-8 validation.
+- **Enforcement Mechanism**: `vitna-tools` (`workspace_fs.rs`) applies the containment of section 1 to the write target and every directory it creates, reads the preimage through the verified handle, and checks `expected_preimage_hash` before anything on disk changes. The write happens in place through that handle and is flushed with `sync_all`; the file is then read back and compared byte for byte, and the postimage hash is computed from the bytes read back. A file that does not hold exactly the requested bytes (short write, deferred write error, anything rewriting it) fails the tool call, so no postimage is recorded for it. Bytes are written exactly as given, line endings included. The write is not atomic: a crash mid-write can leave a partial file. Files over 16 MiB are not replaced.
 - **Receipt Statement**: Emits `tool_call` event with action digest, relative path, preimage SHA-256 hash, and postimage SHA-256 hash.
 - **Failure/Denial Behavior**: If preimage hash does not match current file content, the patch aborts with `PreimageMismatch`. The target file remains untouched.
 
