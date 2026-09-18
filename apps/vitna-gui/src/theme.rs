@@ -76,9 +76,8 @@ pub fn sans(size: f32) -> FontId {
 /// The OFL permits exactly this: bundling and redistribution with software, as
 /// long as the fonts are not sold on their own and the licence travels with
 /// them, which is why each file has its OFL.txt beside it.
-const MANROPE: &[u8] = include_bytes!("../assets/fonts/Manrope-Variable.ttf");
+const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Variable.ttf");
 const SPACE_GROTESK: &[u8] = include_bytes!("../assets/fonts/SpaceGrotesk-Variable.ttf");
-const JAKARTA: &[u8] = include_bytes!("../assets/fonts/PlusJakartaSans-Variable.ttf");
 const JETBRAINS_MONO: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Variable.ttf");
 
 /// Weights. The variable masters default to Regular, which on a dark ground
@@ -88,15 +87,20 @@ const WGHT_DISPLAY: f32 = 540.0;
 const WGHT_PROSE: f32 = 370.0;
 const WGHT_MONO: f32 = 440.0;
 
-/// Plus Jakarta Sans is the UI voice now: labels, controls, chips, meta lines.
-/// It is the proportional default, so `sans` draws it. Space Grotesk keeps the
-/// display cut, where its character is the point rather than a distraction.
+/// Inter is every word in the window except the header: labels, controls,
+/// chips, meta lines, sentences and the composer. The owner's rule is that a
+/// font change is universal except for the header, so the UI face and the
+/// prose face change together. Space Grotesk keeps only the display cut (the
+/// "Let's build" headline, the lockup's "Code", page titles), where its
+/// character is the point rather than a distraction.
 pub fn display(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("display".into()))
 }
 
-/// Manrope is for sentences: the one or two lines of explanation a view
-/// carries, and hover text.
+/// Sentences: the one or two lines of explanation a view carries, hover text
+/// and what is typed into the composer. The same face as the UI, one step
+/// lighter on its weight axis, which a variable face can do and a static one
+/// cannot.
 pub fn prose(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("prose".into()))
 }
@@ -110,10 +114,12 @@ fn face(bytes: &'static [u8], weight: f32) -> std::sync::Arc<egui::FontData> {
 
 pub fn install(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert("Jakarta".to_owned(), face(JAKARTA, WGHT_UI));
+    // One file, registered twice at two weights. Both entries borrow the same
+    // static bytes, so the binary carries the face once.
+    fonts.font_data.insert("Inter".to_owned(), face(INTER, WGHT_UI));
+    fonts.font_data.insert("InterProse".to_owned(), face(INTER, WGHT_PROSE));
     fonts.font_data.insert("SpaceGrotesk".to_owned(), face(SPACE_GROTESK, WGHT_UI));
     fonts.font_data.insert("SpaceGroteskDisplay".to_owned(), face(SPACE_GROTESK, WGHT_DISPLAY));
-    fonts.font_data.insert("Manrope".to_owned(), face(MANROPE, WGHT_PROSE));
     fonts.font_data.insert("JetBrainsMono".to_owned(), face(JETBRAINS_MONO, WGHT_MONO));
 
     // Each family leads with the design's face and keeps egui's defaults
@@ -132,14 +138,14 @@ pub fn install(ctx: &egui::Context) {
     };
     fonts
         .families
-        .insert(FontFamily::Proportional, chain(&["Jakarta", "SpaceGrotesk"]));
+        .insert(FontFamily::Proportional, chain(&["Inter", "SpaceGrotesk"]));
     fonts.families.insert(
         FontFamily::Name("display".into()),
         chain(&["SpaceGroteskDisplay", "SpaceGrotesk"]),
     );
     fonts
         .families
-        .insert(FontFamily::Name("prose".into()), chain(&["Manrope", "Jakarta"]));
+        .insert(FontFamily::Name("prose".into()), chain(&["InterProse", "Inter"]));
     fonts
         .families
         .entry(FontFamily::Monospace)
