@@ -375,13 +375,20 @@ impl OrchestrationEngine {
 /// commit" and was being written over real repositories. A receipt whose
 /// changeset cannot be located against a commit is a receipt nobody can check
 /// a diff against.
+///
+/// Through `host_git`, like every git the host runs: `rev-parse` reads no
+/// index and runs no hook, but "nothing builds git directly" is a rule with no
+/// exceptions for a reader to weigh. When the hardening itself cannot be set
+/// up, git is not run, and the base is as unnamed as on a box with no git.
 fn base_commit_sha(workspace_root: &std::path::Path) -> String {
     const NONE: &str = "0000000000000000000000000000000000000000";
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .args(["rev-parse", "HEAD"])
-        .output();
+    let out = match vitna_git_workspaces::host_git::command(workspace_root) {
+        Ok(mut command) => command.args(["rev-parse", "HEAD"]).output(),
+        Err(reason) => {
+            tracing::warn!(%reason, "base commit not read: host git could not be hardened");
+            return NONE.to_string();
+        }
+    };
 
     match out {
         Ok(o) if o.status.success() => {

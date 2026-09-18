@@ -15,6 +15,9 @@ vitna-protocol.workspace = true
 # vouch for its own work. Both crates are serde plus hashing, no runtime.
 vitna-receipts.workspace = true
 vitna-receipt-verify.workspace = true
+# Every git the window runs is built by host_git, which neutralizes what a
+# repository's own config would otherwise have git execute.
+vitna-git-workspaces.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle.workspace = true

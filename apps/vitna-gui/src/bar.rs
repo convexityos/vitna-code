@@ -239,12 +239,16 @@ fn merge(ui: &egui::Ui, facts: Option<&RepoFacts>, right: f32, cy: f32) -> f32 {
         }
         (Some(Merge::UpToDate), Some(b)) if b > 0 => (format!("{b} behind {short}"), theme::FAINT),
         (Some(Merge::UpToDate), _) => (format!("even with {short}"), theme::FAINT),
+        (Some(Merge::NotRun(_)), _) => (format!("merge into {short} not checked"), theme::FAINTER),
         (None, _) => (format!("merge into {short} unknown"), theme::FAINTER),
     };
-    let mut hint = format!(
-        "Checked with git merge-tree against {base}, as of the last fetch, {}.",
-        ago_long(f.fetched)
-    );
+    let mut hint = match &f.merge {
+        Some(Merge::NotRun(why)) => format!("Not checked against {base}. {why}"),
+        _ => format!(
+            "Checked with git merge-tree against {base}, as of the last fetch, {}.",
+            ago_long(f.fetched)
+        ),
+    };
     if let (Some(a), Some(b)) = (f.base_ahead, f.base_behind) {
         hint.push_str(&format!("\nThis branch is {a} ahead of it and {b} behind."));
     }

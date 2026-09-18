@@ -8,7 +8,6 @@
 //! `None` and prints as a dash.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -24,6 +23,8 @@ pub enum Merge {
     Conflicts(Vec<String>),
     /// HEAD has no commit the base lacks, so there is nothing to merge.
     UpToDate,
+    /// The check was not run, for this reason.
+    NotRun(String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -136,22 +137,19 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     Ok(out)
 }
 
-/// Runs git and returns its exit code with both streams, for the one command
-/// (merge-tree) whose non-zero exit is an answer rather than a failure.
+/// Runs git and returns its exit code with both streams, for the commands
+/// (merge-tree, a config lookup) whose non-zero exit is an answer rather than
+/// a failure. `Err` means git did not run at all.
+///
+/// Built only by `host_git`, never as a bare `git`: a repository's own config
+/// names commands git will execute (`core.fsmonitor`, hooks, filter drivers),
+/// and this runs every few seconds, outside any sandbox, on whatever folder
+/// the window has open. `host_git` also starts git without a console window,
+/// which a windowed program otherwise gets once per spawn.
 fn git_raw(root: &Path, args: &[&str]) -> Result<(i32, String, String), String> {
-    let mut command = Command::new("git");
-    command.arg("-C").arg(root).args(args);
-    // A windowed program that starts a console program gets a console window
-    // of its own for every run unless it asks for none, and this runs git every
-    // few seconds: in a release build the screen would flash on each read.
-    // Debug builds carry a console, which is why a capture never shows it.
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
+    let mut command = vitna_git_workspaces::host_git::command(root)?;
     let output = command
+        .args(args)
         .output()
         .map_err(|e| format!("git could not be run: {e}"))?;
     Ok((
@@ -168,10 +166,19 @@ fn read(root: &Path) -> RepoFacts {
     facts.entries_scanned = scanned;
     facts.scan_was_capped = capped;
 
-    // Outside a repository there is nothing more to ask, and that is a state
-    // rather than a fault: the bar says "no repository" off the workspace.
-    if git(root, &["rev-parse", "--git-dir"]).is_err() {
-        return facts;
+    match git_raw(root, &["rev-parse", "--git-dir"]) {
+        Ok((0, _, _)) => {}
+        // Outside a repository there is nothing more to ask, and that is a
+        // state rather than a fault: the bar says "no repository" off the
+        // workspace.
+        Ok(_) => return facts,
+        // git is missing, or would not be run here safely. That is a fault,
+        // and the bar names it rather than reading as a folder with no
+        // repository in it.
+        Err(e) => {
+            facts.trouble = Some(e);
+            return facts;
+        }
     }
 
     if let Ok(url) = git(root, &["config", "--get", "remote.origin.url"]) {
@@ -181,7 +188,7 @@ fn read(root: &Path) -> RepoFacts {
     }
 
     // The hash, the commit time and the subject in one call, tab separated.
-    if let Ok(line) = git(root, &["log", "-1", "--format=%h%x09%ct%x09%s"]) {
+    if let Ok(line) = git(root, LOG) {
         let mut parts = line.trim_end().splitn(3, '\t');
         facts.head = parts.next().filter(|s| !s.is_empty()).map(str::to_string);
         facts.committed = parts
@@ -213,7 +220,7 @@ fn read(root: &Path) -> RepoFacts {
         }
     }
 
-    match git(root, &["status", "--porcelain=v1", "--untracked-files=normal"]) {
+    match git(root, STATUS) {
         Ok(status) => {
             let (mut staged, mut modified, mut untracked) = (0usize, 0usize, 0usize);
             for line in status.lines() {
@@ -244,7 +251,7 @@ fn read(root: &Path) -> RepoFacts {
 
     // Lines against HEAD, staged or not. A binary file reports "-" and adds
     // no lines, which is the honest count for it.
-    match git(root, &["diff", "--numstat", "HEAD"]) {
+    match git(root, DIFF) {
         Ok(out) => {
             let (mut added, mut removed) = (0u64, 0u64);
             for line in out.lines() {
@@ -286,8 +293,75 @@ fn read(root: &Path) -> RepoFacts {
     facts
 }
 
+/// `git log` for HEAD's hash, time and subject. `--no-show-signature` because
+/// `log.showSignature` in the repository's config makes log check a signed
+/// commit by running `gpg.program`, which the same config names, and nothing
+/// in `host_git` covers that. Measured on git 2.55: plain `git log` ran it.
+const LOG: &[&str] = &["log", "-1", "--no-show-signature", "--format=%h%x09%ct%x09%s"];
+
+/// `git status`, leaving submodule working trees alone: status would otherwise
+/// run in each one, under that submodule's own config.
+const STATUS: &[&str] = &["status", "--porcelain=v1", "--untracked-files=normal", "--ignore-submodules=dirty"];
+
+/// `git diff` in lines against HEAD. `host_git` asks every diff-producing
+/// command for `--no-ext-diff` and `--no-textconv`: both run programs chosen
+/// by attributes, which the repository writes.
+const DIFF: &[&str] = &[
+    "diff",
+    "--numstat",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--ignore-submodules=dirty",
+    "HEAD",
+];
+
+/// Merge drivers the repository's own config declares (`merge.<name>.driver`
+/// in local or worktree scope), by name. Global config is the operator's own,
+/// and is trusted the way `host_git` trusts global filter drivers.
+fn repo_merge_drivers(root: &Path) -> Result<Vec<String>, String> {
+    let (code, out, err) = git_raw(
+        root,
+        &["config", "--show-scope", "--name-only", "--get-regexp", r"^merge\..*\.driver$"],
+    )?;
+    match code {
+        0 => Ok(out
+            .lines()
+            .filter_map(|line| {
+                let (scope, key) = line.split_once('\t')?;
+                if scope != "local" && scope != "worktree" {
+                    return None;
+                }
+                key.strip_prefix("merge.")?.strip_suffix(".driver").map(str::to_string)
+            })
+            .collect()),
+        // No key matched.
+        1 => Ok(Vec::new()),
+        _ => Err(err),
+    }
+}
+
 /// Asks git whether HEAD merges into `base`, without touching the checkout.
 fn merge_state(root: &Path, base: &str) -> Option<Merge> {
+    // A merge driver is a command merge-tree runs for each path the
+    // repository's attributes route to it, so one the repository names is
+    // never run. Nor is there a harmless value to put in its place: an emptied
+    // driver fails, and every path it covers then reads as a conflict that may
+    // not exist. So the check is skipped, and the bar says why.
+    match repo_merge_drivers(root) {
+        Ok(names) if names.is_empty() => {}
+        Ok(names) => {
+            return Some(Merge::NotRun(format!(
+                "This repository's own config names a merge driver ({}), a command git merge-tree \
+                 would run. The window does not run commands a repository names.",
+                names.join(", ")
+            )))
+        }
+        Err(e) => {
+            return Some(Merge::NotRun(format!(
+                "The repository's merge drivers could not be read, so merge-tree was not run: {e}"
+            )))
+        }
+    }
     let (code, out, _) = git_raw(
         root,
         &["merge-tree", "--write-tree", "--name-only", "--no-messages", base, "HEAD"],
@@ -342,6 +416,8 @@ pub fn repo_name(url: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    include!("../tests/support/plain_git.rs");
+
     #[test]
     fn a_repository_is_named_off_its_remote() {
         let name = |u: &str| repo_name(u);
@@ -361,13 +437,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
         let run = |args: &[&str]| {
-            let out = Command::new("git")
-                .arg("-C")
-                .arg(&dir)
-                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
-                .args(args)
-                .output()
-                .expect("git runs");
+            let out = plain_git(&dir, args);
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         run(&["init", "-q", "-b", "main"]);
@@ -400,5 +470,129 @@ mod tests {
         assert_eq!(facts.added, Some(0), "a clean checkout adds no lines");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The flags that stop what `host_git` does not, pinned by name: the diff
+    /// ones have no behaviour to observe on git 2.55, where `--numstat` ran
+    /// neither a textconv nor an external diff even without them.
+    #[test]
+    fn the_window_asks_git_for_its_own_protections() {
+        assert!(LOG.contains(&"--no-show-signature"));
+        for flag in ["--no-ext-diff", "--no-textconv", "--ignore-submodules=dirty"] {
+            assert!(DIFF.contains(&flag), "diff is missing {flag}");
+        }
+        assert!(STATUS.contains(&"--ignore-submodules=dirty"));
+    }
+
+    /// Everything `read` asks git, against a repository whose own config
+    /// names five commands: an fsmonitor, a clean filter and an index hook,
+    /// which `host_git` stops, and a gpg program behind `log.showSignature`
+    /// and a merge driver, which the window stops itself. Each is first shown
+    /// to run under plain git, because a marker that stays absent proves
+    /// nothing on a git build that never had the vector.
+    #[test]
+    fn the_window_runs_nothing_the_repository_names() {
+        let root = std::env::temp_dir().join(format!("vitna_gui_hostile_{}", std::process::id()));
+        let repo = root.join("repo");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&repo).expect("temp dir");
+        let run = |args: &[&str]| {
+            let out = plain_git(&repo, args);
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        // Git runs these through sh, even on Windows, so forward slashes.
+        let slashed = |p: &Path| p.to_string_lossy().replace(char::from(92u8), "/");
+        let mark = |name: &str| slashed(&root.join(name));
+        let executable = |path: &Path, body: String| {
+            std::fs::write(path, body).expect("write script");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            }
+        };
+
+        // Two branches that conflict on a.txt, with origin/main as the base.
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").expect("write");
+        std::fs::write(repo.join("b.txt"), "two\n").expect("write");
+        run(&["add", "-A"]);
+        run(&["commit", "-q", "-m", "base"]);
+        run(&["checkout", "-q", "-b", "work"]);
+        std::fs::write(repo.join("a.txt"), "work\n").expect("write");
+        run(&["commit", "-q", "-am", "work"]);
+        run(&["checkout", "-q", "main"]);
+        std::fs::write(repo.join("a.txt"), "main\n").expect("write");
+        run(&["commit", "-q", "-am", "main"]);
+        run(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        run(&["checkout", "-q", "work"]);
+
+        // HEAD becomes a commit with a signature header, which is all log
+        // needs to go looking for gpg. The signature itself is not real.
+        let tree = run(&["rev-parse", "HEAD^{tree}"]);
+        let parent = run(&["rev-parse", "HEAD"]);
+        let body = format!(
+            "tree {tree}\nparent {parent}\nauthor t <t@t> 1700000000 +0000\n\
+             committer t <t@t> 1700000000 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n abc\n \
+             -----END PGP SIGNATURE-----\n\nsigned work\n"
+        );
+        let signed = plain_git_input(&repo, &["hash-object", "-t", "commit", "-w", "--stdin"], &body);
+        assert!(signed.status.success(), "{}", String::from_utf8_lossy(&signed.stderr));
+        let signed = String::from_utf8_lossy(&signed.stdout).trim().to_string();
+        run(&["update-ref", "refs/heads/work", &signed]);
+
+        // Armed after every commit, so each blob holds the raw bytes and a
+        // neutralized filter still compares equal.
+        let gpg = root.join("fake-gpg");
+        executable(&gpg, format!("#!/bin/sh\necho x > \"{}\"\nexit 1\n", mark("MARK_GPG")));
+        let hooks = repo.join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).expect("hooks dir");
+        executable(&hooks.join("post-index-change"), format!("#!/bin/sh\necho x > \"{}\"\n", mark("MARK_HOOK")));
+        run(&["config", "core.fsmonitor", &format!("echo x > \"{}\" #", mark("MARK_FSMONITOR"))]);
+        run(&["config", "filter.eek.clean", &format!("echo x > \"{}\"; cat", mark("MARK_FILTER"))]);
+        run(&["config", "log.showSignature", "true"]);
+        run(&["config", "gpg.program", &slashed(&gpg)]);
+        run(&["config", "merge.vx.driver", &format!("echo x > \"{}\"; exit 1", mark("MARK_MERGE"))]);
+        let info = repo.join(".git").join("info");
+        std::fs::create_dir_all(&info).expect("info dir");
+        std::fs::write(info.join("attributes"), "* filter=eek merge=vx\n").expect("attributes");
+
+        const MARKS: [&str; 5] = ["MARK_FSMONITOR", "MARK_FILTER", "MARK_HOOK", "MARK_GPG", "MARK_MERGE"];
+        let fired = |name: &str| root.join(name).exists();
+        let reset = || {
+            for m in MARKS {
+                let _ = std::fs::remove_file(root.join(m));
+            }
+            // Identical bytes: mtime moves and size does not, so git hashes
+            // the file again, and hashing is what reaches the clean filter.
+            std::fs::write(repo.join("b.txt"), "two\n").expect("restat");
+        };
+
+        // Control: plain git, the way the window used to run it.
+        reset();
+        plain_git(&repo, &["status", "--porcelain=v1"]);
+        plain_git(&repo, &["log", "-1", "--format=%h%x09%ct%x09%s"]);
+        plain_git(&repo, &["merge-tree", "--write-tree", "--name-only", "--no-messages", "origin/main", "HEAD"]);
+        let live: Vec<&str> = MARKS.into_iter().filter(|m| fired(m)).collect();
+        eprintln!("control: vectors live on this git build = {live:?}");
+        assert!(live.contains(&"MARK_GPG"), "plain git log ran no gpg program: the control proves nothing");
+        assert!(live.contains(&"MARK_MERGE"), "plain merge-tree ran no merge driver: the control proves nothing");
+
+        // The window: everything read() asks.
+        reset();
+        let facts = read(&repo);
+        for m in &live {
+            assert!(!fired(m), "{m} ran under the window's git");
+        }
+        assert_eq!(facts.trouble, None);
+        assert_eq!(facts.subject.as_deref(), Some("signed work"), "log still answers");
+        assert_eq!(facts.modified, Some(0), "a neutralized filter still compares equal");
+        match &facts.merge {
+            Some(Merge::NotRun(why)) => assert!(why.contains("vx"), "the reason names the driver: {why}"),
+            other => panic!("the merge check ran, or gave no reason: {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
