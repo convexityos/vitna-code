@@ -61,12 +61,14 @@ impl GitBroker {
     /// preimage a changeset can state, so this returns an error naming it,
     /// the same way an unreadable preimage already did.
     pub fn inspect_changes(agent_ws: &AgentWorkspace) -> Result<ChangeSet, String> {
+        let agent = Tree::new(&agent_ws.agent_workspace_root, AGENT)?;
         let primary = Tree::new(&agent_ws.primary_repo_root, PRIMARY)?;
         let mut changes = Vec::new();
         let mut all_diffs = String::new();
 
         Self::scan_directory(
             &agent_ws.agent_workspace_root,
+            &agent,
             &primary,
             &agent_ws.agent_workspace_root,
             &mut changes,
@@ -87,6 +89,7 @@ impl GitBroker {
 
     fn scan_directory(
         base_agent: &Path,
+        agent: &Tree,
         primary: &Tree,
         current_agent_dir: &Path,
         changes: &mut Vec<FileChange>,
@@ -122,7 +125,7 @@ impl GitBroker {
             }
 
             if file_type.is_dir() {
-                Self::scan_directory(base_agent, primary, &path, changes, all_diffs)?;
+                Self::scan_directory(base_agent, agent, primary, &path, changes, all_diffs)?;
             } else if file_type.is_file() {
                 let rel = path
                     .strip_prefix(base_agent)
@@ -130,7 +133,18 @@ impl GitBroker {
                     .to_string_lossy()
                     .replace('\\', "/");
 
-                let agent_bytes = fs::read(&path).map_err(|e| e.to_string())?;
+                // Read through the same walk as the primary side: a file the
+                // listing called regular can be swapped for a link before it
+                // is read, by any process the agent left running.
+                let agent_bytes = match agent.entry(&rel)? {
+                    Entry::File { bytes, .. } => bytes,
+                    Entry::Absent | Entry::Blocked(_) => {
+                        return Err(format!("'{}' disappeared from {} while it was scanned", rel, AGENT))
+                    }
+                    Entry::Refused(reason) => {
+                        return Err(format!("'{}' changed in {} while it was scanned: {}", rel, AGENT, reason))
+                    }
+                };
                 let post_hash = sha256_hex(&agent_bytes);
 
                 let (pre_hash, pre_content) = match primary.entry(&rel)? {
@@ -262,9 +276,16 @@ impl GitBroker {
     /// directories are created one level at a time, and each file is checked
     /// against its preimage again, through the handle about to be written.
     ///
+    /// Every source is read first and must hash to the postimage its change
+    /// attests, so what reaches the primary checkout is exactly what the
+    /// changeset describes, or nothing is written. A workspace that moved on
+    /// after it was inspected is an error: the changeset is stale, and a
+    /// fresh `inspect_changes` is the remedy, not a conflict resolution.
+    ///
     /// Run it only after `validate_preimages` has found no conflicts. A
-    /// refusal here means a tree changed in between, and by then earlier
-    /// files may already be written, so it is an error that names them.
+    /// refusal while writing means the checkout changed in between, and by
+    /// then earlier files may already be written, so it is an error that
+    /// names them.
     pub(crate) fn write_changes(
         primary_repo: &Path,
         agent_root: &Path,
@@ -272,21 +293,31 @@ impl GitBroker {
     ) -> Result<Vec<String>, String> {
         let primary = Tree::new(primary_repo, PRIMARY)?;
         let agent = Tree::new(agent_root, AGENT)?;
-        let total = changeset.files.len();
-        let mut applied = Vec::new();
+
+        let mut sources = Vec::with_capacity(changeset.files.len());
         for change in &changeset.files {
-            let (bytes, permissions) = match agent.entry(&change.path) {
-                Ok(Entry::File { bytes, permissions }) => (bytes, permissions),
-                Ok(Entry::Absent | Entry::Blocked(_)) => {
-                    let error = format!("'{}' is no longer in {}", change.path, AGENT);
-                    return Err(stopped(error, &applied, total));
+            let (bytes, permissions) = match agent.entry(&change.path)? {
+                Entry::File { bytes, permissions } => (bytes, permissions),
+                Entry::Absent | Entry::Blocked(_) => {
+                    return Err(format!("Cannot merge '{}': it is no longer in {}", change.path, AGENT))
                 }
-                Ok(Entry::Refused(reason)) => {
-                    let error = format!("Cannot merge '{}' from {}: {}", change.path, AGENT, reason);
-                    return Err(stopped(error, &applied, total));
+                Entry::Refused(reason) => {
+                    return Err(format!("Cannot merge '{}' from {}: {}", change.path, AGENT, reason))
                 }
-                Err(error) => return Err(stopped(error, &applied, total)),
             };
+            let found = sha256_hex(&bytes);
+            if found != change.postimage_hash {
+                return Err(format!(
+                    "Cannot merge '{}': {} no longer holds the content this changeset attests (SHA-256 {}, found {}); inspect it again",
+                    change.path, AGENT, change.postimage_hash, found
+                ));
+            }
+            sources.push((change, bytes, permissions));
+        }
+
+        let total = sources.len();
+        let mut applied = Vec::with_capacity(total);
+        for (change, bytes, permissions) in sources {
             // The permission bits travel with the bytes, as they did when
             // this was `fs::copy`.
             primary
