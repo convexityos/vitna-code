@@ -78,7 +78,8 @@ Level 6: Remote Content & Tool Output (web fetch results, API responses, subproc
 ### Boundary 3: Tool Execution and Subprocesses (Runner Sandbox)
 - **Separation**: Subprocesses spawned to compile code, run tests, or execute linters run inside `vitna-runner` under OS sandbox isolation.
 - **Threats**: Hostile build scripts (`build.rs`, `setup.py`, `package.json` scripts), fork bombs, resource starvation, unauthorized network access, host credential theft, escaping to the host filesystem.
-- **Controls**: Linux Bubblewrap/Landlock/seccomp, Windows AppContainer/Restricted Tokens/Job Objects, macOS native sandbox profiles; minimal environment variables; non-secret environment digests; explicit read-only and workspace mounts; resource and time limits.
+- **Controls, as implemented**: `vitna-sandbox` decides the invocation and `vitna-runner` is the only spawner. Linux uses Bubblewrap (mount, PID, IPC, UTS and network namespaces; host bound read-only; workspace writable; `.git/config`, `.git/hooks`, `.git/info`, `.git/modules` and `.vitna` bound read-only over it). macOS uses a Seatbelt profile denying by default, with the same writable carve-outs. Environment is cleared and rebuilt. Timeouts terminate the whole process tree: a job object on Windows, the process group on Unix, and under bubblewrap the PID namespace makes that complete.
+- **Not implemented**: Windows has no AppContainer launcher, so there is no sandbox on Windows and `run_command` is refused unless unsandboxed execution is explicitly approved. Landlock and seccomp are not used on Linux. There are no memory, CPU, or process-count limits on any platform; `SandboxConfig` carries those numbers and nothing applies them.
 
 ### Boundary 4: Git Metadata and Workspace Isolation
 - **Separation**: The primary repository's checkout and its `.git` directory must remain pristine and unreachable.
