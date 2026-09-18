@@ -42,6 +42,10 @@ mod tests {
                 "Please add a new configuration file",
                 true,
                 Some("cargo --version".to_string()),
+                // This test drives the fake runner, which starts no process and
+                // so needs no sandbox. Left false so the test keeps asserting
+                // the default posture rather than the permissive one.
+                false,
             )
             .await
             .expect("run task succeeds");

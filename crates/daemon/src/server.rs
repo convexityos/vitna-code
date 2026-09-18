@@ -110,6 +110,9 @@ impl DaemonServer {
         prompt: &str,
         auto_approve: bool,
         verification_command: Option<String>,
+        // Explicit operator approval to run commands with no OS sandbox. Kept
+        // as its own parameter so a caller has to say it out loud.
+        allow_unsandboxed: bool,
     ) -> Result<VitnaRunReceiptV1, String> {
         let session = self
             .get_session(session_id)
@@ -131,6 +134,7 @@ impl DaemonServer {
             provider_name: "fake".to_string(),
             sandbox_guarantee: "guarded".to_string(),
             verification_command,
+            allow_unsandboxed,
         };
 
         let mut engine = OrchestrationEngine::new(

@@ -56,6 +56,7 @@ async fn test_multi_agent_dag_execution_and_receipt_aggregation() {
         provider_name: "fake".to_string(),
         sandbox_guarantee: "guarded".to_string(),
         verification_command: None,
+        allow_unsandboxed: false,
     };
 
     let mut engine1 = OrchestrationEngine::new(config1, store1, runner1, key1);
@@ -96,6 +97,7 @@ async fn test_multi_agent_dag_execution_and_receipt_aggregation() {
         provider_name: "fake".to_string(),
         sandbox_guarantee: "strong".to_string(),
         verification_command: None,
+        allow_unsandboxed: false,
     };
 
     let mut engine2 = OrchestrationEngine::new(config2, store2, runner2, key2);
@@ -164,6 +166,7 @@ async fn test_multi_agent_dag_execution_and_receipt_aggregation() {
         provider_name: "fake".to_string(),
         sandbox_guarantee: "guarded".to_string(),
         verification_command: Some("test-all".to_string()),
+        allow_unsandboxed: false,
     };
 
     let mut engine3 = OrchestrationEngine::new(config3, store3, runner3, key3);
