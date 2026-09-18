@@ -224,10 +224,20 @@ mod platform {
         let path = Path::new(endpoint);
 
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-            // Owner-only, per ADR-0005. The directory matters as much as the
-            // socket: a traversable parent lets another account reach it.
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+            // Owner-only, per ADR-0005: the directory matters as much as the
+            // socket, since a traversable parent lets another account reach it.
+            //
+            // Only on a directory this call creates, though. Chmod'ing a
+            // directory somebody else made is not ours to do, and the case that
+            // proves it is an endpoint under /tmp: tightening that to 0700
+            // would lock every other account out of it, and as root it would
+            // succeed. CI caught this because the process did not own /tmp and
+            // the chmod failed with EPERM. An existing directory keeps its
+            // permissions and the socket's own 0600 is what guards the endpoint.
+            if !dir.exists() {
+                std::fs::create_dir_all(dir)?;
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+            }
         }
 
         // A socket file outlives the process that made it, so a daemon that
