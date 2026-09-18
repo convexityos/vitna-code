@@ -264,8 +264,9 @@ fn paint_row(ui: &mut egui::Ui, row: &Row) -> Option<usize> {
     let ui: &egui::Ui = ui;
     let p = ui.painter().clone();
     let hot = resp.hovered() && row.run.is_some();
-    if hot {
-        p.rect_filled(rect, CornerRadius::same(10), theme::FACE);
+    let t = theme::hover(ui, resp.id, hot);
+    if t > 0.0 {
+        p.rect_filled(rect, CornerRadius::same(10), theme::FACE.gamma_multiply(t));
     }
 
     let title_y = rect.center().y - 9.0;

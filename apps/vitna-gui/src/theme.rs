@@ -56,6 +56,22 @@ pub const HAIR: Color32 = Color32::from_rgb(0x3c, 0x3f, 0x4a);
 pub const HAIR_2: Color32 = Color32::from_rgb(0x30, 0x32, 0x3c);
 
 
+/// The one shadow in the window, cast by what floats: search, the settings
+/// modal, menus and popovers. Dark rather than lit, so a layer reads as above
+/// the page without glowing; the page itself stays flat.
+pub const LIFT: egui::epaint::Shadow = egui::epaint::Shadow {
+    offset: [0, 12],
+    blur: 32,
+    spread: 0,
+    color: Color32::from_black_alpha(150),
+};
+
+/// How far a hover has faded in, from 0 to 1 over 120ms, so a ground eases
+/// in and out under the pointer rather than snapping.
+pub fn hover(ui: &egui::Ui, id: egui::Id, hovered: bool) -> f32 {
+    ui.ctx().animate_bool_with_time(id.with("hover"), hovered, 0.12)
+}
+
 /// Widget radii: the field and the button.
 pub const R: f32 = 16.0;
 pub const R_XS: f32 = 8.0;
@@ -208,11 +224,14 @@ pub fn install(ctx: &egui::Context) {
         v.widgets.open.bg_stroke = egui::Stroke::new(1.0, HAIR);
         v.widgets.open.fg_stroke = egui::Stroke::new(1.0, INK);
 
-        // Shadows exist in exactly one place, between the desk and the device,
-        // and that is painted by hand in app.rs. Every popup and window stays
-        // flat, because a shadow on a working surface is glow by another name.
-        v.window_shadow = egui::epaint::Shadow::NONE;
-        v.popup_shadow = egui::epaint::Shadow::NONE;
+        // What floats casts the one shadow; working surfaces stay flat.
+        v.window_shadow = LIFT;
+        v.popup_shadow = egui::epaint::Shadow {
+            offset: [0, 8],
+            blur: 22,
+            spread: 0,
+            color: Color32::from_black_alpha(130),
+        };
         v.window_corner_radius = (R as u8).into();
 
         // A thin, floating scrollbar. The default draws a pale strip down the

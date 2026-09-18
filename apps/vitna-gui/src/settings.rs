@@ -36,7 +36,8 @@ impl App {
                 egui::Frame::default()
                     .fill(theme::GROUND)
                     .stroke(Stroke::new(1.0, theme::HAIR))
-                    .corner_radius(CornerRadius::same(12)),
+                    .corner_radius(CornerRadius::same(12))
+                    .shadow(theme::LIFT),
             )
             .backdrop_color(Color32::from_black_alpha(150))
             .show(ui.ctx(), |ui| {

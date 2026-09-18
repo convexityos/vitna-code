@@ -99,7 +99,7 @@ impl App {
             icons::inline(ui, 16.0, theme::FAINT, icons::folder);
             ui.label(
                 RichText::new(&self.workspace.name)
-                    .font(theme::sans(13.0))
+                    .font(theme::sans(13.5))
                     .color(theme::INK_2),
             );
         });
@@ -133,12 +133,11 @@ impl App {
                 // The chosen session is the brightest fill in the sidebar and
                 // a hovered one a step under it, so where you stand is never
                 // a guess between two near-blacks.
-                if is_active || row.hovered() {
-                    ui.painter().rect_filled(
-                        r,
-                        CornerRadius::same(7),
-                        if is_active { theme::FACE_2 } else { theme::FACE },
-                    );
+                let t = theme::hover(&ui, row.id, row.hovered());
+                if is_active {
+                    ui.painter().rect_filled(r, CornerRadius::same(7), theme::FACE_2);
+                } else if t > 0.0 {
+                    ui.painter().rect_filled(r, CornerRadius::same(7), theme::FACE.gamma_multiply(t));
                 }
                 // Named by the prompt its first turn opened with, as the
                 // daemon's log recorded it. A session with no turn has no
@@ -169,7 +168,7 @@ impl App {
                         },
                     ),
                 };
-                let galley = theme::line(&ui, &text, theme::sans(12.5), tone, r.width() - 30.0);
+                let galley = theme::line(&ui, &text, theme::sans(13.5), tone, r.width() - 30.0);
                 ui.painter().galley(
                     egui::pos2(r.left() + 22.0, r.center().y - galley.size().y / 2.0),
                     galley,
@@ -225,7 +224,7 @@ fn row(ui: &mut egui::Ui, label: &str, meta: Option<&str>, enabled: bool, active
         egui::pos2(r.left() + 10.0, r.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        theme::sans(13.0),
+        theme::sans(13.5),
         if enabled { theme::INK_2 } else { theme::FAINTER },
     );
     if let Some(m) = meta {
@@ -233,7 +232,7 @@ fn row(ui: &mut egui::Ui, label: &str, meta: Option<&str>, enabled: bool, active
             egui::pos2(r.right() - 10.0, r.center().y),
             egui::Align2::RIGHT_CENTER,
             m,
-            theme::sans(11.5),
+            theme::sans(12.0),
             theme::FAINT,
         );
     }
