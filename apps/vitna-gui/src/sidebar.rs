@@ -39,7 +39,7 @@ impl App {
             );
             ui.label(
                 RichText::new("Code")
-                    .font(theme::display(14.5))
+                    .font(theme::display(theme::FS_TITLE))
                     .color(theme::INK),
             );
         });
@@ -60,13 +60,13 @@ impl App {
             Stroke::new(1.0, theme::HAIR),
             egui::StrokeKind::Inside,
         );
-        let tone = if linked { theme::INK } else { theme::MUTE };
+        let tone = if linked { theme::INK } else { theme::FAINT };
         icons::plus(ui.painter(), egui::pos2(r.left() + 14.0, r.center().y), tone);
         ui.painter().text(
             egui::pos2(r.left() + 30.0, r.center().y),
             egui::Align2::LEFT_CENTER,
             "New session",
-            theme::sans(13.5),
+            theme::sans(theme::FS_TITLE),
             tone,
         );
         if linked {
@@ -99,8 +99,8 @@ impl App {
             icons::inline(ui, 16.0, theme::FAINT, icons::folder);
             ui.label(
                 RichText::new(&self.workspace.name)
-                    .font(theme::sans(13.5))
-                    .color(theme::INK_2),
+                    .font(theme::sans(theme::FS_TITLE))
+                    .color(theme::INK),
             );
         });
         ui.add_space(2.0);
@@ -116,7 +116,7 @@ impl App {
                 ui.add_space(22.0);
                 ui.label(
                     RichText::new(line)
-                        .font(theme::sans(12.5))
+                        .font(theme::sans(theme::FS_UI))
                         .color(theme::FAINTER),
                 );
             });
@@ -151,24 +151,24 @@ impl App {
                 let (text, tone, hint) = match (first, &self.prompts) {
                     (Some(t), _) => (
                         crate::prompts::title(&t.prompt),
-                        if is_active { theme::INK } else { theme::INK_2 },
+                        theme::INK,
                         format!("{}\n\n{id}", theme::clip(&t.prompt, 280)),
                     ),
                     (None, Some(_)) => (
                         "New session".to_string(),
-                        if is_active { theme::INK_2 } else { theme::MUTE },
+                        if is_active { theme::INK } else { theme::FAINT },
                         format!("No turn has run in this session yet.\n{id}"),
                     ),
                     (None, None) => (
                         id.clone(),
-                        if is_active { theme::INK } else { theme::INK_2 },
+                        theme::INK,
                         match &self.prompts_trouble {
                             Some(e) => format!("The daemon did not list its prompts: {e}"),
                             None => "Waiting for the daemon to list its prompts.".to_string(),
                         },
                     ),
                 };
-                let galley = theme::line(&ui, &text, theme::sans(13.5), tone, r.width() - 30.0);
+                let galley = theme::line(&ui, &text, theme::sans(theme::FS_TITLE), tone, r.width() - 30.0);
                 ui.painter().galley(
                     egui::pos2(r.left() + 22.0, r.center().y - galley.size().y / 2.0),
                     galley,
@@ -196,14 +196,14 @@ impl App {
             foot + Vec2::new(12.0, 0.0),
             egui::Align2::LEFT_CENTER,
             word,
-            theme::sans(12.0),
+            theme::sans(theme::FS_META),
             theme::FAINT,
         );
         ui.painter().text(
             egui::pos2(rect.right() - 14.0, rect.bottom() - 20.0),
             egui::Align2::RIGHT_CENTER,
             env!("CARGO_PKG_VERSION"),
-            theme::mono(11.0),
+            theme::mono(theme::FS_MICRO),
             theme::FAINTER,
         );
     }
@@ -224,15 +224,15 @@ fn row(ui: &mut egui::Ui, label: &str, meta: Option<&str>, enabled: bool, active
         egui::pos2(r.left() + 10.0, r.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        theme::sans(13.5),
-        if enabled { theme::INK_2 } else { theme::FAINTER },
+        theme::sans(theme::FS_TITLE),
+        if enabled { theme::INK } else { theme::FAINTER },
     );
     if let Some(m) = meta {
         ui.painter().text(
             egui::pos2(r.right() - 10.0, r.center().y),
             egui::Align2::RIGHT_CENTER,
             m,
-            theme::sans(12.0),
+            theme::sans(theme::FS_META),
             theme::FAINT,
         );
     }

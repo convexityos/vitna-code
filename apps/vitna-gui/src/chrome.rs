@@ -45,7 +45,7 @@ pub fn match_frame(cc: &eframe::CreationContext<'_>) {
     set(DWMWA_USE_IMMERSIVE_DARK_MODE, 1);
     // The floor, as the sidebar is: chrome, above the lighter working side.
     set(DWMWA_CAPTION_COLOR, colorref(theme::RAIL));
-    set(DWMWA_TEXT_COLOR, colorref(theme::MUTE));
+    set(DWMWA_TEXT_COLOR, colorref(theme::FAINT));
     set(DWMWA_BORDER_COLOR, colorref(theme::HAIR));
 }
 

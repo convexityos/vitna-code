@@ -38,9 +38,12 @@ pub const FACE: Color32 = Color32::from_rgb(0x23, 0x25, 0x2d);
 pub const FACE_2: Color32 = Color32::from_rgb(0x2d, 0x2f, 0x38);
 pub const CONTROL: Color32 = Color32::from_rgb(0x2d, 0x2f, 0x38);
 
+// Three inks, and no more: what you read, what explains it, and what you can
+// ignore. There were five, two of them thirteen levels apart, which at 12 and
+// 13 pixels no eye can tell apart; they read as noise, not as hierarchy. A
+// chosen row, a pressed control or an open page says so with its ground, not
+// with a fourth ink.
 pub const INK: Color32 = Color32::from_rgb(0xf2, 0xf3, 0xf6);
-pub const INK_2: Color32 = Color32::from_rgb(0xdf, 0xe1, 0xe7);
-pub const MUTE: Color32 = Color32::from_rgb(0xc6, 0xc9, 0xd2);
 pub const FAINT: Color32 = Color32::from_rgb(0xa5, 0xa9, 0xb5);
 pub const FAINTER: Color32 = Color32::from_rgb(0x8c, 0x90, 0x9c);
 
@@ -79,11 +82,22 @@ pub fn hover(ui: &egui::Ui, id: egui::Id, hovered: bool) -> f32 {
 pub const R: f32 = 16.0;
 pub const R_XS: f32 = 8.0;
 
-/// The type floor. Nothing in this window is set smaller than MARK.
-pub const FS_MARK: f32 = 11.0;
+/// The type scale: seven sizes, and nothing between them. Fourteen had
+/// accumulated as literals, six of them between 11 and 13.5, which reads as
+/// carelessness rather than as a choice; a test now refuses a literal size
+/// anywhere outside this file. Nothing is set smaller than MICRO.
+///
+/// MICRO is eyebrows, key caps and the smallest meta; META the quiet line
+/// under a title; UI every label, control and sentence in a panel; TITLE a
+/// row's title and the sidebar's names; BODY what a person types and reads at
+/// length; HEAD a page's heading; HERO the one line on an empty start screen.
+pub const FS_MICRO: f32 = 11.0;
 pub const FS_META: f32 = 12.0;
-pub const FS_SMALL: f32 = 13.5;
+pub const FS_UI: f32 = 13.0;
+pub const FS_TITLE: f32 = 14.0;
 pub const FS_BODY: f32 = 15.0;
+pub const FS_HEAD: f32 = 20.0;
+pub const FS_HERO: f32 = 28.0;
 
 pub fn mono(size: f32) -> FontId {
     FontId::new(size, FontFamily::Monospace)
@@ -176,12 +190,12 @@ pub fn install(ctx: &egui::Context) {
     ctx.all_styles_mut(|style| {
 
         style.text_styles = [
-            (TextStyle::Heading, sans(20.0)),
+            (TextStyle::Heading, sans(FS_HEAD)),
             // Body is what an unstyled label and every hover text draws in, so it
         // is the paragraph face: any sentence nobody styled explicitly is prose.
         (TextStyle::Body, prose(FS_BODY)),
-            (TextStyle::Monospace, mono(FS_SMALL)),
-            (TextStyle::Button, sans(FS_SMALL)),
+            (TextStyle::Monospace, mono(FS_UI)),
+            (TextStyle::Button, sans(FS_UI)),
             (TextStyle::Small, sans(FS_META)),
         ]
         .into();
@@ -192,7 +206,7 @@ pub fn install(ctx: &egui::Context) {
         v.window_fill = GROUND;
         v.extreme_bg_color = FIELD;
         v.faint_bg_color = FACE;
-        v.override_text_color = Some(INK_2);
+        v.override_text_color = Some(INK);
         v.window_stroke = egui::Stroke::new(1.0, HAIR);
         v.selection.bg_fill = Color32::from_rgb(0x2a, 0x2c, 0x36);
         v.selection.stroke = egui::Stroke::new(1.0, PERI_2);
@@ -201,13 +215,13 @@ pub fn install(ctx: &egui::Context) {
         v.widgets.noninteractive.bg_fill = GROUND;
         v.widgets.noninteractive.weak_bg_fill = GROUND;
         v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, HAIR_2);
-        v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, MUTE);
+        v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, FAINT);
         v.widgets.noninteractive.corner_radius = (R_XS as u8).into();
 
         v.widgets.inactive.bg_fill = CONTROL;
         v.widgets.inactive.weak_bg_fill = FACE;
         v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, HAIR_2);
-        v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, INK_2);
+        v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, INK);
         v.widgets.inactive.corner_radius = (R_XS as u8).into();
 
         v.widgets.hovered.bg_fill = FACE_2;
@@ -292,7 +306,7 @@ pub fn eyebrow(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
         &text.to_uppercase(),
         0.0,
         egui::TextFormat {
-            font_id: sans(FS_MARK),
+            font_id: sans(FS_MICRO),
             extra_letter_spacing: 1.1,
             color: FAINTER,
             ..Default::default()
@@ -302,3 +316,34 @@ pub fn eyebrow(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
     job
 }
 
+
+#[cfg(test)]
+mod scale_tests {
+    /// Every size in the window comes off the scale above. A literal is how
+    /// fourteen sizes accumulated, six of them between 11 and 13.5, and it is
+    /// the one edit nobody would notice in review.
+    #[test]
+    fn no_font_size_is_written_outside_the_scale() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(&src).expect("src") {
+            let path = entry.expect("entry").path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            if !name.ends_with(".rs") || name == "theme.rs" {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read");
+            for (i, line) in text.lines().enumerate() {
+                for face in ["theme::sans(", "theme::prose(", "theme::display(", "theme::mono("] {
+                    for (at, _) in line.match_indices(face) {
+                        let rest = &line[at + face.len()..];
+                        if rest.starts_with(|c: char| c.is_ascii_digit()) {
+                            offenders.push(format!("{name}:{}", i + 1));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "sizes written as literals, not off the scale: {offenders:?}");
+    }
+}

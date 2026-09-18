@@ -117,6 +117,14 @@ impl App {
                         None => "not a receipt".to_string(),
                     };
                     let (icon, tone) = crate::run_list::status(&row);
+                    // The word the list gives the row: a failed check,
+                    // the signature's included, outranks what the receipt
+                    // claims about itself.
+                    let state = if row.failed_checks.is_empty() {
+                        (row.state.0.to_string(), row.state.2)
+                    } else {
+                        ("Check failed".to_string(), theme::RUST)
+                    };
                     let item = Item {
                         section: "Runs",
                         icon: Some(icon),
@@ -124,7 +132,7 @@ impl App {
                         title: row.title.clone(),
                         meta: vec![
                             (files, theme::FAINT),
-                            (row.state.0.to_string(), row.state.2),
+                            state,
                             (row.age.clone().unwrap_or_else(|| "-".into()), theme::FAINTER),
                         ],
                         keys: format!("{} {} {} {}", row.id, row.sku, row.provider, row.state.1),
@@ -158,7 +166,7 @@ impl App {
                 let item = Item {
                     section: "Sessions",
                     icon: Some(icons::bubble),
-                    tone: theme::MUTE,
+                    tone: theme::FAINT,
                     title,
                     meta: vec![
                         (turns, theme::FAINT),
@@ -196,7 +204,7 @@ impl App {
         let act = |icon: Icon, title: &str, shortcut: String, keys: &str, target: Action| Item {
             section: "Actions",
             icon: Some(icon),
-            tone: theme::MUTE,
+            tone: theme::FAINT,
             title: title.to_string(),
             meta: if shortcut.is_empty() { vec![] } else { vec![(shortcut, theme::FAINTER)] },
             keys: keys.to_string(),
@@ -337,12 +345,12 @@ impl App {
                                 .id(egui::Id::new("search-field"))
                                 .frame(egui::Frame::default())
                                 .lock_focus(true)
-                                .font(theme::prose(15.0))
+                                .font(theme::prose(theme::FS_BODY))
                                 .text_color(theme::INK)
                                 .desired_width(w - 14.0 - 18.0 - 10.0 - 52.0)
                                 .hint_text(
                                     egui::RichText::new("Search runs, sessions and actions")
-                                        .font(theme::prose(15.0))
+                                        .font(theme::prose(theme::FS_BODY))
                                         .color(theme::FAINTER),
                                 ),
                         );
@@ -369,7 +377,7 @@ impl App {
                     for f in Filter::ORDER {
                         let on = s.filter == f;
                         let tone = if on { theme::INK } else { theme::FAINT };
-                        let g = theme::line(ui, f.label(), theme::sans(12.5), tone, 200.0);
+                        let g = theme::line(ui, f.label(), theme::sans(theme::FS_UI), tone, 200.0);
                         let (r, resp) = ui.allocate_exact_size(Vec2::new(g.size().x + 20.0, 24.0), Sense::click());
                         if on {
                             ui.painter().rect_filled(r, CornerRadius::same(7), theme::FACE);
@@ -402,7 +410,7 @@ impl App {
                             ui.horizontal(|ui| {
                                 ui.set_height(40.0);
                                 ui.add_space(22.0);
-                                ui.label(egui::RichText::new(line).font(theme::prose(13.0)).color(theme::FAINTER));
+                                ui.label(egui::RichText::new(line).font(theme::prose(theme::FS_UI)).color(theme::FAINTER));
                             });
                         }
                         let mut section = "";
@@ -425,7 +433,7 @@ impl App {
                     for (k, what) in [("Esc", "Close"), ("Enter", "Open"), ("Tab", "Filter")] {
                         keycap(ui, k);
                         ui.add_space(6.0);
-                        ui.label(egui::RichText::new(what).font(theme::sans(12.0)).color(theme::FAINT));
+                        ui.label(egui::RichText::new(what).font(theme::sans(theme::FS_META)).color(theme::FAINT));
                         ui.add_space(16.0);
                     }
                 });
@@ -477,20 +485,16 @@ fn row(ui: &mut egui::Ui, ctx: &egui::Context, item: &Item, i: usize, keyed: boo
     // The facts, laid right to left.
     let mut right = r2.right() - 12.0;
     for (text, tone) in item.meta.iter().rev() {
-        let g = theme::line(ui, text, theme::sans(12.0), *tone, 160.0);
+        let g = theme::line(ui, text, theme::sans(theme::FS_META), *tone, 160.0);
         let w = g.size().x;
         ui.painter().galley(egui::pos2(right - w, r2.center().y - g.size().y / 2.0), g, *tone);
         right -= w + 12.0;
     }
-    let ink = if !item.enabled {
-        theme::FAINTER
-    } else if on {
-        theme::INK
-    } else {
-        theme::INK_2
-    };
+    // The highlighted row says so with its ground; the ink only separates
+    // what can run from what cannot.
+    let ink = if item.enabled { theme::INK } else { theme::FAINTER };
     let x = r2.left() + 36.0;
-    let tg = theme::line(ui, &item.title, theme::sans(13.5), ink, (right - x - 8.0).max(0.0));
+    let tg = theme::line(ui, &item.title, theme::sans(theme::FS_TITLE), ink, (right - x - 8.0).max(0.0));
     ui.painter().galley(egui::pos2(x, r2.center().y - tg.size().y / 2.0), tg, ink);
     let clicked = item.enabled && resp.clicked();
     if let Some(h) = &item.hint {
@@ -500,7 +504,7 @@ fn row(ui: &mut egui::Ui, ctx: &egui::Context, item: &Item, i: usize, keyed: boo
 }
 
 fn keycap(ui: &mut egui::Ui, key: &str) {
-    let g = theme::line(ui, key, theme::sans(11.0), theme::FAINT, 100.0);
+    let g = theme::line(ui, key, theme::sans(theme::FS_MICRO), theme::FAINT, 100.0);
     let (r, _) = ui.allocate_exact_size(Vec2::new(g.size().x + 12.0, 18.0), Sense::hover());
     ui.painter().rect_filled(r, CornerRadius::same(5), theme::FACE);
     ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);

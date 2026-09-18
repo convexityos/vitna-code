@@ -25,7 +25,7 @@ type Icon = fn(&egui::Painter, egui::Pos2, Color32);
 #[allow(clippy::too_many_arguments)]
 fn fact(ui: &egui::Ui, id: &str, x: f32, cy: f32, icon: Option<Icon>, text: &str, tone: Color32, max_w: f32, hint: &str) -> f32 {
     let icon_w = if icon.is_some() { 20.0 } else { 0.0 };
-    let g = theme::line(ui, text, theme::sans(12.5), tone, (max_w - icon_w).max(0.0));
+    let g = theme::line(ui, text, theme::sans(theme::FS_UI), tone, (max_w - icon_w).max(0.0));
     let w = icon_w + g.size().x;
     if let Some(draw) = icon {
         draw(ui.painter(), egui::pos2(x + 7.0, cy), theme::FAINT);
@@ -40,7 +40,7 @@ fn fact(ui: &egui::Ui, id: &str, x: f32, cy: f32, icon: Option<Icon>, text: &str
 #[allow(clippy::too_many_arguments)]
 fn fact_right(ui: &egui::Ui, id: &str, right: f32, cy: f32, icon: Option<Icon>, text: &str, tone: Color32, hint: &str) -> f32 {
     let icon_w = if icon.is_some() { 20.0 } else { 0.0 };
-    let w = icon_w + theme::line(ui, text, theme::sans(12.5), tone, 400.0).size().x;
+    let w = icon_w + theme::line(ui, text, theme::sans(theme::FS_UI), tone, 400.0).size().x;
     fact(ui, id, right - w, cy, icon, text, tone, w + 1.0, hint);
     right - w - GAP
 }
@@ -51,7 +51,7 @@ fn fact_right(ui: &egui::Ui, id: &str, right: f32, cy: f32, icon: Option<Icon>, 
 fn pill_right(ui: &egui::Ui, id: &str, right: f32, cy: f32, mark: Option<(Icon, Color32)>, parts: &[(String, Color32)], ground: Color32, hint: &str) -> f32 {
     let galleys: Vec<_> = parts
         .iter()
-        .map(|(t, c)| theme::line(ui, t, theme::sans(12.0), *c, 300.0))
+        .map(|(t, c)| theme::line(ui, t, theme::sans(theme::FS_META), *c, 300.0))
         .collect();
     let mark_w = if mark.is_some() { 18.0 } else { 0.0 };
     let inner: f32 = mark_w
@@ -113,10 +113,10 @@ impl App {
             }
             None => (folder.clone(), format!("The folder {folder}. No origin remote names a repository here.")),
         };
-        x = fact(ui, "repo", x, cy, Some(icons::folder), &repo, theme::INK_2, (limit - x).min(180.0), &repo_hint);
+        x = fact(ui, "repo", x, cy, Some(icons::folder), &repo, theme::INK, (limit - x).min(180.0), &repo_hint);
 
         let (head, tone) = match &self.workspace.head {
-            Some(Head::Branch(b)) => (b.clone(), theme::INK_2),
+            Some(Head::Branch(b)) => (b.clone(), theme::INK),
             Some(h) => (h.label(), theme::RUST),
             None => ("no repository".to_string(), theme::FAINT),
         };
@@ -131,9 +131,9 @@ impl App {
         let commit = facts.as_ref().and_then(|f| f.head.clone());
         let commit_w = commit
             .as_ref()
-            .map(|c| 20.0 + theme::line(ui, c, theme::sans(12.5), theme::FAINT, 300.0).size().x + GAP)
+            .map(|c| 20.0 + theme::line(ui, c, theme::sans(theme::FS_UI), theme::FAINT, 300.0).size().x + GAP)
             .unwrap_or(0.0);
-        let branch_full = 20.0 + theme::line(ui, &head, theme::sans(12.5), tone, 2000.0).size().x;
+        let branch_full = 20.0 + theme::line(ui, &head, theme::sans(theme::FS_UI), tone, 2000.0).size().x;
         let room = limit - x;
         let (branch_w, show_commit) = if branch_full + GAP + commit_w <= room {
             (branch_full, commit.is_some())
@@ -168,7 +168,7 @@ impl App {
     /// states the preference.
     fn worktree_toggle(&mut self, ui: &egui::Ui, right: f32, cy: f32) -> f32 {
         let on = self.placement == Placement::Worktree;
-        let galley = theme::line(ui, "worktree", theme::sans(12.5), theme::INK_2, 200.0);
+        let galley = theme::line(ui, "worktree", theme::sans(theme::FS_UI), theme::INK, 200.0);
         let rect = Rect::from_min_max(
             egui::pos2(right - galley.size().x - 26.0, cy - 11.0),
             egui::pos2(right, cy + 11.0),
@@ -187,7 +187,7 @@ impl App {
         } else {
             ui.painter().rect_stroke(b, CornerRadius::same(3), Stroke::new(1.2, theme::FAINT), egui::StrokeKind::Inside);
         }
-        ui.painter().galley(egui::pos2(rect.left() + 22.0, cy - galley.size().y / 2.0), galley, theme::INK_2);
+        ui.painter().galley(egui::pos2(rect.left() + 22.0, cy - galley.size().y / 2.0), galley, theme::INK);
         if resp.clicked() {
             self.placement = if on { Placement::Local } else { Placement::Worktree };
         }

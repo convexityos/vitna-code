@@ -31,17 +31,19 @@ impl App {
 
         // With nothing to list, the start state sits in the upper third, the
         // way Codex centres "Let's build": enough space above it to feel like a
-        // place, not a form. With runs to list, the heading moves up and gives
-        // the centre to them, the way Cursor's agent home does.
+        // place, not a form. With runs to list, the runs are the page, the way
+        // Cursor's agent home gives its list the whole centre: a greeting over
+        // work already done is decoration.
         let listing = self.ledger_has_entries();
-        let top = if listing { 0.07 } else { 0.22 };
-        ui2.add_space((body.height() * top).max(24.0));
+        ui2.add_space(if listing { 28.0 } else { (body.height() * 0.22).max(24.0) });
 
-        ui2.vertical_centered(|ui| {
-            ui.add(egui::Image::new(crate::brand::mark()).fit_to_exact_size(Vec2::splat(40.0)));
-            ui.add_space(6.0);
-            ui.label(RichText::new("Let’s build").font(theme::display(28.0)).color(theme::INK));
-        });
+        if !listing {
+            ui2.vertical_centered(|ui| {
+                ui.add(egui::Image::new(crate::brand::mark()).fit_to_exact_size(Vec2::splat(40.0)));
+                ui.add_space(6.0);
+                ui.label(RichText::new("Let’s build").font(theme::display(theme::FS_HERO)).color(theme::INK));
+            });
+        }
 
         if let Link::Absent { .. } = &self.link {
             ui2.add_space(10.0);
@@ -49,7 +51,7 @@ impl App {
         }
 
         self.turn_state(&mut ui2);
-        ui2.add_space(if listing { 26.0 } else { 18.0 });
+        ui2.add_space(if listing { 10.0 } else { 18.0 });
         self.run_list(&mut ui2);
 
         self.composer(ui, composer_rect);
@@ -61,11 +63,11 @@ impl App {
             ui.painter().circle_filled(d.center(), 3.0, theme::RUST);
             ui.label(
                 RichText::new("The daemon is not running, so there is nothing to send to yet.")
-                    .font(theme::prose(12.5))
+                    .font(theme::prose(theme::FS_UI))
                     .color(theme::FAINT),
             );
             let again = ui.add(
-                egui::Button::new(RichText::new("Check again").font(theme::sans(12.5)).color(theme::PERI_2))
+                egui::Button::new(RichText::new("Check again").font(theme::sans(theme::FS_UI)).color(theme::PERI_2))
                     .fill(Color32::TRANSPARENT)
                     .frame(false),
             );
@@ -79,7 +81,7 @@ impl App {
 fn fact(ui: &mut egui::Ui, icon: fn(&egui::Painter, egui::Pos2, Color32), text: &str, tone: Color32) {
     icons::inline(ui, 16.0, theme::FAINT, icon);
     ui.add_space(2.0);
-    ui.add(egui::Label::new(RichText::new(text).font(theme::sans(13.0)).color(tone)).truncate());
+    ui.add(egui::Label::new(RichText::new(text).font(theme::sans(theme::FS_UI)).color(tone)).truncate());
 }
 
 impl App {
@@ -98,7 +100,7 @@ impl App {
                     ui.painter().circle_filled(d.center(), 3.0, theme::PERI);
                     ui.label(
                         RichText::new("Running. The daemon has the turn.")
-                            .font(theme::prose(12.5))
+                            .font(theme::prose(theme::FS_UI))
                             .color(theme::FAINT),
                     );
                 });
@@ -118,7 +120,7 @@ impl App {
                     ui.add(
                         egui::Label::new(
                             RichText::new(message)
-                                .font(theme::prose(12.5))
+                                .font(theme::prose(theme::FS_UI))
                                 .color(theme::FAINT),
                         )
                         .wrap(),
@@ -143,8 +145,8 @@ impl App {
                     ui.add(
                         egui::Label::new(
                             RichText::new(&result.text)
-                                .font(theme::prose(13.5))
-                                .color(theme::INK_2),
+                                .font(theme::prose(theme::FS_TITLE))
+                                .color(theme::INK),
                         )
                         .wrap(),
                     );
@@ -158,14 +160,14 @@ impl App {
                         ui,
                         icons::folder,
                         &format!("{} ({})", result.model_sku, result.provider),
-                        theme::MUTE,
+                        theme::FAINT,
                     );
                     ui.add_space(14.0);
                     fact(
                         ui,
                         icons::clock,
                         &result.completion_state.replace('_', " "),
-                        theme::MUTE,
+                        theme::FAINT,
                     );
                     ui.add_space(14.0);
                     let tokens = match (result.prompt_tokens, result.completion_tokens) {
@@ -174,7 +176,7 @@ impl App {
                         // somebody would believe.
                         _ => "-".to_string(),
                     };
-                    fact(ui, icons::clock, &tokens, theme::MUTE);
+                    fact(ui, icons::clock, &tokens, theme::FAINT);
                 });
 
                 if !result.files_modified.is_empty() {
@@ -182,7 +184,7 @@ impl App {
                     for path in &result.files_modified {
                         ui.label(
                             RichText::new(path)
-                                .font(theme::mono(12.0))
+                                .font(theme::mono(theme::FS_META))
                                 .color(theme::FAINT),
                         );
                     }
@@ -191,7 +193,7 @@ impl App {
                 ui.add_space(8.0);
                 ui.label(
                     RichText::new(result.receipt_path.display().to_string())
-                        .font(theme::mono(11.5))
+                        .font(theme::mono(theme::FS_MICRO))
                         .color(theme::FAINTER),
                 );
             });

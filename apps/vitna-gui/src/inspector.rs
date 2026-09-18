@@ -115,10 +115,10 @@ fn receipt_tab(ui: &mut egui::Ui, f: &Facts) {
             "Every check this window can run passed. The signature was not checked, having no key to be checked with.",
         ),
     };
-    ui.add(egui::Label::new(RichText::new(word).font(theme::prose(12.5)).color(tone)).wrap());
+    ui.add(egui::Label::new(RichText::new(word).font(theme::prose(theme::FS_UI)).color(tone)).wrap());
     for e in f.errors.iter().map(String::as_str).chain(signature_fault) {
         ui.add(
-            egui::Label::new(RichText::new(e).font(theme::prose(12.0)).color(theme::RUST)).wrap(),
+            egui::Label::new(RichText::new(e).font(theme::prose(theme::FS_META)).color(theme::RUST)).wrap(),
         );
     }
 
@@ -132,7 +132,7 @@ fn receipt_tab(ui: &mut egui::Ui, f: &Facts) {
     ui.add_space(16.0);
     ui.label(
         RichText::new("The receipt")
-            .font(theme::sans(12.0))
+            .font(theme::sans(theme::FS_META))
             .color(theme::FAINT),
     );
     ui.add_space(6.0);
@@ -141,7 +141,7 @@ fn receipt_tab(ui: &mut egui::Ui, f: &Facts) {
     ui.add(
         egui::Label::new(
             RichText::new(&f.json)
-                .font(theme::mono(10.5))
+                .font(theme::mono(theme::FS_MICRO))
                 .color(theme::FAINT),
         )
         .wrap(),
@@ -153,13 +153,13 @@ fn changes_tab(ui: &mut egui::Ui, f: &Facts) {
     if f.files.is_empty() {
         ui.label(
             RichText::new("This run changed no files.")
-                .font(theme::prose(12.5))
+                .font(theme::prose(theme::FS_UI))
                 .color(theme::FAINTER),
         );
     }
     for (p, pre, post) in &f.files {
         ui.add(
-            egui::Label::new(RichText::new(p).font(theme::mono(12.0)).color(theme::INK_2))
+            egui::Label::new(RichText::new(p).font(theme::mono(theme::FS_META)).color(theme::INK))
                 .wrap(),
         );
         ui.add_space(3.0);
@@ -178,7 +178,7 @@ fn changes_tab(ui: &mut egui::Ui, f: &Facts) {
             RichText::new(
                 "The receipt carries a digest of the diff, not the diff. That proves a diff was not altered; it cannot show you one.",
             )
-            .font(theme::prose(11.5))
+            .font(theme::prose(theme::FS_MICRO))
             .color(theme::FAINTER),
         )
         .wrap(),
@@ -192,7 +192,7 @@ fn evidence_tab(ui: &mut egui::Ui, f: &Facts) {
                 RichText::new(
                     "No evidence was recorded. A run with no verification command produces none.",
                 )
-                .font(theme::prose(12.5))
+                .font(theme::prose(theme::FS_UI))
                 .color(theme::FAINTER),
             )
             .wrap(),
@@ -201,15 +201,15 @@ fn evidence_tab(ui: &mut egui::Ui, f: &Facts) {
     for (grade, description, digest) in &f.evidence {
         ui.label(
             RichText::new(grade.replace('_', " "))
-                .font(theme::mono(11.0))
-                .color(theme::INK_2),
+                .font(theme::mono(theme::FS_MICRO))
+                .color(theme::INK),
         );
         ui.add_space(3.0);
         ui.add(
             egui::Label::new(
                 RichText::new(description)
-                    .font(theme::prose(12.0))
-                    .color(theme::MUTE),
+                    .font(theme::prose(theme::FS_META))
+                    .color(theme::FAINT),
             )
             .wrap(),
         );
@@ -229,14 +229,14 @@ fn field(ui: &mut egui::Ui, key: &str, value: &str) {
     ui.horizontal(|ui| {
         ui.label(
             RichText::new(key)
-                .font(theme::sans(11.5))
+                .font(theme::sans(theme::FS_MICRO))
                 .color(theme::FAINTER),
         );
         ui.add_space(8.0);
         ui.add(
             egui::Label::new(
                 RichText::new(value)
-                    .font(theme::mono(11.0))
+                    .font(theme::mono(theme::FS_MICRO))
                     .color(theme::FAINT),
             )
             .truncate(),

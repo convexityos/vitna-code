@@ -98,14 +98,14 @@ impl App {
             egui::pos2(rect.left() + 20.0, rect.bottom() - 32.0),
             Align2::LEFT_CENTER,
             "Vitna Code",
-            theme::sans(12.0),
+            theme::sans(theme::FS_META),
             theme::FAINT,
         );
         ui.painter().text(
             egui::pos2(rect.left() + 20.0, rect.bottom() - 17.0),
             Align2::LEFT_CENTER,
             format!("v{}", env!("CARGO_PKG_VERSION")),
-            theme::mono(11.0),
+            theme::mono(theme::FS_MICRO),
             theme::FAINTER,
         );
     }
@@ -122,7 +122,7 @@ impl App {
             SettingsPage::Providers => "Providers",
             SettingsPage::Models => "Models",
         };
-        ui.label(RichText::new(title).font(theme::display(16.0)).color(theme::INK));
+        ui.label(RichText::new(title).font(theme::display(theme::FS_BODY)).color(theme::INK));
         ui.add_space(12.0);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -171,7 +171,7 @@ impl App {
                 .map(|c| c.name.clone())
                 .unwrap_or_else(|| "No model".to_string());
             setting_row(ui, "Model", "The preference sent with each turn. Change it under Models.", |ui| {
-                ui.label(RichText::new(name).font(theme::sans(13.0)).color(theme::INK_2));
+                ui.label(RichText::new(name).font(theme::sans(theme::FS_UI)).color(theme::INK));
             });
         });
 
@@ -198,7 +198,7 @@ impl App {
                 ctx.format_shortcut(&SC_ZOOM_RESET)
             );
             setting_row(ui, "Zoom", &desc, |ui| {
-                ui.label(RichText::new(format!("{:.0}%", z * 100.0)).font(theme::mono(12.5)).color(theme::INK_2));
+                ui.label(RichText::new(format!("{:.0}%", z * 100.0)).font(theme::mono(theme::FS_META)).color(theme::INK));
                 if (z - 1.0).abs() > 0.01 && text_button(ui, "Reset").clicked() {
                     ctx.set_zoom_factor(1.0);
                 }
@@ -224,10 +224,10 @@ impl App {
         card(ui, |ui| {
             let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), egui::Sense::hover());
             ui.painter().circle_filled(egui::pos2(r.left() + 18.0, r.bottom()), 3.5, dot);
-            ui.painter().text(egui::pos2(r.left() + 30.0, r.bottom()), Align2::LEFT_CENTER, word, theme::sans(13.5), theme::INK);
+            ui.painter().text(egui::pos2(r.left() + 30.0, r.bottom()), Align2::LEFT_CENTER, word, theme::sans(theme::FS_TITLE), theme::INK);
             ui.horizontal(|ui| {
                 ui.add_space(30.0);
-                ui.add(egui::Label::new(RichText::new(detail).font(theme::sans(12.0)).color(theme::FAINT)).truncate());
+                ui.add(egui::Label::new(RichText::new(detail).font(theme::sans(theme::FS_META)).color(theme::FAINT)).truncate());
             });
             ui.add_space(8.0);
         });
@@ -278,9 +278,9 @@ impl App {
                     }
                     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), egui::Sense::hover());
                     provider_badge(ui, egui::pos2(r.left() + 20.0, r.center().y), 14.0, &p.id, &p.name);
-                    let name = ui.painter().text(egui::pos2(r.left() + 36.0, r.center().y), Align2::LEFT_CENTER, &p.name, theme::sans(13.5), theme::INK);
+                    let name = ui.painter().text(egui::pos2(r.left() + 36.0, r.center().y), Align2::LEFT_CENTER, &p.name, theme::sans(theme::FS_TITLE), theme::INK);
                     tag(ui, egui::pos2(name.right() + 10.0, r.center().y), "Environment");
-                    ui.painter().text(egui::pos2(r.right() - 14.0, r.center().y), Align2::RIGHT_CENTER, p.env.join(", "), theme::mono(11.5), theme::FAINTER);
+                    ui.painter().text(egui::pos2(r.right() - 14.0, r.center().y), Align2::RIGHT_CENTER, p.env.join(", "), theme::mono(theme::FS_MICRO), theme::FAINTER);
                 }
             });
         }
@@ -297,19 +297,19 @@ impl App {
                 }
                 let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 50.0), egui::Sense::hover());
                 provider_badge(ui, egui::pos2(r.left() + 20.0, r.top() + 18.0), 14.0, &p.id, &p.name);
-                ui.painter().text(egui::pos2(r.left() + 36.0, r.top() + 18.0), Align2::LEFT_CENTER, &p.name, theme::sans(13.5), theme::INK);
+                ui.painter().text(egui::pos2(r.left() + 36.0, r.top() + 18.0), Align2::LEFT_CENTER, &p.name, theme::sans(theme::FS_TITLE), theme::INK);
                 let needs = if p.env.is_empty() {
                     "No variable declared for it.".to_string()
                 } else {
                     format!("Needs {} in the environment.", p.env.join(" or "))
                 };
-                ui.painter().text(egui::pos2(r.left() + 36.0, r.top() + 36.0), Align2::LEFT_CENTER, needs, theme::sans(12.0), theme::FAINT);
+                ui.painter().text(egui::pos2(r.left() + 36.0, r.top() + 36.0), Align2::LEFT_CENTER, needs, theme::sans(theme::FS_META), theme::FAINT);
 
                 let b = Rect::from_min_size(egui::pos2(r.right() - 14.0 - 84.0, r.center().y - 13.0), Vec2::new(84.0, 26.0));
                 let connect = ui.interact(b, ui.id().with(("connect", &p.id)), egui::Sense::hover());
                 ui.painter().rect_stroke(b, CornerRadius::same(6), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
                 icons::plus(ui.painter(), egui::pos2(b.left() + 16.0, b.center().y), theme::FAINTER);
-                ui.painter().text(egui::pos2(b.left() + 30.0, b.center().y), Align2::LEFT_CENTER, "Connect", theme::sans(12.5), theme::FAINTER);
+                ui.painter().text(egui::pos2(b.left() + 30.0, b.center().y), Align2::LEFT_CENTER, "Connect", theme::sans(theme::FS_UI), theme::FAINTER);
                 let var = p.env.first().map(String::as_str).unwrap_or("the variable");
                 connect.on_hover_text(format!("Keys are the daemon's to keep, and it is not running. Until then, set {var} and start the window again."));
             }
@@ -329,7 +329,7 @@ impl App {
                 if c.provider_id != last {
                     last = c.provider_id.clone();
                     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), egui::Sense::hover());
-                    ui.painter().text(egui::pos2(r.left() + 14.0, r.bottom() - 6.0), Align2::LEFT_BOTTOM, &c.provider_name, theme::sans(11.0), theme::FAINTER);
+                    ui.painter().text(egui::pos2(r.left() + 14.0, r.bottom() - 6.0), Align2::LEFT_BOTTOM, &c.provider_name, theme::sans(theme::FS_MICRO), theme::FAINTER);
                 }
                 let on = self.model == Some(i);
                 let row = ui.allocate_response(Vec2::new(ui.available_width(), 30.0), egui::Sense::click());
@@ -337,9 +337,9 @@ impl App {
                 if row.hovered() {
                     ui.painter().rect_filled(r.shrink2(Vec2::new(6.0, 0.0)), CornerRadius::same(6), Color32::from_white_alpha(8));
                 }
-                ui.painter().text(egui::pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, &c.name, theme::sans(13.0), if on { theme::PERI_2 } else { theme::INK_2 });
+                ui.painter().text(egui::pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, &c.name, theme::sans(theme::FS_UI), if on { theme::PERI_2 } else { theme::INK });
                 let right = if on { r.right() - 34.0 } else { r.right() - 14.0 };
-                ui.painter().text(egui::pos2(right, r.center().y), Align2::RIGHT_CENTER, model_meta(c), theme::mono(11.0), theme::FAINTER);
+                ui.painter().text(egui::pos2(right, r.center().y), Align2::RIGHT_CENTER, model_meta(c), theme::mono(theme::FS_MICRO), theme::FAINTER);
                 if on {
                     icons::check(ui.painter(), egui::pos2(r.right() - 18.0, r.center().y), theme::PERI_2);
                 }
@@ -400,7 +400,7 @@ fn page_shortcuts(ui: &mut egui::Ui) {
 }
 
 fn section(ui: &mut egui::Ui, title: &str) {
-    ui.label(RichText::new(title).font(theme::sans(13.0)).color(theme::INK_2));
+    ui.label(RichText::new(title).font(theme::sans(theme::FS_UI)).color(theme::INK));
     ui.add_space(8.0);
 }
 
@@ -425,8 +425,8 @@ fn rule(ui: &mut egui::Ui) {
 /// A label and its description on the left, a control on the right.
 fn setting_row(ui: &mut egui::Ui, label: &str, desc: &str, right: impl FnOnce(&mut egui::Ui)) {
     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0), egui::Sense::hover());
-    ui.painter().text(egui::pos2(r.left() + 14.0, r.top() + 16.0), Align2::LEFT_CENTER, label, theme::sans(13.5), theme::INK);
-    ui.painter().text(egui::pos2(r.left() + 14.0, r.top() + 32.0), Align2::LEFT_CENTER, desc, theme::sans(12.0), theme::FAINT);
+    ui.painter().text(egui::pos2(r.left() + 14.0, r.top() + 16.0), Align2::LEFT_CENTER, label, theme::sans(theme::FS_TITLE), theme::INK);
+    ui.painter().text(egui::pos2(r.left() + 14.0, r.top() + 32.0), Align2::LEFT_CENTER, desc, theme::sans(theme::FS_META), theme::FAINT);
     let right_rect = Rect::from_min_max(egui::pos2(r.left() + r.width() * 0.6, r.top()), egui::pos2(r.right() - 14.0, r.bottom()));
     let mut sub = ui.new_child(
         egui::UiBuilder::new()
@@ -439,29 +439,29 @@ fn setting_row(ui: &mut egui::Ui, label: &str, desc: &str, right: impl FnOnce(&m
 
 fn shortcut_row(ui: &mut egui::Ui, label: &str, keys: &str) {
     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), egui::Sense::hover());
-    ui.painter().text(egui::pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, label, theme::sans(13.0), theme::INK_2);
-    let galley = ui.painter().layout_no_wrap(keys.to_string(), theme::mono(11.5), theme::INK_2);
+    ui.painter().text(egui::pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, label, theme::sans(theme::FS_UI), theme::INK);
+    let galley = ui.painter().layout_no_wrap(keys.to_string(), theme::mono(theme::FS_MICRO), theme::INK);
     let cap = Rect::from_min_max(
         egui::pos2(r.right() - 14.0 - galley.size().x - 14.0, r.center().y - 10.0),
         egui::pos2(r.right() - 14.0, r.center().y + 10.0),
     );
     ui.painter().rect_filled(cap, CornerRadius::same(5), theme::FACE);
     ui.painter().rect_stroke(cap, CornerRadius::same(5), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
-    ui.painter().galley(egui::pos2(cap.left() + 7.0, cap.center().y - galley.size().y / 2.0), galley, theme::INK_2);
+    ui.painter().galley(egui::pos2(cap.left() + 7.0, cap.center().y - galley.size().y / 2.0), galley, theme::INK);
 }
 
 fn plain_row(ui: &mut egui::Ui, text: &str) {
     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), egui::Sense::hover());
-    ui.painter().text(egui::pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, text, theme::sans(12.5), theme::FAINT);
+    ui.painter().text(egui::pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, text, theme::sans(theme::FS_UI), theme::FAINT);
 }
 
 fn mono_row(ui: &mut egui::Ui, text: &str) {
     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), egui::Sense::hover());
-    ui.painter().text(egui::pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, text, theme::mono(12.0), theme::INK_2);
+    ui.painter().text(egui::pos2(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, text, theme::mono(theme::FS_META), theme::INK);
 }
 
 fn pill(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(text.to_string(), theme::sans(12.5), theme::INK_2);
+    let galley = ui.painter().layout_no_wrap(text.to_string(), theme::sans(theme::FS_UI), theme::INK);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 20.0, 24.0), egui::Sense::click());
     if on {
         ui.painter().rect_filled(rect, CornerRadius::same(6), theme::FACE_2);
@@ -481,7 +481,7 @@ fn toggle(ui: &mut egui::Ui, on: bool) -> egui::Response {
 
 fn text_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(
-        egui::Button::new(RichText::new(label).font(theme::sans(12.5)).color(theme::PERI_2))
+        egui::Button::new(RichText::new(label).font(theme::sans(theme::FS_UI)).color(theme::PERI_2))
             .fill(Color32::TRANSPARENT)
             .frame(false),
     )
@@ -489,7 +489,7 @@ fn text_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 
 /// A small tag beside a name, like OpenCode's "Environment".
 fn tag(ui: &mut egui::Ui, at: egui::Pos2, text: &str) {
-    let galley = ui.painter().layout_no_wrap(text.to_string(), theme::sans(10.5), theme::FAINT);
+    let galley = ui.painter().layout_no_wrap(text.to_string(), theme::sans(theme::FS_MICRO), theme::FAINT);
     let rect = Rect::from_min_size(egui::pos2(at.x, at.y - 9.0), Vec2::new(galley.size().x + 12.0, 18.0));
     ui.painter().rect_filled(rect, CornerRadius::same(4), theme::FACE);
     ui.painter().rect_stroke(rect, CornerRadius::same(4), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
@@ -497,7 +497,7 @@ fn tag(ui: &mut egui::Ui, at: egui::Pos2, text: &str) {
 }
 
 fn note(ui: &mut egui::Ui, text: &str) {
-    ui.add(egui::Label::new(RichText::new(text).font(theme::prose(12.5)).color(theme::FAINT)).wrap());
+    ui.add(egui::Label::new(RichText::new(text).font(theme::prose(theme::FS_UI)).color(theme::FAINT)).wrap());
 }
 
 fn model_meta(c: &Choice) -> String {
@@ -519,7 +519,7 @@ fn compact_tokens(n: u64) -> String {
 fn nav_group(ui: &mut egui::Ui, title: &str) {
     ui.horizontal(|ui| {
         ui.add_space(8.0);
-        ui.label(RichText::new(title).font(theme::sans(12.0)).color(theme::FAINT));
+        ui.label(RichText::new(title).font(theme::sans(theme::FS_META)).color(theme::FAINT));
     });
     ui.add_space(2.0);
 }
@@ -532,13 +532,13 @@ fn nav_row(ui: &mut egui::Ui, icon: Icon, label: &str, active: bool) -> egui::Re
     } else if resp.hovered() {
         ui.painter().rect_filled(r, CornerRadius::same(6), Color32::from_white_alpha(8));
     }
-    icon(ui.painter(), egui::pos2(r.left() + 14.0, r.center().y), if active { theme::INK_2 } else { theme::FAINT });
+    icon(ui.painter(), egui::pos2(r.left() + 14.0, r.center().y), if active { theme::INK } else { theme::FAINT });
     ui.painter().text(
         egui::pos2(r.left() + 30.0, r.center().y),
         Align2::LEFT_CENTER,
         label,
-        theme::sans(13.0),
-        if active { theme::INK } else { theme::INK_2 },
+        theme::sans(theme::FS_UI),
+        theme::INK,
     );
     resp
 }

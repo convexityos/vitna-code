@@ -86,7 +86,7 @@ fn grade_tone(grade: &str) -> Color32 {
 /// "minutes ago".
 fn meta(ui: &mut egui::Ui, text: &str) {
     ui.add(
-        egui::Label::new(RichText::new(text).font(theme::sans(12.5)).color(theme::FAINT))
+        egui::Label::new(RichText::new(text).font(theme::sans(theme::FS_UI)).color(theme::FAINT))
             .wrap_mode(egui::TextWrapMode::Extend),
     );
 }
@@ -94,11 +94,11 @@ fn meta(ui: &mut egui::Ui, text: &str) {
 /// A section heading with its count, which is the count and never a guess.
 fn section(ui: &mut egui::Ui, title: &str, n: usize) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(title).font(theme::sans(12.0)).color(theme::FAINT));
+        ui.label(RichText::new(title).font(theme::sans(theme::FS_META)).color(theme::FAINT));
         ui.add_space(8.0);
         ui.label(
             RichText::new(n.to_string())
-                .font(theme::mono(11.5))
+                .font(theme::mono(theme::FS_MICRO))
                 .color(theme::FAINTER),
         );
     });
@@ -115,7 +115,7 @@ pub(crate) fn tab_strip(ui: &mut egui::Ui, current: &mut Tab) {
         for tab in [Tab::Receipt, Tab::Changes, Tab::Evidence] {
             let selected = *current == tab;
             let text = RichText::new(tab.label())
-                .font(theme::sans(12.5))
+                .font(theme::sans(theme::FS_UI))
                 .color(if selected { theme::INK } else { theme::FAINT });
             let r = ui.add(
                 egui::Button::new(text)
@@ -199,7 +199,7 @@ impl App {
                     ui.add_space(2.0);
                     ui.label(
                         RichText::new("Back")
-                            .font(theme::sans(12.5))
+                            .font(theme::sans(theme::FS_UI))
                             .color(theme::FAINT),
                     );
                 });
@@ -222,7 +222,7 @@ impl App {
                 ui.add(
                     egui::Label::new(
                         RichText::new(heading)
-                            .font(theme::display(19.0))
+                            .font(theme::display(theme::FS_HEAD))
                             .color(theme::INK),
                     )
                     .wrap(),
@@ -249,7 +249,7 @@ impl App {
                 let pill = ui.horizontal(|ui| {
                     let (d, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
                     ui.painter().circle_filled(d.center(), 3.0, tone);
-                    ui.label(RichText::new(word).font(theme::sans(12.5)).color(tone));
+                    ui.label(RichText::new(word).font(theme::sans(theme::FS_UI)).color(tone));
                 });
                 pill.response.on_hover_text(why);
 
@@ -261,7 +261,7 @@ impl App {
                         ui.painter().circle_filled(d.center(), 3.0, theme::RUST);
                         ui.add(
                             egui::Label::new(
-                                RichText::new(e).font(theme::prose(12.5)).color(theme::RUST),
+                                RichText::new(e).font(theme::prose(theme::FS_UI)).color(theme::RUST),
                             )
                             .wrap(),
                         );
@@ -293,10 +293,10 @@ impl App {
         // The heading already says a one-line prompt; the whole of it is
         // shown only when there is more of it than the heading holds.
         if let Some(p) = prompt.filter(|p| p.trim() != crate::prompts::title(p)) {
-            ui.label(RichText::new("Asked").font(theme::sans(12.0)).color(theme::FAINT));
+            ui.label(RichText::new("Asked").font(theme::sans(theme::FS_META)).color(theme::FAINT));
             ui.add_space(4.0);
             ui.add(
-                egui::Label::new(RichText::new(p).font(theme::prose(14.0)).color(theme::INK_2))
+                egui::Label::new(RichText::new(p).font(theme::prose(theme::FS_TITLE)).color(theme::INK))
                     .wrap(),
             );
             ui.add_space(14.0);
@@ -307,8 +307,8 @@ impl App {
                 ui.add(
                     egui::Label::new(
                         RichText::new(text)
-                            .font(theme::prose(14.0))
-                            .color(theme::INK_2),
+                            .font(theme::prose(theme::FS_TITLE))
+                            .color(theme::INK),
                     )
                     .wrap(),
                 );
@@ -317,7 +317,7 @@ impl App {
                     ui.add(
                         egui::Label::new(
                             RichText::new("The prompt comes from the daemon's event log; the receipt does not carry it.")
-                                .font(theme::prose(11.5))
+                                .font(theme::prose(theme::FS_MICRO))
                                 .color(theme::FAINTER),
                         )
                         .wrap(),
@@ -332,7 +332,7 @@ impl App {
                         } else {
                             "A receipt records what was done, not what was said, so there is no transcript here. What it does carry is below."
                         })
-                        .font(theme::prose(12.5))
+                        .font(theme::prose(theme::FS_UI))
                         .color(theme::FAINTER),
                     )
                     .wrap(),
@@ -345,7 +345,7 @@ impl App {
         if evidence.is_empty() {
             ui.label(
                 RichText::new("None recorded.")
-                    .font(theme::prose(12.5))
+                    .font(theme::prose(theme::FS_UI))
                     .color(theme::FAINTER),
             );
         }
@@ -353,15 +353,15 @@ impl App {
             ui.horizontal_top(|ui| {
                 ui.label(
                     RichText::new(grade.replace('_', " "))
-                        .font(theme::mono(11.0))
+                        .font(theme::mono(theme::FS_MICRO))
                         .color(grade_tone(grade)),
                 );
                 ui.add_space(10.0);
                 ui.add(
                     egui::Label::new(
                         RichText::new(description)
-                            .font(theme::prose(12.5))
-                            .color(theme::MUTE),
+                            .font(theme::prose(theme::FS_UI))
+                            .color(theme::FAINT),
                     )
                     .wrap(),
                 );
@@ -374,15 +374,15 @@ impl App {
         if files.is_empty() {
             ui.label(
                 RichText::new("This run changed no files.")
-                    .font(theme::prose(12.5))
+                    .font(theme::prose(theme::FS_UI))
                     .color(theme::FAINTER),
             );
         }
         for path in files {
             ui.label(
                 RichText::new(path)
-                    .font(theme::mono(12.0))
-                    .color(theme::MUTE),
+                    .font(theme::mono(theme::FS_META))
+                    .color(theme::FAINT),
             );
             ui.add_space(3.0);
         }
@@ -393,7 +393,7 @@ impl App {
             ui.add_space(8.0);
             ui.label(
                 RichText::new(&base[..base.len().min(12)])
-                    .font(theme::mono(11.5))
+                    .font(theme::mono(theme::FS_MICRO))
                     .color(theme::FAINT),
             );
         });

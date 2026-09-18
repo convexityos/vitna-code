@@ -213,7 +213,7 @@ impl App {
                     egui::RichText::new(
                         "No runs here yet. A turn's receipt lands in .vitna/receipts and is listed here.",
                     )
-                    .font(theme::prose(12.5))
+                    .font(theme::prose(theme::FS_UI))
                     .color(theme::FAINTER),
                 );
             });
@@ -233,21 +233,21 @@ impl App {
             egui::pos2(h.left() + 6.0 + ew + 8.0, h.center().y),
             egui::Align2::LEFT_CENTER,
             list.rows.len().to_string(),
-            theme::sans(11.5),
+            theme::sans(theme::FS_MICRO),
             theme::FAINTER,
         );
         ui.painter().text(
             egui::pos2(h.right() - 6.0, h.center().y),
             egui::Align2::RIGHT_CENTER,
             ".vitna/receipts",
-            theme::sans(11.5),
+            theme::sans(theme::FS_MICRO),
             theme::FAINTER,
         );
 
         if let Some(t) = &list.trouble {
             ui.label(
                 egui::RichText::new(format!("The receipts could not be listed: {t}"))
-                    .font(theme::prose(12.5))
+                    .font(theme::prose(theme::FS_UI))
                     .color(theme::RUST),
             );
         }
@@ -296,23 +296,21 @@ fn paint_row(ui: &mut egui::Ui, row: &Row) -> Option<usize> {
     let x = rect.left() + 40.0;
     let mut title_right = rect.right() - 14.0;
     if let Some(a) = &row.age {
-        let g = theme::line(ui, a, theme::sans(12.0), theme::FAINTER, 60.0);
+        let g = theme::line(ui, a, theme::sans(theme::FS_META), theme::FAINTER, 60.0);
         let w = g.size().x;
         p.galley(egui::pos2(title_right - w, title_y - g.size().y / 2.0), g, theme::FAINTER);
         title_right -= w + 16.0;
     }
-    let ink = match (row.titled, hot) {
-        (true, true) => theme::INK,
-        (true, false) => theme::INK_2,
-        (false, _) => theme::MUTE,
-    };
-    let tg = theme::line(ui, &row.title, theme::sans(14.0), ink, (title_right - x).max(0.0));
+    // The hover ground says which row the pointer is on; the ink says only
+    // whether the row has a prompt to show or falls back to its id.
+    let ink = if row.titled { theme::INK } else { theme::FAINT };
+    let tg = theme::line(ui, &row.title, theme::sans(theme::FS_TITLE), ink, (title_right - x).max(0.0));
     p.galley(egui::pos2(x, title_y - tg.size().y / 2.0), tg, ink);
 
     // One quiet line, laid left to right.
     let mut cx = x;
     let mut put = |text: &str, tone: Color32| {
-        let g = theme::line(ui, text, theme::sans(12.0), tone, (rect.right() - 14.0 - cx).max(0.0));
+        let g = theme::line(ui, text, theme::sans(theme::FS_META), tone, (rect.right() - 14.0 - cx).max(0.0));
         let w = g.size().x;
         p.galley(egui::pos2(cx, meta_y - g.size().y / 2.0), g, tone);
         cx += w + 14.0;

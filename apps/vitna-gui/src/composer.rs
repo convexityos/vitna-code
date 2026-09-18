@@ -52,7 +52,7 @@ impl App {
                             .frame(egui::Frame::default())
                             // What you type is a paragraph, and so is the prompt
                             // that stands in for it; both read in the prose face.
-                            .font(theme::prose(15.0))
+                            .font(theme::prose(theme::FS_BODY))
                             .text_color(theme::INK)
                             // Enter is for sending, as the cap says; a new line
                             // is Shift+Enter.
@@ -62,7 +62,7 @@ impl App {
                             )))
                             .hint_text(
                                 RichText::new("Ask anything")
-                                    .font(theme::prose(15.0))
+                                    .font(theme::prose(theme::FS_BODY))
                                     .color(theme::FAINTER),
                             ),
                     );
@@ -93,7 +93,7 @@ impl App {
             if attach.hovered() {
                 ui.painter().circle_filled(r.center(), 13.0, theme::FACE);
             }
-            icons::plus(ui.painter(), r.center(), theme::INK_2);
+            icons::plus(ui.painter(), r.center(), theme::INK);
             attach.on_hover_text("Name a file with @, or attach one. Both need the daemon.");
 
             ui.add_space(2.0);
@@ -148,12 +148,12 @@ impl App {
 
     /// The mode, as a plain word that opens a two-row menu.
     fn mode_picker(&mut self, ui: &mut egui::Ui) {
-        let galley = ui.painter().layout_no_wrap(self.mode.label().to_string(), theme::sans(13.0), theme::INK_2);
+        let galley = ui.painter().layout_no_wrap(self.mode.label().to_string(), theme::sans(theme::FS_UI), theme::INK);
         let (rect, response) = ui.allocate_exact_size(Vec2::new(galley.size().x + 20.0, 24.0), egui::Sense::click());
         if response.hovered() {
             ui.painter().rect_filled(rect, CornerRadius::same(7), theme::FACE);
         }
-        ui.painter().galley(egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, theme::INK_2);
+        ui.painter().galley(egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, theme::INK);
         let response = response.on_hover_text("Build edits files. Plan proposes and stops.");
 
         egui::Popup::menu(&response)
@@ -173,8 +173,8 @@ impl App {
                         ui.painter().rect_filled(r, CornerRadius::same(6), Color32::from_white_alpha(10));
                     }
                     let on = self.mode == m;
-                    ui.painter().text(egui::pos2(r.left() + 10.0, r.top() + 13.0), egui::Align2::LEFT_CENTER, m.label(), theme::sans(13.0), if on { theme::PERI_2 } else { theme::INK_2 });
-                    ui.painter().text(egui::pos2(r.left() + 10.0, r.top() + 28.0), egui::Align2::LEFT_CENTER, what, theme::sans(11.0), theme::FAINTER);
+                    ui.painter().text(egui::pos2(r.left() + 10.0, r.top() + 13.0), egui::Align2::LEFT_CENTER, m.label(), theme::sans(theme::FS_UI), if on { theme::PERI_2 } else { theme::INK });
+                    ui.painter().text(egui::pos2(r.left() + 10.0, r.top() + 28.0), egui::Align2::LEFT_CENTER, what, theme::sans(theme::FS_MICRO), theme::FAINTER);
                     if on {
                         icons::check(ui.painter(), egui::pos2(r.right() - 14.0, r.center().y), theme::PERI_2);
                     }
@@ -196,14 +196,14 @@ impl App {
             Some(c) => (c.name.clone(), c.provider_id.clone(), c.provider_name.clone()),
             None => ("No model".to_owned(), String::new(), String::new()),
         };
-        let galley = ui.painter().layout_no_wrap(label, theme::sans(13.0), theme::INK_2);
+        let galley = ui.painter().layout_no_wrap(label, theme::sans(theme::FS_UI), theme::INK);
         let (rect, response) =
             ui.allocate_exact_size(Vec2::new(galley.size().x + 40.0, 24.0), egui::Sense::click());
         if response.hovered() {
             ui.painter().rect_filled(rect, CornerRadius::same(7), theme::FACE);
         }
         provider_badge(ui, egui::pos2(rect.left() + 16.0, rect.center().y), 14.0, &pid, &pname);
-        ui.painter().galley(egui::pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0), galley, theme::INK_2);
+        ui.painter().galley(egui::pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0), galley, theme::INK);
         let hint = match &selected {
             Some(c) => format!("Preference sent with the turn: {} via {}. The receipt says what ran.", c.sku, c.provider_id),
             None => "No tool-calling model in the catalog.".to_owned(),
@@ -231,8 +231,8 @@ impl App {
                 egui::TextEdit::singleline(&mut self.model_query)
             .desired_width(f32::INFINITY)
             .frame(egui::Frame::default())
-            .font(theme::prose(12.5))
-            .hint_text(RichText::new("Search models").font(theme::prose(12.5)).color(theme::FAINTER)),
+            .font(theme::prose(theme::FS_UI))
+            .hint_text(RichText::new("Search models").font(theme::prose(theme::FS_UI)).color(theme::FAINTER)),
             );
         });
         let (rule, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), egui::Sense::hover());
@@ -257,7 +257,7 @@ impl App {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.add_space(6.0);
-                        ui.label(RichText::new(&c.provider_name).font(theme::sans(11.0)).color(theme::FAINTER));
+                        ui.label(RichText::new(&c.provider_name).font(theme::sans(theme::FS_MICRO)).color(theme::FAINTER));
                     });
                     ui.add_space(2.0);
                 }
@@ -272,8 +272,8 @@ impl App {
                     egui::pos2(r.left() + 8.0, r.center().y),
                     egui::Align2::LEFT_CENTER,
                     &c.name,
-                    theme::sans(13.0),
-                    if is_selected { theme::PERI_2 } else { theme::INK_2 },
+                    theme::sans(theme::FS_UI),
+                    if is_selected { theme::PERI_2 } else { theme::INK },
                 );
                 if is_selected {
                     icons::check(ui.painter(), egui::pos2(r.right() - 14.0, r.center().y), theme::PERI_2);
@@ -289,7 +289,7 @@ impl App {
         ui.painter().hline(rule.x_range(), rule.center().y, Stroke::new(1.0, theme::HAIR_2));
         let manage = ui.allocate_response(Vec2::new(ui.available_width(), 30.0), egui::Sense::click());
         icons::sliders(ui.painter(), egui::pos2(manage.rect.left() + 16.0, manage.rect.center().y), theme::FAINT);
-        ui.painter().text(egui::pos2(manage.rect.left() + 32.0, manage.rect.center().y), egui::Align2::LEFT_CENTER, "Manage models", theme::sans(13.0), theme::FAINT);
+        ui.painter().text(egui::pos2(manage.rect.left() + 32.0, manage.rect.center().y), egui::Align2::LEFT_CENTER, "Manage models", theme::sans(theme::FS_UI), theme::FAINT);
         manage.on_hover_text("Providers and their keys are the daemon's to manage, and it is not running.");
 
         if let Some((i, r)) = hovered {
@@ -322,8 +322,8 @@ impl App {
 /// One line of the hover card: a quiet key, a right-aligned value.
 fn kv(ui: &mut egui::Ui, key: &str, value: &str) {
     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 18.0), egui::Sense::hover());
-    ui.painter().text(egui::pos2(r.left(), r.center().y), egui::Align2::LEFT_CENTER, key, theme::sans(11.0), theme::FAINTER);
-    ui.painter().text(egui::pos2(r.right(), r.center().y), egui::Align2::RIGHT_CENTER, value, theme::sans(11.0), theme::INK_2);
+    ui.painter().text(egui::pos2(r.left(), r.center().y), egui::Align2::LEFT_CENTER, key, theme::sans(theme::FS_MICRO), theme::FAINTER);
+    ui.painter().text(egui::pos2(r.right(), r.center().y), egui::Align2::RIGHT_CENTER, value, theme::sans(theme::FS_MICRO), theme::INK);
 }
 
 pub(crate) fn thousands(n: u64) -> String {
@@ -362,7 +362,7 @@ fn keycap(ui: &mut egui::Ui) {
     let r = r.translate(Vec2::new(0.0, 1.0));
     ui.painter().rect_filled(r, CornerRadius::same(5), theme::FACE);
     ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
-    icons::enter(ui.painter(), r.center(), theme::MUTE);
+    icons::enter(ui.painter(), r.center(), theme::FAINT);
     resp.on_hover_text("Enter sends. Shift+Enter starts a new line.");
 }
 

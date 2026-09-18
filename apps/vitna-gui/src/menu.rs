@@ -215,6 +215,6 @@ fn icon_button(
     if resp.hovered() {
         ui.painter().rect_filled(r, CornerRadius::same(6), theme::FACE);
     }
-    icon(ui.painter(), r.center(), theme::MUTE);
+    icon(ui.painter(), r.center(), theme::FAINT);
     resp.on_hover_text(hint)
 }
