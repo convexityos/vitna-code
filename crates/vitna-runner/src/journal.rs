@@ -22,7 +22,7 @@ pub enum ActionState {
     NeedsReconciliation,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalEntry {
     pub action_id: String,
     pub argument_digest: String,

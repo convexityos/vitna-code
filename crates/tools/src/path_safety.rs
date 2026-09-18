@@ -1,4 +1,37 @@
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
+
+/// Component equality, case insensitive only where the filesystem is.
+/// Lowercasing everywhere would make `/WORKSPACE` and `/workspace` the same
+/// directory on Linux, where they are not, which would itself be an escape.
+#[cfg(windows)]
+fn same_component(a: &OsStr, b: &OsStr) -> bool {
+    a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+}
+
+#[cfg(not(windows))]
+fn same_component(a: &OsStr, b: &OsStr) -> bool {
+    a == b
+}
+
+/// Collapses `.` and `..` lexically. Returns None when `..` walks above the root.
+fn normalize(path: &Path) -> Option<PathBuf> {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(p) => out.push(Component::Prefix(p)),
+            Component::RootDir => out.push(Component::RootDir),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            Component::Normal(n) => out.push(n),
+        }
+    }
+    Some(out)
+}
 
 /// Resolves a requested relative or absolute path against workspace_root,
 /// strictly enforcing that the resolved path does not escape the workspace boundary.
@@ -12,28 +45,29 @@ pub fn resolve_workspace_path<P: AsRef<Path>>(workspace_root: P, requested_path:
         root.join(requested)
     };
 
-    let mut normalized = PathBuf::new();
-    for component in combined.components() {
-        match component {
-            Component::Prefix(p) => normalized.push(Component::Prefix(p)),
-            Component::RootDir => normalized.push(Component::RootDir),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    return Err(format!(
-                        "Path traversal attempt detected: '{}' escapes workspace root",
-                        requested_path
-                    ));
-                }
-            }
-            Component::Normal(n) => normalized.push(n),
-        }
-    }
+    let normalized = normalize(&combined).ok_or_else(|| {
+        format!(
+            "Path traversal attempt detected: '{}' escapes workspace root",
+            requested_path
+        )
+    })?;
+    let root_normalized = normalize(root).ok_or_else(|| {
+        format!("Workspace root is not a usable path: '{}'", root.display())
+    })?;
 
-    let root_str = root.to_string_lossy().to_lowercase().replace('\\', "/");
-    let norm_str = normalized.to_string_lossy().to_lowercase().replace('\\', "/");
+    // Containment is compared COMPONENT BY COMPONENT. A string prefix test
+    // accepts /workspace_other as living inside /workspace, which is how a
+    // sibling directory used to pass this guard.
+    let root_parts: Vec<&OsStr> = root_normalized.components().map(|c| c.as_os_str()).collect();
+    let norm_parts: Vec<&OsStr> = normalized.components().map(|c| c.as_os_str()).collect();
 
-    if !norm_str.starts_with(&root_str) {
+    let contained = norm_parts.len() >= root_parts.len()
+        && root_parts
+            .iter()
+            .zip(norm_parts.iter())
+            .all(|(r, n)| same_component(r, n));
+
+    if !contained {
         return Err(format!(
             "Access denied: path '{}' escapes workspace root '{}'",
             requested_path,

@@ -2,7 +2,7 @@ use std::fs;
 use std::sync::{Arc, Mutex};
 use vitna_git_broker::{GitBroker, MergeQueue, MergeQueueItem, MergeQueueResult};
 use vitna_git_workspaces::AgentWorkspaceManager;
-use vitna_orchestration::{OrchestrationConfig, OrchestrationEngine, StepType, TaskGraph, TaskNode, TaskStatus};
+use vitna_orchestration::{OrchestrationConfig, OrchestrationEngine, StepType, TaskGraph, TaskNode};
 use vitna_receipt_verify::ReceiptVerifier;
 use vitna_receipts::{generate_signing_key, ChangeSetRecord, FileModificationRecord, ModelSelectionRecord, VitnaRunReceiptV1};
 use vitna_runner::FakeRunner;

@@ -14,7 +14,27 @@ pub struct VerificationReport {
     pub isolation_label: String,
     pub completion_state: String,
     pub evidence_count: usize,
+    /// True only when a public key was supplied AND the device signature
+    /// verified against it. A receipt checked without a key is never signed-off.
+    pub signature_verified: bool,
     pub errors: Vec<String>,
+}
+
+/// A receipt parsed from JSON together with the verdict on it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifiedReceipt {
+    pub receipt: VitnaRunReceiptV1,
+    pub report: VerificationReport,
+}
+
+/// Reads a receipt from JSON and checks everything checkable without a key.
+/// No key is supplied on this path, so the device signature is NOT checked and
+/// `report.signature_verified` is false. Callers must not present the result as
+/// a verified signature. Use `ReceiptVerifier::verify_receipt` with a key for that.
+pub fn verify_receipt_json(content: &str) -> Result<VerifiedReceipt, Box<dyn std::error::Error>> {
+    let receipt: VitnaRunReceiptV1 = serde_json::from_str(content)?;
+    let report = ReceiptVerifier::verify_receipt(&receipt, None)?;
+    Ok(VerifiedReceipt { receipt, report })
 }
 
 pub struct ReceiptVerifier;
@@ -67,6 +87,7 @@ impl ReceiptVerifier {
         }
 
         // 5. Signature check (if public key provided)
+        let mut signature_verified = false;
         if let Some(pub_hex) = public_key_hex {
             let key_bytes = hex::decode(pub_hex)?;
             let verifying_key = VerifyingKey::from_bytes(
@@ -74,7 +95,7 @@ impl ReceiptVerifier {
             )?;
 
             match receipt.verify_signature(&verifying_key) {
-                Ok(true) => {}
+                Ok(true) => signature_verified = true,
                 Ok(false) => errors.push("Device signature mismatch or payload tampered".to_string()),
                 Err(e) => errors.push(format!("Signature verification error: {}", e)),
             }
@@ -89,6 +110,7 @@ impl ReceiptVerifier {
             isolation_label: receipt.isolation_label.clone(),
             completion_state: receipt.completion_state.clone(),
             evidence_count: receipt.evidence_items.len(),
+            signature_verified,
             errors,
         })
     }
@@ -125,6 +147,7 @@ mod tests {
                 diff_digest: "diff-99".to_string(),
             },
             runner_execution_statements: vec![],
+            child_receipt_roots: vec![],
             device_signature: String::new(),
         };
 

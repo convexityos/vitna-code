@@ -163,24 +163,39 @@ fn run_verify(receipt_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let content = fs::read_to_string(path)?;
-    match verify_receipt_json(&content) {
-        Ok(report) => {
-            println!("Receipt Verification Succeeded!");
-            println!("================================");
-            println!("Run ID:            {}", report.receipt.run_id);
-            println!("Session ID:        {}", report.receipt.session_id);
-            println!("Schema:            {}", report.receipt.schema_version);
-            println!("Model:             {} ({})", report.receipt.model_selection.model_sku, report.receipt.model_selection.provider);
-            println!("Isolation Label:   {}", report.receipt.isolation_label);
-            println!("Completion State:  {}", report.receipt.completion_state);
-            println!("Evidence Count:    {}", report.receipt.evidence_items.len());
-            println!("Files Modified:    {}", report.receipt.changeset.files_modified.len());
-            println!("Device Signature:  [VERIFIED]");
-        }
+    let verified = match verify_receipt_json(&content) {
+        Ok(v) => v,
         Err(e) => {
-            eprintln!("Receipt Verification FAILED: {}", e);
+            eprintln!("Receipt could not be read: {}", e);
             std::process::exit(1);
         }
+    };
+
+    // verify_receipt_json returns Ok for a receipt it found faults in, so the
+    // verdict is report.is_valid and not the absence of an error.
+    if !verified.report.is_valid {
+        eprintln!("Receipt Verification FAILED:");
+        for err in &verified.report.errors {
+            eprintln!("  - {}", err);
+        }
+        std::process::exit(1);
+    }
+
+    let r = &verified.receipt;
+    println!("Receipt Checks Passed");
+    println!("================================");
+    println!("Run ID:            {}", r.run_id);
+    println!("Session ID:        {}", r.session_id);
+    println!("Schema:            {}", r.schema_version);
+    println!("Model:             {} ({})", r.model_selection.model_sku, r.model_selection.provider);
+    println!("Isolation Label:   {}", r.isolation_label);
+    println!("Completion State:  {}", r.completion_state);
+    println!("Evidence Count:    {}", r.evidence_items.len());
+    println!("Files Modified:    {}", r.changeset.files_modified.len());
+    if verified.report.signature_verified {
+        println!("Device Signature:  verified");
+    } else {
+        println!("Device Signature:  not checked (no public key supplied)");
     }
 
     Ok(())

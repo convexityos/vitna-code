@@ -1,4 +1,4 @@
-use crate::SandboxConfig;
+use crate::{SandboxConfig, SandboxGuarantee};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -27,7 +27,21 @@ impl SandboxExecutor {
         let start_time = Instant::now();
         let wd = working_dir.as_ref();
 
-        let mut cmd = if cfg!(target_os = "linux") {
+        // The requested guarantee picks the mechanism. Only Strong asks the OS for
+        // isolation; Guarded and below are a scrubbed child process, which is what
+        // vitna-runner already provides. A Strong request is never quietly served by
+        // something weaker: if no mechanism exists here, this fails and says so.
+        let strong = config.guarantee == SandboxGuarantee::Strong;
+        if strong
+            && !(cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(windows))
+        {
+            return Err(
+                "Strong sandbox guarantee requested but this platform has no sandbox mechanism"
+                    .to_string(),
+            );
+        }
+
+        let mut cmd = if strong && cfg!(target_os = "linux") {
             // Linux: generate Bubblewrap invocation
             let bwrap_args = config.generate_linux_bwrap_args();
             let mut c = Command::new("bwrap");
@@ -36,7 +50,7 @@ impl SandboxExecutor {
             }
             c.arg("sh").arg("-c").arg(command);
             c
-        } else if cfg!(target_os = "macos") {
+        } else if strong && cfg!(target_os = "macos") {
             // macOS: execute via sandbox-exec with Seatbelt profile
             let profile = config.generate_macos_seatbelt_profile();
             let mut c = Command::new("/usr/bin/sandbox-exec");
