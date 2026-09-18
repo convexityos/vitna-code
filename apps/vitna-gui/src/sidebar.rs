@@ -22,6 +22,9 @@ impl App {
         );
         ui.set_clip_rect(rect);
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        // Rows stack 2px apart, the way Claude Code packs its list, and every
+        // larger gap below is stated where it is rather than inherited.
+        ui.spacing_mut().item_spacing.y = 2.0;
 
         // Mark and name.
         ui.horizontal(|ui| {
@@ -40,11 +43,11 @@ impl App {
                     .color(theme::INK),
             );
         });
-        ui.add_space(12.0);
+        ui.add_space(10.0);
 
         let linked = self.link.is_open();
         let new_session =
-            ui.allocate_response(Vec2::new(ui.available_width(), 30.0), egui::Sense::click());
+            ui.allocate_response(Vec2::new(ui.available_width(), 28.0), egui::Sense::click());
         let r = new_session.rect;
         ui.painter().rect_filled(
             r,
@@ -54,7 +57,7 @@ impl App {
         ui.painter().rect_stroke(
             r,
             CornerRadius::same(8),
-            Stroke::new(1.0, theme::HAIR_2),
+            Stroke::new(1.0, theme::HAIR),
             egui::StrokeKind::Inside,
         );
         let tone = if linked { theme::INK } else { theme::MUTE };
@@ -80,7 +83,6 @@ impl App {
                 .on_hover_text("Sessions are opened by the daemon, and it is not running.");
         }
 
-        ui.add_space(4.0);
         let (ready, total) = self.providers_ready();
         row(
             &mut ui,
@@ -90,7 +92,7 @@ impl App {
             false,
         );
 
-        ui.add_space(16.0);
+        ui.add_space(6.0);
         group(&mut ui, "Sessions");
 
         // The workspace is the group header, the way every reference groups
@@ -130,11 +132,14 @@ impl App {
                     egui::Sense::click(),
                 );
                 let r = row.rect;
+                // The chosen session is the brightest fill in the sidebar and
+                // a hovered one a step under it, so where you stand is never
+                // a guess between two near-blacks.
                 if is_active || row.hovered() {
                     ui.painter().rect_filled(
                         r,
                         CornerRadius::same(7),
-                        if is_active { theme::FACE } else { theme::FACE_2 },
+                        if is_active { theme::FACE_2 } else { theme::FACE },
                     );
                 }
                 ui.painter().text(
@@ -142,7 +147,7 @@ impl App {
                     egui::Align2::LEFT_CENTER,
                     &session.session_id,
                     theme::sans(12.5),
-                    if is_active { theme::INK_2 } else { theme::MUTE },
+                    if is_active { theme::INK } else { theme::INK_2 },
                 );
                 if row.clicked() {
                     picked = Some(session.session_id.clone());
@@ -202,7 +207,7 @@ fn row(ui: &mut egui::Ui, label: &str, meta: Option<&str>, enabled: bool, active
             egui::Align2::RIGHT_CENTER,
             m,
             theme::sans(11.5),
-            theme::FAINTER,
+            theme::FAINT,
         );
     }
     response
@@ -213,5 +218,4 @@ fn group(ui: &mut egui::Ui, title: &str) {
         ui.add_space(10.0);
         ui.label(theme::eyebrow(ui, title));
     });
-    ui.add_space(4.0);
 }

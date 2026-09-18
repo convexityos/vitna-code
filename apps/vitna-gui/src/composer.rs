@@ -18,9 +18,12 @@ impl App {
         let inner = Rect::from_min_max(col.min, egui::pos2(col.right(), rect.bottom()));
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
         ui.set_clip_rect(rect);
+        // The three rows sit at the gaps stated here, not at egui's default
+        // spacing added on top of them.
+        ui.spacing_mut().item_spacing.y = 0.0;
 
         self.context_row(&mut ui);
-        ui.add_space(6.0);
+        ui.add_space(8.0);
 
         // Four conditions, and each one has its own hover text below, because
         // a disabled control that will not say why is the thing this window
@@ -30,7 +33,7 @@ impl App {
             && !self.turn_running
             && !self.draft.trim().is_empty();
 
-        let field = egui::Frame::default()
+        egui::Frame::default()
             .fill(theme::FIELD)
             .stroke(Stroke::new(1.0, theme::HAIR))
             .corner_radius(CornerRadius::same(12))
@@ -82,7 +85,7 @@ impl App {
 
         // Beneath the field, in the open, the way Claude Code lays its base
         // row on the canvas rather than inside the box.
-        ui.add_space(2.0);
+        ui.add_space(6.0);
         let row = ui.horizontal(|ui| {
             // Attach, on the left, the way all three references place it.
             let (r, attach) =
@@ -90,7 +93,7 @@ impl App {
             if attach.hovered() {
                 ui.painter().circle_filled(r.center(), 13.0, theme::FACE);
             }
-            icons::plus(ui.painter(), r.center(), theme::MUTE);
+            icons::plus(ui.painter(), r.center(), theme::INK_2);
             attach.on_hover_text("Name a file with @, or attach one. Both need the daemon.");
 
             ui.add_space(2.0);
@@ -108,7 +111,7 @@ impl App {
                     ui.painter().circle_stroke(
                         r.center(),
                         8.0,
-                        Stroke::new(1.5, theme::FAINTER),
+                        Stroke::new(1.5, theme::FAINT),
                     );
                 }
                 let hint = if !self.link.is_open() {
@@ -134,9 +137,9 @@ impl App {
         });
 
         // What this frame used, for the stage to hand back next frame, with
-        // the same room under the base row as the field leaves above it.
-        let gap = row.response.rect.top() - field.response.rect.bottom();
-        let want = row.response.rect.bottom() - inner.top() + gap;
+        // a stated room under the base row so it never sits on the window's
+        // bottom edge.
+        let want = row.response.rect.bottom() - inner.top() + 10.0;
         if (want - self.composer_h).abs() > 0.5 {
             self.composer_h = want;
             ui.ctx().request_repaint();
@@ -408,7 +411,7 @@ fn keycap(ui: &mut egui::Ui) {
     let r = r.translate(Vec2::new(0.0, 1.0));
     ui.painter().rect_filled(r, CornerRadius::same(5), theme::FACE);
     ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
-    icons::enter(ui.painter(), r.center(), theme::FAINT);
+    icons::enter(ui.painter(), r.center(), theme::MUTE);
     resp.on_hover_text("Enter sends. Shift+Enter starts a new line.");
 }
 
@@ -417,7 +420,7 @@ fn chip(ui: &mut egui::Ui, icon: fn(&egui::Painter, egui::Pos2, Color32), text: 
     let galley = ui.painter().layout_no_wrap(text.to_string(), theme::sans(12.5), tone);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 36.0, 24.0), sense);
     chip_ground(ui, rect, resp.hovered() && sense.senses_click());
-    icon(ui.painter(), egui::pos2(rect.left() + 14.0, rect.center().y), theme::FAINT);
+    icon(ui.painter(), egui::pos2(rect.left() + 14.0, rect.center().y), theme::MUTE);
     ui.painter().galley(egui::pos2(rect.left() + 26.0, rect.center().y - galley.size().y / 2.0), galley, tone);
     resp
 }

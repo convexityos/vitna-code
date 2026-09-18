@@ -28,6 +28,7 @@ impl App {
         let mut ui2 = ui.new_child(egui::UiBuilder::new().max_rect(col));
         ui2.set_clip_rect(body);
         ui2.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        ui2.spacing_mut().item_spacing.y = 4.0;
 
         // The start state sits in the upper third, the way Codex centres
         // "Let's build": enough space above it to feel like a place, not a form.
@@ -35,15 +36,15 @@ impl App {
 
         ui2.vertical_centered(|ui| {
             ui.add(egui::Image::new(crate::brand::mark()).fit_to_exact_size(Vec2::splat(40.0)));
-            ui.add_space(10.0);
+            ui.add_space(6.0);
             ui.label(RichText::new("Let’s build").font(theme::display(28.0)).color(theme::INK));
         });
 
-        ui2.add_space(22.0);
+        ui2.add_space(12.0);
         self.facts_line(&mut ui2);
 
         if let Link::Absent { .. } = &self.link {
-            ui2.add_space(14.0);
+            ui2.add_space(10.0);
             ui2.vertical_centered(|ui| self.absent_line(ui));
         }
 

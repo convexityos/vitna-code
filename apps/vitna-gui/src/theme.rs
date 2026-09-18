@@ -22,16 +22,18 @@ use eframe::egui::{self, Color32, FontFamily, FontId, TextStyle};
 // points over its red, no more, so the periwinkle is the only blue thing on
 // screen. The main area and the sidebar sit on one floor, and a visibly
 // lighter hairline draws the edges between them, since two near-blacks side
-// by side need a line to be two things. The composer sits highest of the
-// grounds, with the brightest line, so the thing you type into is the thing
-// you see.
+// by side need a line to be two things. The composer field is a lit well on
+// that floor with the brightest line of all, so the thing you type into is
+// the thing you see; the controls (buttons, chips, the chosen session) carry
+// the brightest FILLS, a step over the field, so each one reads as a thing
+// to press rather than a smudge on the floor.
 pub const CANVAS: Color32 = Color32::from_rgb(0x0b, 0x0c, 0x10);
 pub const RAIL: Color32 = Color32::from_rgb(0x0b, 0x0c, 0x10);
-pub const FACE: Color32 = Color32::from_rgb(0x1c, 0x1d, 0x24);
 pub const GROUND: Color32 = Color32::from_rgb(0x12, 0x13, 0x18);
-pub const FACE_2: Color32 = Color32::from_rgb(0x24, 0x25, 0x2d);
-pub const FIELD: Color32 = Color32::from_rgb(0x1a, 0x1b, 0x21);
-pub const CONTROL: Color32 = Color32::from_rgb(0x24, 0x25, 0x2d);
+pub const FIELD: Color32 = Color32::from_rgb(0x1f, 0x20, 0x27);
+pub const FACE: Color32 = Color32::from_rgb(0x23, 0x25, 0x2d);
+pub const FACE_2: Color32 = Color32::from_rgb(0x2d, 0x2f, 0x38);
+pub const CONTROL: Color32 = Color32::from_rgb(0x2d, 0x2f, 0x38);
 
 pub const INK: Color32 = Color32::from_rgb(0xf2, 0xf3, 0xf6);
 pub const INK_2: Color32 = Color32::from_rgb(0xdf, 0xe1, 0xe7);
@@ -47,8 +49,8 @@ pub const OK: Color32 = Color32::from_rgb(0x2f, 0xbf, 0x71);
 /// The light line that delineates things: the sidebar's edge, the composer,
 /// the popups. HAIR_2 is its quieter sibling for rules inside a surface and
 /// the outline of a chip.
-pub const HAIR: Color32 = Color32::from_rgb(0x34, 0x36, 0x3f);
-pub const HAIR_2: Color32 = Color32::from_rgb(0x24, 0x26, 0x2e);
+pub const HAIR: Color32 = Color32::from_rgb(0x3c, 0x3f, 0x4a);
+pub const HAIR_2: Color32 = Color32::from_rgb(0x30, 0x32, 0x3c);
 
 
 /// Widget radii: the field and the button.
