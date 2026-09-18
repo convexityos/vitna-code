@@ -98,6 +98,7 @@ const COMPLETION: Record<string, Word> = {
   failed: { word: 'Failed', tone: 'rust' },
   cancelled: { word: 'Cancelled', tone: 'plain' },
   needs_reconciliation: { word: 'Needs reconciliation', tone: 'rust' },
+  stopped_at_round_limit: { word: 'Stopped at the round limit', tone: 'rust' },
 };
 
 export function completionWord(state: string): Word {

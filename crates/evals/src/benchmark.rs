@@ -134,10 +134,11 @@ impl BenchmarkSuite {
 
     /// Runs all benchmarks and aggregates into a BenchmarkReport.
     pub fn run_all() -> BenchmarkReport {
-        let mut metrics = Vec::new();
-        metrics.push(Self::bench_receipt_verification(500));
-        metrics.push(Self::bench_merkle_root_calculation(100));
-        metrics.push(Self::bench_dag_validation(500));
+        let metrics = vec![
+            Self::bench_receipt_verification(500),
+            Self::bench_merkle_root_calculation(100),
+            Self::bench_dag_validation(500),
+        ];
 
         BenchmarkReport {
             suite_version: "vitna-benchmark-v1.0.0".to_string(),

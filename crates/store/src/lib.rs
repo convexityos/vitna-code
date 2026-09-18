@@ -209,6 +209,40 @@ impl EventStore {
         Ok(events)
     }
 
+    /// Every event of one type, across every run, oldest first.
+    ///
+    /// `get_events` answers for one run; this answers "which runs began", which
+    /// no single run can. The daemon reads its turn prompts this way, since the
+    /// event that opens a turn is the one place a prompt is written down.
+    pub fn events_of_type(&self, type_url: &str) -> SqliteResult<Vec<EventRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT event_id, run_id, sequence, type_url, timestamp_ms,
+                    encrypted_payload, prev_event_hash, event_hash
+             FROM events
+             WHERE type_url = ?1
+             ORDER BY timestamp_ms ASC, run_id ASC, sequence ASC",
+        )?;
+
+        let rows = stmt.query_map(params![type_url], |row| {
+            Ok(EventRecord {
+                event_id: row.get(0)?,
+                run_id: row.get(1)?,
+                sequence: row.get(2)?,
+                type_url: row.get(3)?,
+                timestamp_ms: row.get(4)?,
+                encrypted_payload: row.get(5)?,
+                prev_event_hash: row.get(6)?,
+                event_hash: row.get(7)?,
+            })
+        })?;
+
+        let mut events = Vec::new();
+        for r in rows {
+            events.push(r?);
+        }
+        Ok(events)
+    }
+
     /// Replays events for a given run from sequence zero, validating cryptographic integrity
     /// and reconstructing the current state.
     pub fn replay_run(&self, run_id: &str) -> SqliteResult<RunSummary> {
@@ -279,6 +313,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn events_of_one_type_come_back_across_runs_oldest_first() {
+        let store = EventStore::open_in_memory().expect("in-memory db open failed");
+
+        let later = EventRecord::new("ev-b-0", "run-b", 0, "vitna.v1.TurnStarted", 2000, b"{}".to_vec(), GENESIS_HASH);
+        let other = EventRecord::new("ev-b-1", "run-b", 1, "vitna.v1.ToolFinished", 2100, b"{}".to_vec(), &later.event_hash);
+        let earlier = EventRecord::new("ev-a-0", "run-a", 0, "vitna.v1.TurnStarted", 1000, b"{}".to_vec(), GENESIS_HASH);
+        for e in [&later, &other, &earlier] {
+            store.append_event(e).expect("append failed");
+        }
+
+        let started = store.events_of_type("vitna.v1.TurnStarted").expect("query failed");
+        let runs: Vec<&str> = started.iter().map(|e| e.run_id.as_str()).collect();
+        assert_eq!(runs, ["run-a", "run-b"], "only the asked-for type, oldest first");
+        assert!(started.iter().all(|e| e.verify_integrity()));
+
+        assert!(store.events_of_type("vitna.v1.Nothing").expect("query failed").is_empty());
+    }
+
+    #[test]
     fn test_event_hash_chain() {
         let store = EventStore::open_in_memory().expect("in-memory db open failed");
 
@@ -327,7 +380,7 @@ mod tests {
         store.append_event(&e1).expect("append e1 failed");
 
         // Malicious or corrupted event pointing to wrong prev_hash
-        let mut e2 = EventRecord::new(
+        let e2 = EventRecord::new(
             "evt-2",
             "run-002",
             1,

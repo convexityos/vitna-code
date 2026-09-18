@@ -2,7 +2,7 @@ use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use vitna_context::{ContextAssembler, ContextMessage};
@@ -13,6 +13,11 @@ use vitna_receipts::{
 use vitna_runner::Runner;
 use vitna_store::{EventRecord, EventStore, GENESIS_HASH};
 use vitna_tools::{ToolContext, ToolRegistry, ToolResult};
+
+/// The event a run closes with, naming where its receipt was written. The
+/// daemon reads it back to place a session that predates `SessionCreated`, so
+/// the writer and the reader share this one spelling.
+pub const RECEIPT_GENERATED: &str = "vitna.v1.ReceiptGenerated";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestrationConfig {
@@ -48,6 +53,10 @@ pub struct OrchestrationEngine {
     pub runner_statements: Vec<RunnerExecutionStatementRecord>,
     pub evidence_items: Vec<EvidenceItemRecord>,
     pub history: Vec<ContextMessage>,
+    /// What the receipt will say about how the run ended. Defaults to the
+    /// completed case and is lowered by whoever cuts the run short, so a
+    /// truncated run cannot be signed as a finished one.
+    pub completion_state: String,
 }
 
 impl OrchestrationEngine {
@@ -72,6 +81,7 @@ impl OrchestrationEngine {
             runner_statements: Vec::new(),
             evidence_items: Vec::new(),
             history: Vec::new(),
+            completion_state: "completed_with_evidence".to_string(),
         }
     }
 
@@ -138,29 +148,45 @@ impl OrchestrationEngine {
         )?;
 
         // Step 2: Dispatch step action
-        let (tool_name, args, is_mutating) = match &step {
-            StepType::InspectWorkspace => (
-                "list_dir".to_string(),
-                serde_json::json!({ "path": "." }),
-                false,
-            ),
+        let (tool_name, args) = match &step {
+            StepType::InspectWorkspace => {
+                ("list_dir".to_string(), serde_json::json!({ "path": "." }))
+            }
             StepType::ProposeEdit { path, content } => (
                 "write_file".to_string(),
                 serde_json::json!({ "path": path, "content": content }),
-                true,
             ),
             StepType::RunVerification { command } => (
                 "run_command".to_string(),
                 serde_json::json!({ "command": command }),
-                true,
             ),
         };
 
+        self.execute_tool(&tool_name, args).await
+    }
+
+    /// The guarded path a tool call takes, whoever chose it.
+    ///
+    /// `execute_task_step` picks its tool from a fixed `StepType`; the agent
+    /// loop picks it from what a model asked for. Both arrive here, so the
+    /// approval gate, the hash-chained events and the evidence capture are one
+    /// implementation rather than two. That matters more than the duplication
+    /// would: the guarantee a receipt claims IS this path, and a second copy of
+    /// it is a second thing that can quietly stop matching the first.
+    pub async fn execute_tool(
+        &mut self,
+        tool_name: &str,
+        args: serde_json::Value,
+    ) -> Result<ToolResult, String> {
+        let tool_name = tool_name.to_string();
         let tool = self
             .tool_registry
             .get(&tool_name)
             .ok_or_else(|| format!("Tool not found: {}", tool_name))?;
 
+        // Taken from the definition rather than from the caller, so the flag the
+        // gate enforces is the same one the model was shown.
+        let is_mutating = tool.definition().is_mutating;
         let action_digest = tool.compute_action_digest(&args);
 
         // Step 3: Exact-action capability & approval check
@@ -231,7 +257,7 @@ impl OrchestrationEngine {
             self.accumulated_diffs.push(diff.clone());
         }
 
-        if let Some(exit_code) = result.exit_code {
+        if result.exit_code.is_some() {
             let stmt_digest = hex::encode(Sha256::digest(result.output.as_bytes()));
             self.runner_statements.push(RunnerExecutionStatementRecord {
                 action_id: format!("act-{}", self.runner_statements.len() + 1),
@@ -297,7 +323,7 @@ impl OrchestrationEngine {
             run_id: self.config.run_id.clone(),
             session_id: self.config.session_id.clone(),
             workspace_fingerprint: ws_fingerprint,
-            base_commit_sha: "0000000000000000000000000000000000000000".to_string(),
+            base_commit_sha: base_commit_sha(&self.config.workspace_root),
             model_selection: ModelSelectionRecord {
                 provider: self.config.provider_name.clone(),
                 model_sku: self.config.model_sku.clone(),
@@ -306,13 +332,14 @@ impl OrchestrationEngine {
             },
             event_hash_chain_root: merkle_root,
             isolation_label: self.config.sandbox_guarantee.clone(),
-            completion_state: "completed_with_evidence".to_string(),
+            completion_state: self.completion_state.clone(),
             evidence_items: self.evidence_items.clone(),
             changeset: ChangeSetRecord {
                 files_modified: self.changeset_modifications.clone(),
                 diff_digest,
             },
             runner_execution_statements: self.runner_statements.clone(),
+            child_receipt_roots: Vec::new(),
             device_signature: String::new(),
         };
 
@@ -334,7 +361,7 @@ impl OrchestrationEngine {
             .map_err(|e| format!("Failed to write receipt file: {}", e))?;
 
         self.record_event(
-            "vitna.v1.ReceiptGenerated",
+            RECEIPT_GENERATED,
             &serde_json::json!({
                 "run_id": self.config.run_id,
                 "receipt_path": receipt_path.to_string_lossy(),
@@ -343,5 +370,42 @@ impl OrchestrationEngine {
         )?;
 
         Ok(receipt)
+    }
+}
+
+/// The commit the run started from, or git's own null sha when there is no
+/// commit to name.
+///
+/// This was the all-zero literal, unconditionally, which reads as "no base
+/// commit" and was being written over real repositories. A receipt whose
+/// changeset cannot be located against a commit is a receipt nobody can check
+/// a diff against.
+///
+/// Through `host_git`, like every git the host runs: `rev-parse` reads no
+/// index and runs no hook, but "nothing builds git directly" is a rule with no
+/// exceptions for a reader to weigh. When the hardening itself cannot be set
+/// up, git is not run, and the base is as unnamed as on a box with no git.
+fn base_commit_sha(workspace_root: &std::path::Path) -> String {
+    const NONE: &str = "0000000000000000000000000000000000000000";
+    let out = match vitna_git_workspaces::host_git::command(workspace_root) {
+        Ok(mut command) => command.args(["rev-parse", "HEAD"]).output(),
+        Err(reason) => {
+            tracing::warn!(%reason, "base commit not read: host git could not be hardened");
+            return NONE.to_string();
+        }
+    };
+
+    match out {
+        Ok(o) if o.status.success() => {
+            let sha = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
+                sha
+            } else {
+                NONE.to_string()
+            }
+        }
+        // Not a repository, no commits yet, or no git on the box. All three
+        // genuinely have no base commit to name.
+        _ => NONE.to_string(),
     }
 }

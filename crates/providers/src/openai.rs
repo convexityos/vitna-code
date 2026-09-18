@@ -32,9 +32,44 @@ impl OpenAIProvider {
         }
 
         for msg in &req.messages {
+            if let Some(call_id) = &msg.tool_call_id {
+                // A result rides its own `tool` message, matched by id.
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": msg.content
+                }));
+                continue;
+            }
+
+            if msg.tool_calls.is_empty() {
+                messages.push(json!({
+                    "role": msg.role,
+                    "content": msg.content
+                }));
+                continue;
+            }
+
+            // Arguments travel as a JSON STRING here, not as an object.
+            let calls: Vec<serde_json::Value> = msg
+                .tool_calls
+                .iter()
+                .map(|c| {
+                    json!({
+                        "id": c.id,
+                        "type": "function",
+                        "function": {
+                            "name": c.name,
+                            "arguments": c.arguments.to_string()
+                        }
+                    })
+                })
+                .collect();
+
             messages.push(json!({
                 "role": msg.role,
-                "content": msg.content
+                "content": if msg.content.is_empty() { serde_json::Value::Null } else { json!(msg.content) },
+                "tool_calls": calls
             }));
         }
 

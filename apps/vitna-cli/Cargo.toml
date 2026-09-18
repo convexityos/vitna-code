@@ -16,6 +16,8 @@ vitna-daemon.workspace = true
 vitna-receipts.workspace = true
 vitna-receipt-verify.workspace = true
 vitna-store.workspace = true
+vitna-git-workspaces.workspace = true
+hex.workspace = true
 
 [[bin]]
 name = "vitna"

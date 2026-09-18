@@ -43,6 +43,25 @@ pub struct RunnerExecutionStatementRecord {
     pub signature: String,
 }
 
+/// The completion state of a run the agent loop stopped at its round cap
+/// before the model concluded. Not a completed run, and the receipt says so.
+pub const STOPPED_AT_ROUND_LIMIT: &str = "stopped_at_round_limit";
+
+/// Every completion state a v1 receipt may carry, in the order
+/// `schemas/vitna-run-receipt-v1.json` lists them. One list for the writer and
+/// the verifier: a state one side writes and the other rejects fails every
+/// receipt that carries it, which is how every round-capped run came to read
+/// "Check failed".
+pub const COMPLETION_STATES: [&str; 7] = [
+    "completed_with_evidence",
+    "completed_with_unknowns",
+    "blocked",
+    "failed",
+    "cancelled",
+    "needs_reconciliation",
+    STOPPED_AT_ROUND_LIMIT,
+];
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VitnaRunReceiptV1 {
     pub schema_version: String,
@@ -53,7 +72,7 @@ pub struct VitnaRunReceiptV1 {
     pub model_selection: ModelSelectionRecord,
     pub event_hash_chain_root: String,
     pub isolation_label: String, // "read_only", "guarded", "strong", "full_access"
-    pub completion_state: String, // "completed_with_evidence", "completed_with_unknowns", "blocked", "failed", "cancelled", "needs_reconciliation"
+    pub completion_state: String, // one of COMPLETION_STATES
     pub evidence_items: Vec<EvidenceItemRecord>,
     pub changeset: ChangeSetRecord,
     pub runner_execution_statements: Vec<RunnerExecutionStatementRecord>,
@@ -199,6 +218,7 @@ mod tests {
                 statement_digest: "stmt-digest-1".to_string(),
                 signature: "sig-1".to_string(),
             }],
+            child_receipt_roots: Vec::new(),
             device_signature: String::new(),
         };
 

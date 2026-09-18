@@ -31,6 +31,7 @@ export const COMPLETION_STATES = [
   'failed',
   'cancelled',
   'needs_reconciliation',
+  'stopped_at_round_limit',
 ] as const;
 /** Weakest to strongest, as the schema lists them. */
 export const EVIDENCE_GRADES = [

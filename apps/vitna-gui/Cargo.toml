@@ -1,0 +1,31 @@
+[package]
+name = "vitna-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+eframe.workspace = true
+egui_extras.workspace = true
+arboard.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+vitna-protocol.workspace = true
+# The window verifies receipts itself rather than asking the daemon to
+# vouch for its own work. Both crates are serde plus hashing, no runtime.
+vitna-receipts.workspace = true
+vitna-receipt-verify.workspace = true
+# The signature is checked here too, against the key the daemon publishes.
+ed25519-dalek.workspace = true
+hex.workspace = true
+# Every git the window runs is built by host_git, which neutralizes what a
+# repository's own config would otherwise have git execute.
+vitna-git-workspaces.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle.workspace = true
+windows-sys.workspace = true
+
+[[bin]]
+name = "vitna-code"
+path = "src/main.rs"

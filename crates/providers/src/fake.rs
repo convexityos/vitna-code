@@ -1,6 +1,7 @@
 //! Fake model provider adapter for deterministic testing, stream simulation, and fault injection.
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StreamItem {
@@ -51,13 +52,81 @@ impl Default for FakeProviderConfig {
     }
 }
 
+/// One event of a replayed golden stream. `finish_reason` is set only on an
+/// event the fixture itself declares one for, so a fixture that states no
+/// finish reason replays without one rather than with an invented default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayEvent {
+    pub delta_text: String,
+    pub finish_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct FixtureChunk {
+    delta: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct StreamFixture {
+    scenario: String,
+    provider: String,
+    model: String,
+    #[serde(default)]
+    chunks: Vec<FixtureChunk>,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
 pub struct FakeProvider {
     config: FakeProviderConfig,
+    replay: Vec<ReplayEvent>,
 }
 
 impl FakeProvider {
     pub fn new(config: FakeProviderConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            replay: Vec::new(),
+        }
+    }
+
+    /// Loads a recorded provider turn from a golden fixture on disk.
+    pub fn from_fixture_file(path: &Path) -> Result<Self, String> {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read fixture {}: {}", path.display(), e))?;
+        let fixture: StreamFixture = serde_json::from_str(&raw)
+            .map_err(|e| format!("cannot parse fixture {}: {}", path.display(), e))?;
+
+        let mut replay: Vec<ReplayEvent> = fixture
+            .chunks
+            .iter()
+            .map(|c| ReplayEvent {
+                delta_text: c.delta.clone(),
+                finish_reason: None,
+            })
+            .collect();
+        if let Some(reason) = fixture.finish_reason.clone() {
+            replay.push(ReplayEvent {
+                delta_text: String::new(),
+                finish_reason: Some(reason),
+            });
+        }
+
+        let config = FakeProviderConfig {
+            provider_name: fixture.provider.clone(),
+            model_name: fixture.model.clone(),
+            scenario: fixture.scenario.clone(),
+            text_chunks: fixture.chunks.iter().map(|c| c.delta.clone()).collect(),
+            ..Default::default()
+        };
+
+        Ok(Self { config, replay })
+    }
+
+    /// Replays the loaded fixture verbatim. A provider built with `new` has no
+    /// fixture behind it and replays nothing.
+    pub fn replay_stream(&self) -> Vec<ReplayEvent> {
+        self.replay.clone()
     }
 
     pub fn stream_turn(&self) -> Vec<StreamItem> {

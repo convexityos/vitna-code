@@ -29,6 +29,14 @@ enum Commands {
         auto_approve: bool,
         #[arg(long)]
         verify_cmd: Option<String>,
+        /// The model to run. Required: the daemon refuses a turn with no model
+        /// chosen rather than picking one, since a model nobody chose would
+        /// appear in the receipt as though somebody had.
+        #[arg(long)]
+        model: Option<String>,
+        /// anthropic or openai. Defaults to whichever credential resolves.
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// Resume an existing session
     Resume { session_id: Option<String> },
@@ -82,20 +90,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             workspace,
             auto_approve,
             verify_cmd,
+            model,
+            provider,
             ..
         }) => {
-            run_task_cli(&task, &workspace, auto_approve, verify_cmd).await?;
+            run_task_cli(&task, &workspace, auto_approve, verify_cmd, model, provider).await?;
         }
         Some(Commands::Sessions) => {
             run_list_sessions()?;
         }
         Some(Commands::Serve { db }) => {
-            println!("Starting Vitna local daemon on {}", db.display());
-            let _daemon = DaemonServer::open_default(&db)?;
-            println!("Vitna daemon listening on local session channel. Press Ctrl+C to exit.");
-            tokio::signal::ctrl_c().await?;
-            println!("Daemon shut down cleanly.");
-        }
+            // This printed "listening" while only opening a database. There was
+            // no listener anywhere in the workspace to start.
+            let daemon = std::sync::Arc::new(DaemonServer::open_default(&db)?);
+            let endpoint = vitna_protocol::endpoint::preferred()?;
+            vitna_daemon::ipc::serve(daemon, &endpoint, |e| {
+                println!("Vitna daemon listening on {e}. Press Ctrl+C to exit.");
+            })
+            .await?;        }
         Some(Commands::Receipt { sub }) => match sub {
             ReceiptCommands::Show { run_id } => {
                 println!("Displaying receipt for run: {}", run_id);
@@ -123,14 +135,9 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
     println!("[OK] OS: {} ({})", std::env::consts::OS, std::env::consts::ARCH);
 
     // 2. Git
-    let git_check = std::process::Command::new("git").arg("--version").output();
-    match git_check {
-        Ok(out) if out.status.success() => {
-            println!("[OK] Git: {}", String::from_utf8_lossy(&out.stdout).trim());
-        }
-        _ => {
-            println!("[WARN] Git executable not found on PATH.");
-        }
+    match vitna_git_workspaces::host_git::version() {
+        Some(version) => println!("[OK] Git: {}", version),
+        None => println!("[WARN] Git executable not found on PATH."),
     }
 
     // 3. SQLite WAL support
@@ -145,11 +152,17 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 4. Device Signing Key
-    let key = vitna_receipts::generate_signing_key();
-    let pubkey_hex = hex::encode(key.verifying_key().to_bytes());
-    println!("[OK] Cryptographic Signing Core: Ed25519 Operational");
-    println!("     Device Public Key: {}", pubkey_hex);
+    // 4. The key receipts are signed with. This used to print a key generated
+    // on the spot, which matched nothing any daemon signs with. The daemon
+    // keeps the real one beside its store and publishes the public half in
+    // Health, so that is where it is read from.
+    match vitna_protocol::client::Client::connect().and_then(|mut c| c.health()) {
+        Ok(health) => match health.device_public_key {
+            Some(key) => println!("[OK] Receipt signing key (daemon pid {}): {}", health.pid, key),
+            None => println!("[WARN] The running daemon does not say which key it signs receipts with."),
+        },
+        Err(e) => println!("[WARN] No daemon answered, so there is no signing key to show: {}", e),
+    }
 
     println!("\nAll systems verified for Vitna local-first operation.");
     Ok(())
@@ -163,24 +176,39 @@ fn run_verify(receipt_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let content = fs::read_to_string(path)?;
-    match verify_receipt_json(&content) {
-        Ok(report) => {
-            println!("Receipt Verification Succeeded!");
-            println!("================================");
-            println!("Run ID:            {}", report.receipt.run_id);
-            println!("Session ID:        {}", report.receipt.session_id);
-            println!("Schema:            {}", report.receipt.schema_version);
-            println!("Model:             {} ({})", report.receipt.model_selection.model_sku, report.receipt.model_selection.provider);
-            println!("Isolation Label:   {}", report.receipt.isolation_label);
-            println!("Completion State:  {}", report.receipt.completion_state);
-            println!("Evidence Count:    {}", report.receipt.evidence_items.len());
-            println!("Files Modified:    {}", report.receipt.changeset.files_modified.len());
-            println!("Device Signature:  [VERIFIED]");
-        }
+    let verified = match verify_receipt_json(&content) {
+        Ok(v) => v,
         Err(e) => {
-            eprintln!("Receipt Verification FAILED: {}", e);
+            eprintln!("Receipt could not be read: {}", e);
             std::process::exit(1);
         }
+    };
+
+    // verify_receipt_json returns Ok for a receipt it found faults in, so the
+    // verdict is report.is_valid and not the absence of an error.
+    if !verified.report.is_valid {
+        eprintln!("Receipt Verification FAILED:");
+        for err in &verified.report.errors {
+            eprintln!("  - {}", err);
+        }
+        std::process::exit(1);
+    }
+
+    let r = &verified.receipt;
+    println!("Receipt Checks Passed");
+    println!("================================");
+    println!("Run ID:            {}", r.run_id);
+    println!("Session ID:        {}", r.session_id);
+    println!("Schema:            {}", r.schema_version);
+    println!("Model:             {} ({})", r.model_selection.model_sku, r.model_selection.provider);
+    println!("Isolation Label:   {}", r.isolation_label);
+    println!("Completion State:  {}", r.completion_state);
+    println!("Evidence Count:    {}", r.evidence_items.len());
+    println!("Files Modified:    {}", r.changeset.files_modified.len());
+    if verified.report.signature_verified {
+        println!("Device Signature:  verified");
+    } else {
+        println!("Device Signature:  not checked (no public key supplied)");
     }
 
     Ok(())
@@ -191,6 +219,8 @@ async fn run_task_cli(
     workspace: &Path,
     auto_approve: bool,
     verify_cmd: Option<String>,
+    model: Option<String>,
+    provider: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Vitna Code Task Execution");
     println!("-------------------------");
@@ -204,24 +234,38 @@ async fn run_task_cli(
     println!("Session:   {}", session.session_id);
 
     println!("Starting turn execution...");
-    let receipt = daemon
-        .run_task(&session.session_id, task, auto_approve, verify_cmd)
+    let result = daemon
+        .run_turn(&vitna_protocol::api::SubmitTurnRequest {
+            session_id: session.session_id.clone(),
+            prompt: task.to_string(),
+            provider,
+            model_sku: model,
+            auto_approve,
+            verification_command: verify_cmd,
+        })
         .await?;
 
-    println!("\nTask Execution Complete!");
+    println!();
+    println!("Task Execution Complete");
     println!("========================");
-    println!("Run ID:           {}", receipt.run_id);
-    println!("Completion State: {}", receipt.completion_state);
-    println!("Files Modified:   {}", receipt.changeset.files_modified.len());
-    for f in &receipt.changeset.files_modified {
-        println!("  - {}", f.path);
+    println!("Run ID:           {}", result.run_id);
+    println!("Model:            {} ({})", result.model_sku, result.provider);
+    println!("Completion State: {}", result.completion_state);
+    match (result.prompt_tokens, result.completion_tokens) {
+        (Some(p), Some(c)) => println!("Tokens:           {} in, {} out", p, c),
+        // A dash, because the provider reported no usage. Zero is a number
+        // somebody would believe.
+        _ => println!("Tokens:           -"),
     }
-    println!("Evidence Captured: {}", receipt.evidence_items.len());
-    for ev in &receipt.evidence_items {
-        println!("  - [{}] {}", ev.grade, ev.description);
+    println!("Files Modified:   {}", result.files_modified.len());
+    for f in &result.files_modified {
+        println!("  - {}", f);
     }
-    println!("Device Signature: {}", receipt.device_signature);
-    println!("Receipt Path:     .vitna/receipts/{}.json", receipt.run_id);
+    println!("Receipt Path:     {}", result.receipt_path.display());
+    if !result.text.is_empty() {
+        println!();
+        println!("{}", result.text);
+    }
 
     Ok(())
 }

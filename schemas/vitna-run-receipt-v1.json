@@ -58,7 +58,8 @@
         "blocked",
         "failed",
         "cancelled",
-        "needs_reconciliation"
+        "needs_reconciliation",
+        "stopped_at_round_limit"
       ]
     },
     "evidence_items": {

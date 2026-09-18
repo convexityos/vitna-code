@@ -39,3 +39,4 @@ keychain-cache/
 traces/
 eval_results/
 receipts-out/
+target-mingw/
