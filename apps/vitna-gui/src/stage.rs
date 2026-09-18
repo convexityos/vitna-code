@@ -30,9 +30,13 @@ impl App {
         ui2.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         ui2.spacing_mut().item_spacing.y = 4.0;
 
-        // The start state sits in the upper third, the way Codex centres
-        // "Let's build": enough space above it to feel like a place, not a form.
-        ui2.add_space((body.height() * 0.22).max(32.0));
+        // With nothing to list, the start state sits in the upper third, the
+        // way Codex centres "Let's build": enough space above it to feel like a
+        // place, not a form. With runs to list, the heading moves up and gives
+        // the centre to them, the way Cursor's agent home does.
+        let listing = self.ledger_has_entries();
+        let top = if listing { 0.07 } else { 0.22 };
+        ui2.add_space((body.height() * top).max(24.0));
 
         ui2.vertical_centered(|ui| {
             ui.add(egui::Image::new(crate::brand::mark()).fit_to_exact_size(Vec2::splat(40.0)));
@@ -49,7 +53,8 @@ impl App {
         }
 
         self.turn_state(&mut ui2);
-        self.unreadable_line(&mut ui2);
+        ui2.add_space(if listing { 26.0 } else { 18.0 });
+        self.run_list(&mut ui2);
 
         self.composer(ui, composer_rect);
     }
@@ -252,48 +257,14 @@ impl App {
 }
 
 impl App {
-    /// Receipts in this workspace that would not parse.
-    ///
-    /// Shown rather than skipped, and shown on the START screen rather than
-    /// buried, because a receipt that cannot be read is the most interesting
-    /// file in the directory: it is either corrupt or it is not a receipt, and
-    /// either way a product whose pitch is receipts should not quietly drop it.
-    fn unreadable_line(&mut self, ui: &mut egui::Ui) {
-        let broken: Vec<(String, String)> = match self.runs.poll() {
-            crate::runs::Loading::Done(ledger) => ledger
-                .unreadable
-                .iter()
-                .map(|u| (u.path.display().to_string(), u.reason.clone()))
-                .collect(),
-            crate::runs::Loading::Reading => return,
-        };
-        if broken.is_empty() {
-            return;
-        }
-
-        ui.add_space(14.0);
-        ui.vertical_centered(|ui| {
-            ui.horizontal(|ui| {
-                let (d, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
-                ui.painter().circle_filled(d.center(), 3.0, theme::RUST);
-                let n = broken.len();
-                let label = format!(
-                    "{n} file{} in .vitna/receipts could not be read as a receipt.",
-                    if n == 1 { "" } else { "s" }
-                );
-                ui.label(
-                    RichText::new(label)
-                        .font(theme::prose(12.5))
-                        .color(theme::FAINT),
-                )
-                .on_hover_text(
-                    broken
-                        .iter()
-                        .map(|(p, r)| format!("{p}: {r}"))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                );
-            });
-        });
+    /// Whether the receipts directory gave the list anything to show,
+    /// including a file that would not parse or a directory that would not
+    /// open, both of which are rows or lines rather than silence.
+    fn ledger_has_entries(&mut self) -> bool {
+        matches!(
+            self.runs.poll(),
+            crate::runs::Loading::Done(l)
+                if !l.runs.is_empty() || !l.unreadable.is_empty() || l.trouble.is_some()
+        )
     }
 }

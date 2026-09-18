@@ -60,6 +60,8 @@ pub enum Signature {
 pub struct Unreadable {
     pub path: PathBuf,
     pub reason: String,
+    /// The file's own mtime, so the list can place it among the runs.
+    pub written: Option<SystemTime>,
 }
 
 #[derive(Default)]
@@ -133,6 +135,7 @@ fn read(dir: &Path) -> Ledger {
                 ledger.unreadable.push(Unreadable {
                     path,
                     reason: e.to_string(),
+                    written,
                 });
                 continue;
             }
@@ -148,6 +151,7 @@ fn read(dir: &Path) -> Ledger {
             Err(e) => ledger.unreadable.push(Unreadable {
                 path,
                 reason: e.to_string(),
+                written,
             }),
         }
     }
@@ -155,14 +159,32 @@ fn read(dir: &Path) -> Ledger {
     // Newest first. A receipt carries no timestamp, so the file's mtime is
     // what there is; one without a readable mtime sorts last rather than
     // being given a made up one.
-    ledger.runs.sort_by(|a, b| match (b.written, a.written) {
+    ledger.runs.sort_by(|a, b| newest_first(a.written, b.written));
+    ledger.unreadable.sort_by(|a, b| newest_first(a.written, b.written));
+
+    ledger
+}
+
+/// Newest first, and anything without a time after everything with one.
+pub fn newest_first(a: Option<SystemTime>, b: Option<SystemTime>) -> std::cmp::Ordering {
+    match (b, a) {
         (Some(x), Some(y)) => x.cmp(&y),
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => std::cmp::Ordering::Equal,
-    });
+    }
+}
 
-    ledger
+/// "now", "7m", "3h", "2d": the age a dense list can carry, the way Cursor's
+/// agent list writes it. The long form is `age`, for a hover.
+pub fn short_age(written: Option<SystemTime>) -> Option<String> {
+    let secs = SystemTime::now().duration_since(written?).ok()?.as_secs();
+    Some(match secs {
+        0..=44 => "now".to_string(),
+        45..=5399 => format!("{}m", ((secs as f64) / 60.0).round().max(1.0) as u64),
+        5400..=129_599 => format!("{}h", ((secs as f64) / 3600.0).round() as u64),
+        _ => format!("{}d", ((secs as f64) / 86_400.0).round() as u64),
+    })
 }
 
 /// "4 minutes ago", or None when there is no timestamp to say it from.

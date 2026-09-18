@@ -115,6 +115,11 @@ pub struct App {
     pub(crate) sessions: Vec<vitna_protocol::api::SessionInfo>,
     /// The session a turn will be submitted against, once one exists.
     pub(crate) active_session: Option<String>,
+    /// The prompts the daemon's event log holds, which is what names a
+    /// session or a run. None until the daemon has answered.
+    pub(crate) prompts: Option<crate::prompts::Prompts>,
+    /// Why the prompts could not be read, when they could not.
+    pub(crate) prompts_trouble: Option<String>,
     /// Set while a turn is in flight, so the composer says so rather than
     /// offering a Send that silently queues.
     pub(crate) turn_running: bool,
@@ -173,6 +178,8 @@ impl App {
             worker,
             sessions: Vec::new(),
             active_session: None,
+            prompts: None,
+            prompts_trouble: None,
             turn_running: false,
             last_result: None,
             last_error: None,
@@ -216,6 +223,17 @@ impl App {
         self.worker.send(daemon::Command::Connect);
     }
 
+    /// Asks the daemon for a session on this folder. The sidebar's button, the
+    /// File menu and search all come here, so none of them can become a
+    /// control that looks live and does nothing.
+    pub(crate) fn new_session(&mut self) {
+        if self.link.is_open() {
+            self.worker.send(daemon::Command::CreateSession(
+                self.workspace.path.clone(),
+            ));
+        }
+    }
+
     /// Takes everything the worker has posted since the last frame.
     pub(crate) fn drain_daemon(&mut self) {
         for event in self.worker.drain() {
@@ -224,8 +242,10 @@ impl App {
                     self.link = Link::Open { endpoint, health };
                     self.last_error = None;
                     // The session list is a fact of the daemon, so it is asked
-                    // for rather than assumed empty.
+                    // for rather than assumed empty, and so are the prompts
+                    // that name its sessions.
                     self.worker.send(daemon::Command::ListSessions);
+                    self.worker.send(daemon::Command::ListTurns);
                 }
                 daemon::Event::Absent { tried, detail } => {
                     self.link = Link::Absent { tried, detail };
@@ -244,11 +264,19 @@ impl App {
                     }
                     self.sessions = list;
                 }
+                daemon::Event::Turns(list) => {
+                    self.prompts = Some(crate::prompts::Prompts::from_list(*list));
+                    self.prompts_trouble = None;
+                }
+                daemon::Event::TurnsFailed(reason) => {
+                    self.prompts_trouble = Some(reason);
+                }
                 daemon::Event::TurnFinished(result) => {
                     self.turn_running = false;
                     self.last_error = None;
                     self.last_result = Some(result);
                     self.worker.send(daemon::Command::ListSessions);
+                    self.worker.send(daemon::Command::ListTurns);
                     // A receipt was just written, so the ledger is stale. The
                     // new run becomes the open one.
                     self.runs = runs::Probe::start(&self.workspace.path);

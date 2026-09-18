@@ -74,9 +74,7 @@ impl App {
                 // The daemon owns sessions. This asks for one against the
                 // folder the window is looking at, and the reply arrives as an
                 // event rather than a return value.
-                self.worker.send(crate::daemon::Command::CreateSession(
-                    self.workspace.path.clone(),
-                ));
+                self.new_session();
             }
         } else {
             new_session
@@ -142,13 +140,42 @@ impl App {
                         if is_active { theme::FACE_2 } else { theme::FACE },
                     );
                 }
-                ui.painter().text(
-                    egui::pos2(r.left() + 22.0, r.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    &session.session_id,
-                    theme::sans(12.5),
-                    if is_active { theme::INK } else { theme::INK_2 },
+                // Named by the prompt its first turn opened with, as the
+                // daemon's log recorded it. A session with no turn has no
+                // prompt to be named by and says so; until the daemon has
+                // listed its prompts, the id is the only name there is.
+                let first = self
+                    .prompts
+                    .as_ref()
+                    .and_then(|p| p.for_session(&session.session_id));
+                let id = &session.session_id;
+                let (text, tone, hint) = match (first, &self.prompts) {
+                    (Some(t), _) => (
+                        crate::prompts::title(&t.prompt),
+                        if is_active { theme::INK } else { theme::INK_2 },
+                        format!("{}\n\n{id}", theme::clip(&t.prompt, 280)),
+                    ),
+                    (None, Some(_)) => (
+                        "New session".to_string(),
+                        if is_active { theme::INK_2 } else { theme::MUTE },
+                        format!("No turn has run in this session yet.\n{id}"),
+                    ),
+                    (None, None) => (
+                        id.clone(),
+                        if is_active { theme::INK } else { theme::INK_2 },
+                        match &self.prompts_trouble {
+                            Some(e) => format!("The daemon did not list its prompts: {e}"),
+                            None => "Waiting for the daemon to list its prompts.".to_string(),
+                        },
+                    ),
+                };
+                let galley = theme::line(&ui, &text, theme::sans(12.5), tone, r.width() - 30.0);
+                ui.painter().galley(
+                    egui::pos2(r.left() + 22.0, r.center().y - galley.size().y / 2.0),
+                    galley,
+                    tone,
                 );
+                let row = row.on_hover_text(hint);
                 if row.clicked() {
                     picked = Some(session.session_id.clone());
                 }

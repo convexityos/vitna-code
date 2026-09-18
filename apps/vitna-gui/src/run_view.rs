@@ -6,7 +6,9 @@
 //! records what was DONE and what can be checked, not what was said. So the
 //! centre states the run's standing and its evidence, and a summary line
 //! appears only for a run this window watched, because only then is there a
-//! sentence to show. A historical run says so rather than inventing one.
+//! sentence to show. A historical run says so rather than inventing one. The
+//! one thing said that does appear is the prompt, when the daemon's event log
+//! has it, and it is labelled with where it came from.
 
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke, Vec2};
 
@@ -116,6 +118,11 @@ impl App {
             .filter(|r| Some(&r.run_id) == open_id.as_ref())
             .map(|r| r.text.clone())
             .filter(|t| !t.is_empty());
+        // The prompt, when the daemon's log has one; the receipt never does.
+        let prompt = open_id
+            .as_ref()
+            .and_then(|id| self.prompts.as_ref()?.for_run(id))
+            .map(|t| t.prompt.clone());
 
         let Some(run) = self.current_run() else {
             return;
@@ -172,10 +179,19 @@ impl App {
                 }
 
                 ui.add_space(14.0);
-                ui.label(
-                    RichText::new(&run_id)
-                        .font(theme::display(19.0))
-                        .color(theme::INK),
+                // Headed by what was asked, as the list names it, and by the
+                // run id when the daemon's log has no prompt for it.
+                let heading = match &prompt {
+                    Some(p) => crate::prompts::title(p),
+                    None => run_id.clone(),
+                };
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(heading)
+                            .font(theme::display(19.0))
+                            .color(theme::INK),
+                    )
+                    .wrap(),
                 );
                 ui.add_space(8.0);
 
@@ -184,6 +200,9 @@ impl App {
                 // nothing after it; space cannot.
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 16.0;
+                    if prompt.is_some() {
+                        meta(ui, &run_id);
+                    }
                     meta(ui, &format!("{sku} ({provider})"));
                     meta(ui, &state);
                     meta(ui, &isolation);
@@ -216,7 +235,7 @@ impl App {
                 }
 
                 ui.add_space(18.0);
-                self.run_body(ui, summary, &evidence, &files, &base);
+                self.run_body(ui, prompt.as_deref(), summary, &evidence, &files, &base);
             });
 
         if leaving {
@@ -231,11 +250,24 @@ impl App {
     fn run_body(
         &self,
         ui: &mut egui::Ui,
+        prompt: Option<&str>,
         summary: Option<String>,
         evidence: &[(String, String)],
         files: &[String],
         base: &str,
     ) {
+        // The heading already says a one-line prompt; the whole of it is
+        // shown only when there is more of it than the heading holds.
+        if let Some(p) = prompt.filter(|p| p.trim() != crate::prompts::title(p)) {
+            ui.label(RichText::new("Asked").font(theme::sans(12.0)).color(theme::FAINT));
+            ui.add_space(4.0);
+            ui.add(
+                egui::Label::new(RichText::new(p).font(theme::prose(14.0)).color(theme::INK_2))
+                    .wrap(),
+            );
+            ui.add_space(14.0);
+        }
+        let source = "The prompt comes from the daemon's event log. A receipt records what was done, not what was said, so it carries neither the prompt nor a transcript. What it does carry is below.";
         match summary {
             Some(text) => {
                 ui.add(
@@ -246,13 +278,26 @@ impl App {
                     )
                     .wrap(),
                 );
+                if prompt.is_some() {
+                    ui.add_space(6.0);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new("The prompt comes from the daemon's event log; the receipt does not carry it.")
+                                .font(theme::prose(11.5))
+                                .color(theme::FAINTER),
+                        )
+                        .wrap(),
+                    );
+                }
             }
             None => {
                 ui.add(
                     egui::Label::new(
-                        RichText::new(
-                            "A receipt records what was done, not what was said, so there is no transcript here. What it does carry is below.",
-                        )
+                        RichText::new(if prompt.is_some() {
+                            source
+                        } else {
+                            "A receipt records what was done, not what was said, so there is no transcript here. What it does carry is below."
+                        })
                         .font(theme::prose(12.5))
                         .color(theme::FAINTER),
                     )

@@ -12,7 +12,9 @@
 use eframe::egui;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 
-use vitna_protocol::api::{HealthResponse, SessionInfo, SubmitTurnRequest, TurnResultResponse};
+use vitna_protocol::api::{
+    HealthResponse, SessionInfo, SubmitTurnRequest, TurnListResponse, TurnResultResponse,
+};
 use vitna_protocol::client::Client;
 
 pub enum Command {
@@ -20,6 +22,8 @@ pub enum Command {
     Connect,
     CreateSession(std::path::PathBuf),
     ListSessions,
+    /// The prompts the daemon's event log holds, to name sessions and runs.
+    ListTurns,
     SubmitTurn(Box<SubmitTurnRequest>),
 }
 
@@ -36,6 +40,11 @@ pub enum Event {
     },
     SessionCreated(Box<SessionInfo>),
     Sessions(Vec<SessionInfo>),
+    Turns(Box<TurnListResponse>),
+    /// ListTurns was refused, say by a daemon built before the call existed.
+    /// Kept apart from `Failed`, which reports a turn: a window that cannot
+    /// read titles has lost its titles, not its last turn.
+    TurnsFailed(String),
     TurnFinished(Box<TurnResultResponse>),
     /// A call the daemon refused, with the daemon's own words.
     Failed(String),
@@ -138,6 +147,10 @@ fn run(client: &mut Option<Client>, command: Command) -> Event {
         Command::ListSessions => match c.list_sessions() {
             Ok(s) => Event::Sessions(s),
             Err(e) => Event::Failed(e),
+        },
+        Command::ListTurns => match c.list_turns() {
+            Ok(list) => Event::Turns(Box::new(list)),
+            Err(e) => Event::TurnsFailed(e),
         },
         Command::SubmitTurn(req) => match c.submit_turn(&req) {
             Ok(r) => Event::TurnFinished(Box::new(r)),

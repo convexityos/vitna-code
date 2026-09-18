@@ -226,6 +226,31 @@ pub fn install(ctx: &egui::Context) {
 }
 
 
+/// One line of text cut to `max_w` with an ellipsis, rather than wrapped or
+/// run on under whatever sits beside it. For painter-drawn rows, where egui's
+/// own label truncation is not in play.
+pub fn line(
+    ui: &egui::Ui,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_w: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_w.max(0.0));
+    ui.painter().layout_job(job)
+}
+
+/// Long text cut for a hover card, so a pasted essay of a prompt does not
+/// become a tooltip taller than the window.
+pub fn clip(text: &str, max_chars: usize) -> String {
+    let mut out: String = text.chars().take(max_chars).collect();
+    if text.chars().count() > max_chars {
+        out.push('\u{2026}');
+    }
+    out
+}
+
 /// A named sidebar, not an icon rail. Every terminal this sits beside lists
 /// real work by name, and an icon rail is Convexity's answer to twenty
 /// destinations rather than to one plus a list of sessions.

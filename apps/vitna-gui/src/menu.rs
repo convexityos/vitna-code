@@ -112,8 +112,13 @@ impl App {
     fn file_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.set_min_width(220.0);
         let linked = self.link.is_open();
-        ui.add_enabled(linked, egui::Button::new("New session"))
-            .on_disabled_hover_text("Sessions are opened by the daemon, and it is not running.");
+        if ui
+            .add_enabled(linked, egui::Button::new("New session"))
+            .on_disabled_hover_text("Sessions are opened by the daemon, and it is not running.")
+            .clicked()
+        {
+            self.new_session();
+        }
         ui.add_enabled(false, egui::Button::new("Open folder..."))
             .on_disabled_hover_text("Opening another folder is the daemon's to do, and it is not running.");
         ui.separator();
