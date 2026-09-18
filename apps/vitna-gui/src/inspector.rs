@@ -10,6 +10,7 @@
 use eframe::egui::{self, CornerRadius, Rect, RichText, Stroke};
 
 use crate::app::{App, Tab};
+use crate::runs::Signature;
 use crate::theme;
 
 pub(crate) const WIDTH: f32 = 380.0;
@@ -19,6 +20,7 @@ pub(crate) const WIDTH: f32 = 380.0;
 struct Facts {
     valid: bool,
     errors: Vec<String>,
+    signature: Signature,
     path: String,
     json: String,
     checks: Vec<(String, String)>,
@@ -47,6 +49,7 @@ impl App {
         ui.add_space(12.0);
 
         let tab = self.tab;
+        let (key, _) = crate::run_view::device_key(&self.link);
         let Some(run) = self.current_run() else {
             return;
         };
@@ -54,6 +57,7 @@ impl App {
         let f = Facts {
             valid: run.report.is_valid,
             errors: run.report.errors.clone(),
+            signature: run.signature(key.as_deref()),
             path: run.path.display().to_string(),
             json: serde_json::to_string_pretty(&*run.receipt)
                 .unwrap_or_else(|e| format!("the receipt would not re-serialize: {e}")),
@@ -96,13 +100,23 @@ impl App {
 }
 
 fn receipt_tab(ui: &mut egui::Ui, f: &Facts) {
-    let (tone, word) = if f.valid {
-        (theme::OK, "Every check this window can run passed.")
-    } else {
-        (theme::RUST, "A check failed.")
+    // The signature is a check this window runs too, whenever the daemon has
+    // published its key, so the verdict answers for it as well.
+    let signature_fault = match f.signature {
+        Signature::Mismatch => Some("The signature does not match the key the connected daemon signs with."),
+        Signature::Absent => Some("The receipt carries no signature."),
+        Signature::Verified | Signature::Unchecked => None,
+    };
+    let (tone, word) = match (f.valid && signature_fault.is_none(), f.signature) {
+        (false, _) => (theme::RUST, "A check failed."),
+        (true, Signature::Verified) => (theme::OK, "Every check passed, the signature included."),
+        (true, _) => (
+            theme::OK,
+            "Every check this window can run passed. The signature was not checked, having no key to be checked with.",
+        ),
     };
     ui.add(egui::Label::new(RichText::new(word).font(theme::prose(12.5)).color(tone)).wrap());
-    for e in &f.errors {
+    for e in f.errors.iter().map(String::as_str).chain(signature_fault) {
         ui.add(
             egui::Label::new(RichText::new(e).font(theme::prose(12.0)).color(theme::RUST)).wrap(),
         );

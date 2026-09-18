@@ -91,6 +91,7 @@ impl App {
             (Link::Open { .. }, None) => "Waiting for the daemon to list its prompts.".to_string(),
             _ => "Prompts come from the daemon's event log, and it is not connected.".to_string(),
         };
+        let (key, _) = crate::run_view::device_key(&self.link);
         let ledger = match self.runs.poll() {
             runs::Loading::Done(l) => l,
             runs::Loading::Reading => return None,
@@ -144,7 +145,19 @@ impl App {
                 },
                 age: runs::short_age(run.written),
                 age_long: runs::age(run.written),
-                failed_checks: run.report.errors.clone(),
+                // The signature is a check too, once the daemon has published
+                // its key, and a row that fails it does not wear a tick.
+                failed_checks: {
+                    let mut failed = run.report.errors.clone();
+                    match run.signature(key.as_deref()) {
+                        runs::Signature::Mismatch => failed.push(
+                            "the signature does not match the key the connected daemon signs with".to_string(),
+                        ),
+                        runs::Signature::Absent => failed.push("the receipt carries no signature".to_string()),
+                        runs::Signature::Verified | runs::Signature::Unchecked => {}
+                    }
+                    failed
+                },
                 written: run.written,
             });
         }

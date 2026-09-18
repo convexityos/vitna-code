@@ -8,11 +8,16 @@
 //! the daemon being stopped, and the check does not depend on the thing being
 //! checked.
 //!
-//! One distinction this module refuses to blur. `verify_receipt_json` supplies
-//! no public key, so the device signature is NOT CHECKED rather than found
-//! wanting, and `signature_verified: false` means exactly that. A window that
-//! painted it as a failure would be accusing every honest receipt.
+//! Two checks, kept apart on purpose. The structural one (`verify_receipt_json`)
+//! takes no key, so a receipt signed by some other key is not called invalid.
+//! The signature is checked on its own, against the key the connected daemon
+//! publishes, and it has four answers rather than two: verified, not checked
+//! (no key to check it with, which is not a fault), does not match (another
+//! key signed it, or it changed since; a receipt names no key, so it cannot
+//! say which), and absent. A window that folded "not checked" into a failure
+//! would be accusing every honest receipt.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::SystemTime;
@@ -28,28 +33,61 @@ pub struct Run {
     /// When the file was written, for ordering and for the age line. The
     /// receipt carries no timestamp of its own.
     pub written: Option<SystemTime>,
+    /// The last signature check and the key it was made with, since a check
+    /// costs a canonical encoding and a curve operation and the run view asks
+    /// every frame.
+    pub checked: RefCell<Option<(String, Signature)>>,
 }
 
 impl Run {
-    /// The signature's standing, as three states rather than two.
-    pub fn signature(&self) -> Signature {
-        if self.report.signature_verified {
-            Signature::Verified
-        } else if self.receipt.device_signature.is_empty() {
-            Signature::Absent
-        } else {
-            Signature::Unchecked
+    /// The signature's standing against `key`, the public key (hex) the
+    /// connected daemon signs with, or `None` when there is no such key.
+    pub fn signature(&self, key: Option<&str>) -> Signature {
+        if self.receipt.device_signature.is_empty() {
+            return Signature::Absent;
         }
+        let Some(key) = key else {
+            return Signature::Unchecked;
+        };
+        if let Some((with, answer)) = &*self.checked.borrow() {
+            if with == key {
+                return *answer;
+            }
+        }
+        let answer = check_signature(&self.receipt, key);
+        *self.checked.borrow_mut() = Some((key.to_string(), answer));
+        answer
+    }
+}
+
+/// Checks `receipt`'s device signature against `key_hex`. A key that is not
+/// one is no key to check with, which is `Unchecked` rather than a verdict on
+/// the receipt.
+pub fn check_signature(receipt: &VitnaRunReceiptV1, key_hex: &str) -> Signature {
+    let key = hex::decode(key_hex)
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .and_then(|bytes| ed25519_dalek::VerifyingKey::from_bytes(&bytes).ok());
+    match key {
+        None => Signature::Unchecked,
+        Some(key) => match receipt.verify_signature(&key) {
+            Ok(true) => Signature::Verified,
+            // A signature that fails, or that is not even a signature's shape.
+            _ => Signature::Mismatch,
+        },
     }
 }
 
 /// What can be said about the device signature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signature {
-    /// Checked against a key and it held.
+    /// Checked against the connected daemon's key, and it held.
     Verified,
-    /// Present, and no key was supplied to check it against. Not a fault.
+    /// Present, with no key to check it against. Not a fault.
     Unchecked,
+    /// Present, and it does not verify with the connected daemon's key:
+    /// another key signed it, or the receipt changed after it was signed.
+    Mismatch,
     /// The receipt carries no signature at all, which IS a fault.
     Absent,
 }
@@ -147,6 +185,7 @@ fn read(dir: &Path) -> Ledger {
                 receipt: Box::new(v.receipt),
                 report: v.report,
                 written,
+                checked: RefCell::new(None),
             }),
             Err(e) => ledger.unreadable.push(Unreadable {
                 path,
@@ -205,4 +244,76 @@ pub fn age(written: Option<SystemTime>) -> Option<String> {
             format!("{d} day{} ago", if d == 1 { "" } else { "s" })
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::SigningKey;
+    use vitna_receipts::{ChangeSetRecord, ModelSelectionRecord};
+
+    fn signed_by(key: &SigningKey) -> VitnaRunReceiptV1 {
+        let mut receipt = VitnaRunReceiptV1 {
+            schema_version: "vitna-run-receipt-v1".to_string(),
+            run_id: "run-1".to_string(),
+            session_id: "sess-1".to_string(),
+            workspace_fingerprint: "ws".to_string(),
+            base_commit_sha: "0".repeat(40),
+            model_selection: ModelSelectionRecord {
+                provider: "anthropic".to_string(),
+                model_sku: "m".to_string(),
+                routing_reason: "pinned_profile".to_string(),
+                policy_digest: None,
+            },
+            event_hash_chain_root: "root".to_string(),
+            isolation_label: "guarded".to_string(),
+            completion_state: "completed_with_evidence".to_string(),
+            evidence_items: vec![],
+            changeset: ChangeSetRecord { files_modified: vec![], diff_digest: "d".to_string() },
+            runner_execution_statements: vec![],
+            child_receipt_roots: vec![],
+            device_signature: String::new(),
+        };
+        receipt.sign(key).expect("signs");
+        receipt
+    }
+
+    fn run_of(receipt: VitnaRunReceiptV1) -> Run {
+        let report = vitna_receipt_verify::ReceiptVerifier::verify_receipt(&receipt, None).expect("report");
+        Run {
+            path: PathBuf::from("run-1.json"),
+            receipt: Box::new(receipt),
+            report,
+            written: None,
+            checked: RefCell::new(None),
+        }
+    }
+
+    fn hex_of(key: &SigningKey) -> String {
+        hex::encode(key.verifying_key().to_bytes())
+    }
+
+    #[test]
+    fn a_signature_is_checked_against_the_daemons_key() {
+        let daemon = vitna_receipts::generate_signing_key();
+        let other = vitna_receipts::generate_signing_key();
+        let run = run_of(signed_by(&daemon));
+
+        assert_eq!(run.signature(Some(&hex_of(&daemon))), Signature::Verified);
+        // Asked again with another key, the answer cached for the first is
+        // not reused.
+        assert_eq!(run.signature(Some(&hex_of(&other))), Signature::Mismatch);
+        assert_eq!(run.signature(None), Signature::Unchecked);
+        assert_eq!(run.signature(Some("not a key")), Signature::Unchecked);
+        // Signed by another key is not a structural fault.
+        assert!(run.report.is_valid);
+
+        let mut changed = signed_by(&daemon);
+        changed.completion_state = "failed".to_string();
+        assert_eq!(run_of(changed).signature(Some(&hex_of(&daemon))), Signature::Mismatch);
+
+        let mut unsigned = signed_by(&daemon);
+        unsigned.device_signature.clear();
+        assert_eq!(run_of(unsigned).signature(Some(&hex_of(&daemon))), Signature::Absent);
+    }
 }

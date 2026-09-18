@@ -13,27 +13,60 @@
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke, Vec2};
 
 use crate::app::{App, Tab};
+use crate::link::Link;
 use crate::runs::{self, Run, Signature};
 use crate::theme;
 
-/// The colour and words for the signature's three states. "Not checked" is not
-/// a failure and must never be painted as one.
-fn signature_pill(sig: Signature) -> (Color32, &'static str, &'static str) {
+/// The key the connected daemon signs with, or why there is none to check
+/// with. The daemon is the only source: it publishes the key in `Health`.
+pub(crate) fn device_key(link: &Link) -> (Option<String>, &'static str) {
+    match link {
+        Link::Open { health, .. } => match &health.device_public_key {
+            Some(key) => (Some(key.clone()), ""),
+            None => (None, "the connected daemon does not say which key it signs with"),
+        },
+        Link::Probing => (None, "the window has not reached the daemon yet, and the daemon publishes the key"),
+        Link::Absent { .. } => (None, "no daemon is connected, and the daemon publishes the key"),
+    }
+}
+
+/// The colour and words for the signature's four states. "Not checked" is not
+/// a failure and must never be painted as one; "does not match" is a finding,
+/// and says what it cannot tell.
+fn signature_pill(sig: Signature, key: Option<&str>, no_key_because: &str) -> (Color32, &'static str, String) {
+    // Enough of the key to tell two apart on a hover, and no more on screen.
+    let short = key.map(|k| k.get(..16).unwrap_or(k)).unwrap_or_default();
     match sig {
         Signature::Verified => (
             theme::OK,
             "Signature verified",
-            "The device signature was checked against a public key and held.",
+            format!(
+                "Checked against the key the connected daemon signs with (key {short}\u{2026}), and it \
+                 held: this is the receipt exactly as that daemon signed it."
+            ),
         ),
         Signature::Unchecked => (
             theme::FAINT,
             "Signature not checked",
-            "A signature is present. No public key was supplied, so it was not checked. That is not a fault in the receipt.",
+            format!(
+                "A signature is present, and there is no key to check it with: {no_key_because}. That is \
+                 not a fault in the receipt."
+            ),
+        ),
+        Signature::Mismatch => (
+            theme::RUST,
+            "Signature does not match",
+            format!(
+                "It does not verify with the key the connected daemon signs with (key {short}\u{2026}). \
+                 Either another key signed it (until this build the daemon made a new key every time it \
+                 started, and kept none of them), or the receipt changed after it was signed. A receipt \
+                 does not name its key, so it cannot say which."
+            ),
         ),
         Signature::Absent => (
             theme::RUST,
             "No signature",
-            "The receipt carries no device signature at all, which is a fault.",
+            "The receipt carries no device signature at all, which is a fault.".to_string(),
         ),
     }
 }
@@ -123,6 +156,7 @@ impl App {
             .as_ref()
             .and_then(|id| self.prompts.as_ref()?.for_run(id))
             .map(|t| t.prompt.clone());
+        let (key, no_key_because) = device_key(&self.link);
 
         let Some(run) = self.current_run() else {
             return;
@@ -134,7 +168,7 @@ impl App {
         let state = run.receipt.completion_state.replace('_', " ");
         let isolation = run.receipt.isolation_label.clone();
         let age = runs::age(run.written);
-        let (tone, word, why) = signature_pill(run.signature());
+        let (tone, word, why) = signature_pill(run.signature(key.as_deref()), key.as_deref(), no_key_because);
         let evidence: Vec<(String, String)> = run
             .receipt
             .evidence_items
