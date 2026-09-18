@@ -20,16 +20,19 @@ use eframe::egui::{self, Color32, FontFamily, FontId, TextStyle};
 
 // Neutral, with a whisper of cool: every ground keeps its blue channel a few
 // points over its red, no more, so the periwinkle is the only blue thing on
-// screen. The main area and the sidebar sit on one floor, and a visibly
-// lighter hairline draws the edges between them, since two near-blacks side
-// by side need a line to be two things. The composer field is a lit well on
-// that floor with the brightest line of all, so the thing you type into is
-// the thing you see; the controls (buttons, chips, the chosen session) carry
-// the brightest FILLS, a step over the field, so each one reads as a thing
-// to press rather than a smudge on the floor.
-pub const CANVAS: Color32 = Color32::from_rgb(0x0b, 0x0c, 0x10);
+// screen. The sidebar and the title bar sit on the floor (RAIL), and the main
+// area one small step up from it (CANVAS), so the side you work in is the
+// lit one; a visibly lighter hairline still draws the edge between them.
+// GROUND, for the inspector, the popups and the repository bar, keeps the
+// same step over CANVAS that it used to keep over the floor, so what sits on
+// the main area still reads as raised. The composer field is a lit well with
+// the brightest line of all, so the thing you type into is the thing you
+// see; the controls (buttons, chips, the chosen session) carry the brightest
+// FILLS, a step over the field, so each one reads as a thing to press rather
+// than a smudge on the floor.
+pub const CANVAS: Color32 = Color32::from_rgb(0x10, 0x11, 0x15);
 pub const RAIL: Color32 = Color32::from_rgb(0x0b, 0x0c, 0x10);
-pub const GROUND: Color32 = Color32::from_rgb(0x12, 0x13, 0x18);
+pub const GROUND: Color32 = Color32::from_rgb(0x17, 0x18, 0x1e);
 pub const FIELD: Color32 = Color32::from_rgb(0x1f, 0x20, 0x27);
 pub const FACE: Color32 = Color32::from_rgb(0x23, 0x25, 0x2d);
 pub const FACE_2: Color32 = Color32::from_rgb(0x2d, 0x2f, 0x38);
