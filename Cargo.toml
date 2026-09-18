@@ -73,6 +73,10 @@ eframe = { version = "0.36.2", default-features = false, features = ["default_fo
 egui_extras = { version = "0.36", default-features = false, features = ["svg", "image"] }
 # The Edit menu's Paste reads the clipboard; egui-winit already carries this crate.
 arboard = { version = "3", default-features = false }
+# The window's frame is recoloured through DWM on Windows 11. Both are the
+# versions eframe already carries, so neither adds a crate to the build.
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 
 # CLI Parsing
 clap = { version = "4.5", features = ["derive", "env"] }

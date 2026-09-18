@@ -11,6 +11,7 @@ mod app;
 mod bar;
 mod brand;
 mod catalog;
+mod chrome;
 mod composer;
 mod daemon;
 mod icons;

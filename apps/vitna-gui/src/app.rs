@@ -162,6 +162,7 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, workspace: Workspace) -> Self {
         theme::install(&cc.egui_ctx);
+        crate::chrome::match_frame(cc);
         // The SVG loader behind the mark.
         egui_extras::install_image_loaders(&cc.egui_ctx);
         let repo = Probe::start(&workspace.path);

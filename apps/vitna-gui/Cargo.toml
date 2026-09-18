@@ -16,6 +16,10 @@ vitna-protocol.workspace = true
 vitna-receipts.workspace = true
 vitna-receipt-verify.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+raw-window-handle.workspace = true
+windows-sys.workspace = true
+
 [[bin]]
 name = "vitna-code"
 path = "src/main.rs"
