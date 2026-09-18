@@ -83,7 +83,8 @@ Level 6: Remote Content & Tool Output (web fetch results, API responses, subproc
 ### Boundary 4: Git Metadata and Workspace Isolation
 - **Separation**: The primary repository's checkout and its `.git` directory must remain pristine and unreachable.
 - **Threats**: Malicious hooks (`.git/hooks/pre-commit`), git filter drivers, git aliases, malicious git alternates pointing to private repositories, dirty tree contamination.
-- **Controls**: `vitna-git-broker` manages a private mirror in application state and materializes isolated, disposable agent clones with self-contained `.git` metadata; the host `.git` directory is never mounted into the runner; hooks and filters are disabled by configuration flags (`-c core.hooksPath=/dev/null`).
+- **Controls**: Host-side git runs only through `vitna_git_workspaces::host_git::command`, which points `core.hooksPath` at an empty directory, sets `core.fsmonitor=false`, and clears every repo-scoped filter driver. `vitna-git-broker` itself does not invoke git; it compares and merges file contents in memory.
+- **Not yet true of this codebase**: there is no private mirror. `AgentWorkspaceManager` copies files and skips `.git` entirely, so an agent workspace has no git metadata of its own rather than self-contained metadata. The claim that the host `.git` is never reachable by a spawned process depends on the runner sandbox, which is tracked separately.
 
 ### Boundary 5: Extension Principals (MCP Servers, Skills, Hooks)
 - **Separation**: External MCP tools, skill scripts, and out-of-process hooks run as distinct capability principals.
@@ -118,7 +119,7 @@ Every threat below is mapped to an automated test plan in `evals/`:
 | **THR-01** | Prompt Injection via Repository Instruction | Hierarchy enforces Level 5 bounds; capabilities cannot widen. | `evals/security/test_prompt_injection.rs` |
 | **THR-02** | Path Traversal / Symlink Junction Escape | `vitna-runner` canonicalizes paths, verifies bounds against workspace root. | `evals/security/test_path_traversal.rs` |
 | **THR-03** | Time-of-Check to Time-of-Use (TOCTOU) Race | Preimage hash verification; atomic file replacements. | `evals/security/test_atomic_replace.rs` |
-| **THR-04** | Git Hook / Filter Execution Escape | `vitna-git-broker` overrides `hooksPath`, neutralizes filters and aliases. | `evals/security/test_git_hook_isolation.rs` |
+| **THR-04** | Git Hook / Filter Execution Escape | `vitna_git_workspaces::host_git::command` is the sole constructor for host-side git: empty `core.hooksPath`, `core.fsmonitor=false`, repo-scoped filter drivers cleared, no repository-selected pager or external diff. Aliases need no control because they cannot override a builtin. | `crates/git-workspaces/tests/host_git_hardening.rs`, `crates/git-workspaces/tests/no_bare_git_invocations.rs`, `crates/tools/tests/git_status_hardening.rs` |
 | **THR-05** | Shell Injection via Concatenation | Direct structured `argv` execution preferred; strict shell escaping. | `evals/security/test_shell_sanitization.rs` |
 | **THR-06** | Fork Bomb / Process Resource Exhaustion | OS Job Objects (Windows) and cgroups / PID limits (Linux). | `evals/security/test_resource_limits.rs` |
 | **THR-07** | Terminal Escape Injection (OSC 52 Clipboard Hijack) | Terminal sanitizer strips dangerous ANSI, OSC, and bidi control codes. | `evals/security/test_terminal_sanitizer.rs` |
