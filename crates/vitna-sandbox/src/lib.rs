@@ -132,6 +132,27 @@ pub struct SandboxConfig {
     pub guarantee: SandboxGuarantee,
 }
 
+/// The form of a path that a sandbox policy has to be written against.
+///
+/// Seatbelt evaluates a resolved path, and on macOS a temporary directory is
+/// reached through `/var/folders/...` while its real location is
+/// `/private/var/folders/...`. A profile written against the unresolved form
+/// matches nothing, which shows up as the workspace being unwritable inside
+/// its own sandbox rather than as a policy error.
+///
+/// Only macOS resolves, because on Windows `canonicalize` returns a `\\?\`
+/// prefixed path that nothing else here uses, and on Linux the bind mounts are
+/// established against the path as given.
+#[cfg(target_os = "macos")]
+pub fn policy_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn policy_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
 /// Paths inside the workspace that stay read-only even when the workspace is
 /// writable.
 ///
@@ -327,13 +348,15 @@ impl SandboxConfig {
         // binds `/` read-only: toolchains live outside the workspace.
         profile.push_str("(allow file-read*)\n");
 
-        let ws = self.workspace_root.to_string_lossy();
+        // Written against the resolved path, which is what Seatbelt matches.
+        let resolved = policy_path(&self.workspace_root);
+        let ws = resolved.to_string_lossy();
         if self.guarantee != SandboxGuarantee::ReadOnly {
             profile.push_str(&format!("(allow file-write* (require-all (subpath \"{}\")", ws));
             for protected in protected_subpaths(&self.workspace_root) {
                 profile.push_str(&format!(
                     "\n  (require-not (subpath \"{}\"))",
-                    protected.to_string_lossy()
+                    policy_path(&protected).to_string_lossy()
                 ));
             }
             // The `.git` directory entry itself, so it cannot be renamed out of
@@ -342,7 +365,7 @@ impl SandboxConfig {
             if git_dir.exists() {
                 profile.push_str(&format!(
                     "\n  (require-not (literal \"{}\"))",
-                    git_dir.to_string_lossy()
+                    policy_path(&git_dir).to_string_lossy()
                 ));
             }
             profile.push_str("))\n");

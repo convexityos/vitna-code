@@ -9,7 +9,7 @@
 
 use std::fs;
 use std::path::PathBuf;
-use vitna_sandbox::{plan, PlanError, SandboxConfig, SandboxGuarantee};
+use vitna_sandbox::{plan, policy_path, PlanError, SandboxConfig, SandboxGuarantee};
 
 fn temp_workspace(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("vitna_sbx_{}_{}", std::process::id(), name));
@@ -124,11 +124,16 @@ fn test_macos_seatbelt_profile_generation() {
     let rw_profile = rw_config.generate_macos_seatbelt_profile();
     assert!(rw_profile.contains("(allow network-outbound)"));
     assert!(!rw_profile.contains("(deny network*)"));
-    assert!(rw_profile.contains(&format!("(subpath \"{}\")", workspace.to_string_lossy())));
+    // Compared against the resolved form, because that is what Seatbelt
+    // matches and what the profile is therefore written against. On macOS a
+    // temp dir reached through /var/folders really lives under /private.
+    let resolved_ws = policy_path(&workspace);
+    let resolved_config = policy_path(&workspace.join(".git").join("config"));
+    assert!(rw_profile.contains(&format!("(subpath \"{}\")", resolved_ws.to_string_lossy())));
     assert!(
         rw_profile.contains(&format!(
             "(require-not (subpath \"{}\"))",
-            workspace.join(".git").join("config").to_string_lossy()
+            resolved_config.to_string_lossy()
         )),
         "git config must be carved out of the writable subtree: {}",
         rw_profile
