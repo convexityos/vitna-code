@@ -69,13 +69,16 @@ pub fn sans(size: f32) -> FontId {
     FontId::new(size, FontFamily::Proportional)
 }
 
-/// The three faces the design names, bundled as the OFL variable TrueType files
-/// under `assets/fonts/`, each pinned to a weight on its `wght` axis at
-/// registration so every label in the window draws at that weight. Bundled
-/// rather than probed from the host, so the window draws the same face on
-/// every machine.
+/// The faces the design names, bundled as the OFL variable TrueType files under
+/// `assets/fonts/`, each pinned to a weight on its `wght` axis at registration
+/// so every label in the window draws at that weight. Bundled rather than
+/// probed from the host, so the window draws the same face on every machine.
+/// The OFL permits exactly this: bundling and redistribution with software, as
+/// long as the fonts are not sold on their own and the licence travels with
+/// them, which is why each file has its OFL.txt beside it.
 const MANROPE: &[u8] = include_bytes!("../assets/fonts/Manrope-Variable.ttf");
 const SPACE_GROTESK: &[u8] = include_bytes!("../assets/fonts/SpaceGrotesk-Variable.ttf");
+const JAKARTA: &[u8] = include_bytes!("../assets/fonts/PlusJakartaSans-Variable.ttf");
 const JETBRAINS_MONO: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Variable.ttf");
 
 /// Weights. The variable masters default to Regular, which on a dark ground
@@ -85,8 +88,9 @@ const WGHT_DISPLAY: f32 = 540.0;
 const WGHT_PROSE: f32 = 370.0;
 const WGHT_MONO: f32 = 440.0;
 
-/// Space Grotesk is what a view says: headings, labels, controls, chips. It is
-/// the proportional default, so `sans` is the UI voice.
+/// Plus Jakarta Sans is the UI voice now: labels, controls, chips, meta lines.
+/// It is the proportional default, so `sans` draws it. Space Grotesk keeps the
+/// display cut, where its character is the point rather than a distraction.
 pub fn display(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("display".into()))
 }
@@ -106,6 +110,7 @@ fn face(bytes: &'static [u8], weight: f32) -> std::sync::Arc<egui::FontData> {
 
 pub fn install(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("Jakarta".to_owned(), face(JAKARTA, WGHT_UI));
     fonts.font_data.insert("SpaceGrotesk".to_owned(), face(SPACE_GROTESK, WGHT_UI));
     fonts.font_data.insert("SpaceGroteskDisplay".to_owned(), face(SPACE_GROTESK, WGHT_DISPLAY));
     fonts.font_data.insert("Manrope".to_owned(), face(MANROPE, WGHT_PROSE));
@@ -127,14 +132,14 @@ pub fn install(ctx: &egui::Context) {
     };
     fonts
         .families
-        .insert(FontFamily::Proportional, chain(&["SpaceGrotesk", "Manrope"]));
+        .insert(FontFamily::Proportional, chain(&["Jakarta", "SpaceGrotesk"]));
     fonts.families.insert(
         FontFamily::Name("display".into()),
         chain(&["SpaceGroteskDisplay", "SpaceGrotesk"]),
     );
     fonts
         .families
-        .insert(FontFamily::Name("prose".into()), chain(&["Manrope", "SpaceGrotesk"]));
+        .insert(FontFamily::Name("prose".into()), chain(&["Manrope", "Jakarta"]));
     fonts
         .families
         .entry(FontFamily::Monospace)
