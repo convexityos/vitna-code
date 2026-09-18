@@ -8,6 +8,9 @@ pub mod path_safety;
 pub mod read_file;
 pub mod run_command;
 pub mod search_code;
+#[cfg(test)]
+mod test_support;
+mod workspace_fs;
 pub mod write_file;
 
 pub use apply_patch::ApplyPatchTool;
