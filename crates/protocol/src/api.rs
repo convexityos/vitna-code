@@ -23,6 +23,8 @@ pub mod type_url {
     pub const SESSION_LIST: &str = "type.vitna.ai/vitna.protocol.v1.SessionList";
     pub const SUBMIT_TURN: &str = "type.vitna.ai/vitna.protocol.v1.SubmitTurn";
     pub const TURN_RESULT: &str = "type.vitna.ai/vitna.protocol.v1.TurnResult";
+    pub const LIST_TURNS: &str = "type.vitna.ai/vitna.protocol.v1.ListTurns";
+    pub const TURN_LIST: &str = "type.vitna.ai/vitna.protocol.v1.TurnList";
     pub const ERROR: &str = "type.vitna.ai/vitna.protocol.v1.Error";
 }
 
@@ -99,6 +101,40 @@ pub struct TurnResultResponse {
     pub completion_tokens: Option<u32>,
     /// The assistant's closing message, for the transcript.
     pub text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListTurnsRequest {}
+
+/// One turn, as the daemon's event log recorded it when the turn began.
+///
+/// A receipt carries no prompt, on purpose: it records what was done, not
+/// what was asked. So the prompt a person typed exists in exactly one place,
+/// the `TurnStarted` event the daemon writes before the model is called, and
+/// this is how a window reads it back rather than remembering what it sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnInfo {
+    pub run_id: String,
+    pub session_id: String,
+    pub prompt: String,
+    /// When the event was written, off the event itself.
+    pub started_at_ms: u64,
+}
+
+/// A `TurnStarted` event the daemon could not read back: its hash did not
+/// match its contents, or its payload did not parse. Reported rather than
+/// dropped, so a missing title is never mistaken for a turn that never ran.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnreadableTurn {
+    pub run_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnListResponse {
+    /// Oldest first.
+    pub turns: Vec<TurnInfo>,
+    pub unreadable: Vec<UnreadableTurn>,
 }
 
 /// A call that failed, with the reason the caller should show.

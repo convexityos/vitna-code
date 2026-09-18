@@ -10,7 +10,8 @@ use std::io::{Read, Write};
 
 use crate::api::{
     self, CreateSessionRequest, ErrorResponse, HealthRequest, HealthResponse, ListSessionsRequest,
-    SessionInfo, SessionListResponse, SubmitTurnRequest, TurnResultResponse,
+    ListTurnsRequest, SessionInfo, SessionListResponse, SubmitTurnRequest, TurnListResponse,
+    TurnResultResponse,
 };
 use crate::{endpoint, ProtocolEnvelope};
 
@@ -123,6 +124,11 @@ impl Client {
         let list: SessionListResponse =
             self.call(api::type_url::LIST_SESSIONS, &ListSessionsRequest {})?;
         Ok(list.sessions)
+    }
+
+    /// Every turn the daemon's event log holds, with the prompt that began it.
+    pub fn list_turns(&mut self) -> Result<TurnListResponse, String> {
+        self.call(api::type_url::LIST_TURNS, &ListTurnsRequest {})
     }
 
     /// Runs a turn. This blocks for as long as the model and its tools take,

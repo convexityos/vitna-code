@@ -4,7 +4,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use vitna_orchestration::{OrchestrationConfig, OrchestrationEngine};
-use vitna_protocol::api::{SubmitTurnRequest, TurnResultResponse};
+use vitna_protocol::api::{
+    SubmitTurnRequest, TurnInfo, TurnListResponse, TurnResultResponse, UnreadableTurn,
+};
 use vitna_providers::{AnthropicProvider, CredentialResolver, OpenAIProvider, Provider};
 use vitna_receipts::generate_signing_key;
 use vitna_runner::{ProcessRunner, Runner};
@@ -21,6 +23,12 @@ pub use vitna_protocol::api::SessionInfo;
 /// enough for ordinary multi-file work and is reported when it is reached, so
 /// a cut-off run is never presented as a finished one.
 const MAX_ROUNDS: usize = 24;
+
+/// The event a turn opens with, and the only record of its prompt. One
+/// constant for the writer and the reader, since a reader looking for a type
+/// the writer no longer uses would find no turns and report none, which reads
+/// exactly like a daemon that has never run one.
+pub const TURN_STARTED: &str = "vitna.v1.TurnStarted";
 
 /// Builds the provider the caller asked for, or the first one whose credential
 /// actually resolves.
@@ -135,6 +143,54 @@ impl DaemonServer {
         list
     }
 
+    /// Every turn the event log holds, read off its `TurnStarted` events.
+    ///
+    /// The log is the source rather than the session map, because the map is
+    /// in memory and forgets on restart while the log does not. An event whose
+    /// hash no longer matches its contents, or whose payload will not parse, is
+    /// reported under `unreadable` rather than skipped.
+    pub fn list_turns(&self) -> Result<TurnListResponse, String> {
+        let events = {
+            let store = self.store.lock().map_err(|e| e.to_string())?;
+            store
+                .events_of_type(TURN_STARTED)
+                .map_err(|e| format!("the event log could not be read: {e}"))?
+        };
+
+        let mut list = TurnListResponse::default();
+        for event in events {
+            if !event.verify_integrity() {
+                list.unreadable.push(UnreadableTurn {
+                    run_id: event.run_id,
+                    reason: "the event's hash does not match its contents".to_string(),
+                });
+                continue;
+            }
+            let read = serde_json::from_slice::<serde_json::Value>(&event.encrypted_payload)
+                .map_err(|e| format!("the payload is not JSON: {e}"))
+                .and_then(|v| {
+                    let field = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+                    match (field("prompt"), field("session_id")) {
+                        (Some(prompt), Some(session_id)) => Ok((prompt, session_id)),
+                        _ => Err("the payload names no prompt or no session".to_string()),
+                    }
+                });
+            match read {
+                Ok((prompt, session_id)) => list.turns.push(TurnInfo {
+                    run_id: event.run_id,
+                    session_id,
+                    prompt,
+                    started_at_ms: event.timestamp_ms,
+                }),
+                Err(reason) => list.unreadable.push(UnreadableTurn {
+                    run_id: event.run_id,
+                    reason,
+                }),
+            }
+        }
+        Ok(list)
+    }
+
     /// Runs one turn: a real model call, the tools it asks for, and a signed
     /// receipt naming what actually served it.
     ///
@@ -201,7 +257,7 @@ impl DaemonServer {
         );
 
         engine.record_event(
-            "vitna.v1.TurnStarted",
+            TURN_STARTED,
             &serde_json::json!({
                 "prompt": req.prompt,
                 "session_id": req.session_id,

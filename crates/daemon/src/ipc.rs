@@ -136,6 +136,11 @@ pub async fn dispatch(daemon: &DaemonServer, request: &ProtocolEnvelope) -> Prot
             },
         ),
 
+        api::type_url::LIST_TURNS => match daemon.list_turns() {
+            Ok(list) => reply(request, api::type_url::TURN_LIST, &list),
+            Err(e) => error_reply(request, &e),
+        },
+
         api::type_url::SUBMIT_TURN => match request.payload_as::<SubmitTurnRequest>() {
             Ok(req) => match daemon.run_turn(&req).await {
                 Ok(result) => reply(request, api::type_url::TURN_RESULT, &result),
@@ -365,17 +370,20 @@ mod tests {
             let health = client.health()?;
             let session = client.create_session(dir_for_client)?;
             let sessions = client.list_sessions()?;
+            let turns = client.list_turns()?;
 
             // A call the daemon does not know must come back as a refusal with
             // a reason, not as a dropped connection.
             let unknown = client.create_session("");
 
-            Ok::<_, String>((health, session, sessions, unknown))
+            Ok::<_, String>((health, session, sessions, turns, unknown))
         })
         .await
         .expect("the client thread finishes");
 
-        let (health, session, sessions, unknown) = calls.expect("the calls succeed");
+        let (health, session, sessions, turns, unknown) = calls.expect("the calls succeed");
+        // No turn has run, and the answer says so rather than failing.
+        assert!(turns.turns.is_empty() && turns.unreadable.is_empty());
 
         assert_eq!(health.pid, std::process::id());
         assert_eq!(health.version, env!("CARGO_PKG_VERSION"));

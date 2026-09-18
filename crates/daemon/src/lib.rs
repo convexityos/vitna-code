@@ -192,6 +192,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_turns_prompt_is_read_back_off_the_event_log() {
+        let dir = std::env::temp_dir().join(format!("vitna_daemon_turns_{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let daemon = daemon_in(&dir);
+        let session = daemon.create_session(&dir).expect("create session");
+
+        assert!(daemon.list_turns().expect("list").turns.is_empty(), "no turn yet");
+
+        let provider = ScriptedProvider::new("scripted", vec![reply("Nothing to change.", vec![])]);
+        let result = daemon
+            .run_turn_with(
+                &provider,
+                &SubmitTurnRequest {
+                    session_id: session.session_id.clone(),
+                    prompt: "tidy the readme".to_string(),
+                    provider: None,
+                    model_sku: Some("scripted-model-1".to_string()),
+                    auto_approve: true,
+                    verification_command: None,
+                },
+            )
+            .await
+            .expect("the turn runs");
+
+        // A TurnStarted the log cannot read back is reported, not dropped.
+        {
+            let store = daemon.store.lock().unwrap();
+            store
+                .append_event(&vitna_store::EventRecord::new(
+                    "ev-broken-0",
+                    "run-broken",
+                    0,
+                    server::TURN_STARTED,
+                    1,
+                    b"not json".to_vec(),
+                    vitna_store::GENESIS_HASH,
+                ))
+                .expect("append");
+        }
+
+        let list = daemon.list_turns().expect("list");
+        assert_eq!(list.turns.len(), 1);
+        let turn = &list.turns[0];
+        assert_eq!(turn.prompt, "tidy the readme");
+        assert_eq!(turn.session_id, session.session_id);
+        assert_eq!(turn.run_id, result.run_id, "the prompt names the run its receipt names");
+        assert!(turn.started_at_ms > 0);
+
+        assert_eq!(list.unreadable.len(), 1);
+        assert_eq!(list.unreadable[0].run_id, "run-broken");
+        assert!(list.unreadable[0].reason.contains("not JSON"), "{}", list.unreadable[0].reason);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn a_turn_without_a_model_is_refused_rather_than_defaulted() {
         let dir = std::env::temp_dir().join(format!("vitna_daemon_nomodel_{}", std::process::id()));
         fs::create_dir_all(&dir).expect("temp dir");
