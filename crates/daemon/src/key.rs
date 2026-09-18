@@ -99,17 +99,18 @@ fn unrecognized(path: &Path) -> String {
     )
 }
 
-/// The accounts an allowing entry in an SDDL DACL names, other than `user`,
-/// SYSTEM and Administrators. `None` for a DACL that is missing altogether,
-/// which lets every account in. Parsed here rather than inside the Windows
-/// module so every platform's tests read it.
+/// The accounts an allowing entry in an SDDL DACL names, other than this
+/// account (by every name in `user`), SYSTEM and Administrators. `None` for a
+/// DACL that is missing altogether, which lets every account in. Parsed here
+/// rather than inside the Windows module so every platform's tests read it.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn foreign_trustees(dacl: &str, user: &str) -> Option<Vec<String>> {
+fn foreign_trustees(dacl: &str, user: &[&str]) -> Option<Vec<String>> {
     let body = dacl.strip_prefix("D:")?;
     if body.starts_with("NO_ACCESS_CONTROL") {
         return None;
     }
-    let trusted = [user, "SY", "BA", "OW", "S-1-5-18", "S-1-5-32-544"];
+    let mut trusted = vec!["SY", "BA", "OW", "S-1-5-18", "S-1-5-32-544"];
+    trusted.extend_from_slice(user);
     let mut foreign = Vec::new();
     for ace in body.split('(').skip(1) {
         let fields: Vec<&str> = ace.trim_end_matches(')').split(';').collect();
@@ -162,9 +163,12 @@ fn create_owner_only(path: &Path) -> std::io::Result<File> {
 #[cfg(windows)]
 fn check_owner_only(path: &Path) -> Result<(), String> {
     let user = windows_acl::current_user_sid().map_err(|e| format!("could not read this account's SID: {e}"))?;
+    // SDDL writes some accounts by alias: the built-in Administrator, which a
+    // GitHub Windows runner runs as, reads back as `LA`, never as its SID.
+    let alias = windows_acl::sddl_name(&user).map_err(|e| format!("could not read this account's SDDL name: {e}"))?;
     let dacl = windows_acl::dacl_sddl(path)
         .map_err(|e| format!("could not read the permissions on {}: {e}", path.display()))?;
-    match foreign_trustees(&dacl, &user) {
+    match foreign_trustees(&dacl, &[&user, &alias]) {
         Some(others) if others.is_empty() => Ok(()),
         Some(others) => Err(format!(
             "the signing key {} can be reached by {} as well as this account ({dacl}); make it this \
@@ -299,6 +303,42 @@ pub(crate) mod windows_acl {
         }
     }
 
+    /// How SDDL writes the account `sid`: the SID string, or the alias Windows
+    /// uses for it (`LA` for the built-in Administrator). Read back through the
+    /// same conversion a DACL is read with, so the two cannot disagree.
+    pub fn sddl_name(sid: &str) -> io::Result<String> {
+        // SAFETY: both allocations the system hands back are freed here.
+        unsafe {
+            let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+            let sddl = wide(OsStr::new(&format!("D:(A;;FA;;;{sid})")));
+            if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut sd, null_mut())
+                == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let mut text: *mut u16 = null_mut();
+            let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                sd,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut text,
+                null_mut(),
+            );
+            let err = io::Error::last_os_error();
+            LocalFree(sd);
+            if ok == 0 {
+                return Err(err);
+            }
+            let round_trip = take_wide(text);
+            round_trip
+                .rsplit(';')
+                .next()
+                .map(|name| name.trim_end_matches(')').to_string())
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| io::Error::other(format!("unexpected SDDL: {round_trip}")))
+        }
+    }
+
     /// The file's DACL, in SDDL.
     pub fn dacl_sddl(path: &Path) -> io::Result<String> {
         // SAFETY: both allocations the system hands back are freed here.
@@ -372,7 +412,8 @@ mod tests {
         #[cfg(windows)]
         {
             let user = windows_acl::current_user_sid().expect("sid");
-            assert_eq!(windows_acl::dacl_sddl(&path).expect("dacl"), format!("D:P(A;;FA;;;{user})"));
+            let name = windows_acl::sddl_name(&user).expect("sddl name");
+            assert_eq!(windows_acl::dacl_sddl(&path).expect("dacl"), format!("D:P(A;;FA;;;{name})"));
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -424,15 +465,21 @@ mod tests {
     #[test]
     fn only_this_account_system_and_administrators_may_be_named() {
         let user = "S-1-5-21-1-2-3-1001";
-        assert_eq!(foreign_trustees(&format!("D:P(A;;FA;;;{user})"), user), Some(vec![]));
+        let me = [user];
+        assert_eq!(foreign_trustees(&format!("D:P(A;;FA;;;{user})"), &me), Some(vec![]));
         let inherited = format!("D:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;{user})");
-        assert_eq!(foreign_trustees(&inherited, user), Some(vec![]));
+        assert_eq!(foreign_trustees(&inherited, &me), Some(vec![]));
         let shared = format!("D:P(A;;FA;;;{user})(A;;FR;;;BU)");
-        assert_eq!(foreign_trustees(&shared, user), Some(vec!["BU".to_string()]));
+        assert_eq!(foreign_trustees(&shared, &me), Some(vec!["BU".to_string()]));
         // A deny entry only takes access away.
         let denied = format!("D:P(D;;FA;;;WD)(A;;FA;;;{user})");
-        assert_eq!(foreign_trustees(&denied, user), Some(vec![]));
-        assert_eq!(foreign_trustees("D:NO_ACCESS_CONTROL", user), None);
-        assert_eq!(foreign_trustees("", user), None);
+        assert_eq!(foreign_trustees(&denied, &me), Some(vec![]));
+        assert_eq!(foreign_trustees("D:NO_ACCESS_CONTROL", &me), None);
+        assert_eq!(foreign_trustees("", &me), None);
+        // The built-in Administrator reads back by alias, and is still this
+        // account when it is the one running; to anyone else it is foreign.
+        let admin = "S-1-5-21-1-2-3-500";
+        assert_eq!(foreign_trustees("D:P(A;;FA;;;LA)", &[admin, "LA"]), Some(vec![]));
+        assert_eq!(foreign_trustees("D:P(A;;FA;;;LA)", &me), Some(vec!["LA".to_string()]));
     }
 }
