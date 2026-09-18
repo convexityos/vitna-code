@@ -22,7 +22,13 @@ impl App {
         self.context_row(&mut ui);
         ui.add_space(6.0);
 
-        let ready = self.link.is_open() && !self.draft.trim().is_empty();
+        // Four conditions, and each one has its own hover text below, because
+        // a disabled control that will not say why is the thing this window
+        // exists not to ship.
+        let ready = self.link.is_open()
+            && self.active_session.is_some()
+            && !self.turn_running
+            && !self.draft.trim().is_empty();
 
         let field = egui::Frame::default()
             .fill(theme::FIELD)
@@ -61,6 +67,16 @@ impl App {
                         ui.add_space(8.0);
                         keycap(ui);
                     }
+                    // The cap says Enter sends, so it has to. return_key is
+                    // set to Shift+Enter, so a bare Enter never reaches the
+                    // field and arrives here as a plain key press.
+                    let focused = ui.ctx().memory(|m| m.has_focus(crate::app::composer_id()));
+                    let entered = ui.input(|i| {
+                        i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
+                    });
+                    if focused && entered && ready {
+                        self.submit();
+                    }
                 });
             });
 
@@ -97,12 +113,20 @@ impl App {
                 }
                 let hint = if !self.link.is_open() {
                     "Nothing to send to: the daemon is not running."
+                } else if self.turn_running {
+                    "A turn is running. Wait for it to finish."
+                } else if self.active_session.is_none() {
+                    "Open a session first, so the run has somewhere to belong."
                 } else if self.draft.trim().is_empty() {
                     "Enter sends once there is something to send."
                 } else {
                     "Send (Enter)"
                 };
+                let sent = send.clicked();
                 send.on_hover_text(hint);
+                if ready && sent {
+                    self.submit();
+                }
 
                 ui.add_space(2.0);
                 self.model_picker(ui);
@@ -401,4 +425,42 @@ fn chip(ui: &mut egui::Ui, icon: fn(&egui::Painter, egui::Pos2, Color32), text: 
 fn chip_ground(ui: &egui::Ui, rect: Rect, hot: bool) {
     ui.painter().rect_filled(rect, CornerRadius::same(7), if hot { theme::FACE_2 } else { theme::FACE });
     ui.painter().rect_stroke(rect, CornerRadius::same(7), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
+}
+
+impl crate::app::App {
+    /// Hands the draft to the daemon.
+    ///
+    /// The model is a preference, and the receipt reports what actually ran,
+    /// which is why the sku travels as a request field rather than as a claim.
+    /// `auto_approve` follows the mode: Build acts, Plan only looks, and the
+    /// daemon's approval gate is what enforces that rather than this window.
+    pub(crate) fn submit(&mut self) {
+        let Some(session_id) = self.active_session.clone() else {
+            return;
+        };
+        let prompt = std::mem::take(&mut self.draft);
+        let model_sku = self
+            .model
+            .and_then(|i| self.choices.get(i))
+            .map(|c| c.sku.clone());
+        let provider = self
+            .model
+            .and_then(|i| self.choices.get(i))
+            .map(|c| c.provider_id.clone());
+
+        self.turn_running = true;
+        self.last_error = None;
+        self.last_result = None;
+        self.worker
+            .send(crate::daemon::Command::SubmitTurn(Box::new(
+                vitna_protocol::api::SubmitTurnRequest {
+                    session_id,
+                    prompt,
+                    provider,
+                    model_sku,
+                    auto_approve: matches!(self.mode, crate::app::Mode::Build),
+                    verification_command: None,
+                },
+            )));
+    }
 }

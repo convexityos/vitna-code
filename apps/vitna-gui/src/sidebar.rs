@@ -66,7 +66,16 @@ impl App {
             theme::sans(13.5),
             tone,
         );
-        if !linked {
+        if linked {
+            if new_session.clicked() {
+                // The daemon owns sessions. This asks for one against the
+                // folder the window is looking at, and the reply arrives as an
+                // event rather than a return value.
+                self.worker.send(crate::daemon::Command::CreateSession(
+                    self.workspace.path.clone(),
+                ));
+            }
+        } else {
             new_session
                 .on_hover_text("Sessions are opened by the daemon, and it is not running.");
         }
@@ -95,19 +104,60 @@ impl App {
             );
         });
         ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.add_space(22.0);
-            ui.label(
-                RichText::new("No sessions yet")
-                    .font(theme::sans(12.5))
-                    .color(theme::FAINTER),
-            );
-        });
+        if self.sessions.is_empty() {
+            // Two different nothings. A window that has not asked must not
+            // report an empty list as a finding.
+            let line = match &self.link {
+                Link::Open { .. } => "No sessions yet",
+                Link::Probing => "Checking",
+                Link::Absent { .. } => "Not connected",
+            };
+            ui.horizontal(|ui| {
+                ui.add_space(22.0);
+                ui.label(
+                    RichText::new(line)
+                        .font(theme::sans(12.5))
+                        .color(theme::FAINTER),
+                );
+            });
+        } else {
+            let active = self.active_session.clone();
+            let mut picked: Option<String> = None;
+            for session in &self.sessions {
+                let is_active = active.as_deref() == Some(session.session_id.as_str());
+                let row = ui.allocate_response(
+                    Vec2::new(ui.available_width(), 28.0),
+                    egui::Sense::click(),
+                );
+                let r = row.rect;
+                if is_active || row.hovered() {
+                    ui.painter().rect_filled(
+                        r,
+                        CornerRadius::same(7),
+                        if is_active { theme::FACE } else { theme::FACE_2 },
+                    );
+                }
+                ui.painter().text(
+                    egui::pos2(r.left() + 22.0, r.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    &session.session_id,
+                    theme::sans(12.5),
+                    if is_active { theme::INK_2 } else { theme::MUTE },
+                );
+                if row.clicked() {
+                    picked = Some(session.session_id.clone());
+                }
+            }
+            if let Some(id) = picked {
+                self.active_session = Some(id);
+            }
+        }
 
         // Foot: link state.
         let (dot, word) = match &self.link {
             Link::Open { .. } => (theme::OK, "Daemon connected"),
             Link::Absent { .. } => (theme::RUST, "Daemon not running"),
+            Link::Probing => (theme::FAINT, "Checking for the daemon"),
         };
         let foot = egui::pos2(rect.left() + 18.0, rect.bottom() - 20.0);
         ui.painter().circle_filled(foot, 3.0, dot);

@@ -211,8 +211,14 @@ impl App {
     fn page_daemon(&mut self, ui: &mut egui::Ui) {
         section(ui, "State");
         let (dot, word, detail) = match &self.link {
-            Link::Open { endpoint } => (theme::OK, "Connected", endpoint.clone()),
+            Link::Open { endpoint, .. } => (theme::OK, "Connected", endpoint.clone()),
             Link::Absent { detail, .. } => (theme::RUST, "Not running", detail.clone()),
+            // Looking is not a finding, and must not be painted as one.
+            Link::Probing => (
+                theme::FAINT,
+                "Checking",
+                "asking each declared endpoint in turn".to_string(),
+            ),
         };
         card(ui, |ui| {
             let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), egui::Sense::hover());
@@ -229,7 +235,8 @@ impl App {
         section(ui, "Looked for");
         let tried = match &self.link {
             Link::Absent { tried, .. } => tried.clone(),
-            Link::Open { endpoint } => vec![endpoint.clone()],
+            Link::Open { endpoint, .. } => vec![endpoint.clone()],
+            Link::Probing => Link::candidates(),
         };
         card(ui, |ui| {
             if tried.is_empty() {
