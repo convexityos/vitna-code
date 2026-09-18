@@ -3,8 +3,12 @@ name: Vitna Code CI
 on:
   push:
     branches: [main]
+  # Every pull request, not only those targeting main. A stacked pull request
+  # targets the branch below it, so `branches: [main]` meant it got no checks at
+  # all: not queued, not skipped, just absent. That is indistinguishable from
+  # passing when read quickly, and this repository has had four stacked pull
+  # requests open at once.
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
