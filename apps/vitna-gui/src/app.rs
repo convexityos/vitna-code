@@ -261,7 +261,18 @@ impl App {
                     self.worker.send(daemon::Command::ListSessions);
                 }
                 daemon::Event::Sessions(list) => {
-                    if self.active_session.is_none() {
+                    // Only this folder's sessions: the daemon lists every
+                    // folder's, and a turn sent to one from elsewhere would
+                    // run in that folder, not in the one this window shows.
+                    let list: Vec<_> = list
+                        .into_iter()
+                        .filter(|s| self.workspace.holds(&s.workspace_root))
+                        .collect();
+                    let still_here = self
+                        .active_session
+                        .as_ref()
+                        .is_some_and(|id| list.iter().any(|s| &s.session_id == id));
+                    if !still_here {
                         self.active_session = list.first().map(|s| s.session_id.clone());
                     }
                     self.sessions = list;

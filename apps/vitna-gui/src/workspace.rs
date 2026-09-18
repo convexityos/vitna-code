@@ -54,6 +54,19 @@ fn is_skipped(name: &str) -> bool {
 }
 
 impl Workspace {
+    /// Whether a session rooted at `root` belongs to this folder. The daemon
+    /// holds the sessions of every folder any window has opened, and one from
+    /// another folder chosen here would run the next turn over there. Compared
+    /// as the file system resolves them, so the direction of a slash or the
+    /// case of a drive letter does not make one folder two; a path that no
+    /// longer resolves is compared as written.
+    pub fn holds(&self, root: &Path) -> bool {
+        match (std::fs::canonicalize(&self.path), std::fs::canonicalize(root)) {
+            (Ok(mine), Ok(theirs)) => mine == theirs,
+            _ => self.path == root,
+        }
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref().to_path_buf();
         let name = path
@@ -175,6 +188,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create scratch dir");
         dir
+    }
+
+    /// A session belongs to this window only when it is rooted in this very
+    /// folder, however the path to it is spelled.
+    #[test]
+    fn a_session_belongs_to_the_folder_it_is_rooted_in() {
+        let here = scratch("holds_here");
+        let there = scratch("holds_there");
+        let ws = Workspace::open(&here);
+        assert!(ws.holds(&here));
+        let slashed = PathBuf::from(here.to_string_lossy().replace(char::from(92u8), "/"));
+        assert!(ws.holds(&slashed), "one folder, whichever way its slashes lean");
+        assert!(!ws.holds(&there), "another folder's session is not this one's");
+        assert!(!ws.holds(&here.join("inside")), "nor is a folder inside it");
+        let _ = std::fs::remove_dir_all(&here);
+        let _ = std::fs::remove_dir_all(&there);
     }
 
     #[test]
