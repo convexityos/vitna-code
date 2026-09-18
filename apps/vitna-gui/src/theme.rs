@@ -45,6 +45,9 @@ pub const PERI: Color32 = Color32::from_rgb(0x71, 0x88, 0xff);
 pub const PERI_2: Color32 = Color32::from_rgb(0x8e, 0xa2, 0xff);
 pub const RUST: Color32 = Color32::from_rgb(0xd9, 0xa4, 0x41);
 pub const OK: Color32 = Color32::from_rgb(0x2f, 0xbf, 0x71);
+/// A diff's minus sign, and nothing else. Lines removed read red in every
+/// tool this sits beside, and a second meaning for it would be a lie.
+pub const DEL: Color32 = Color32::from_rgb(0xe5, 0x53, 0x4b);
 
 /// The light line that delineates things: the sidebar's edge, the composer,
 /// the popups. HAIR_2 is its quieter sibling for rules inside a surface and

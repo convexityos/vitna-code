@@ -15,11 +15,6 @@ pub struct Workspace {
     /// The checked out branch. `None` when this is not a git repository, and
     /// `Detached` when HEAD points at a commit rather than a branch.
     pub head: Option<Head>,
-    /// Newest modification time seen in the bounded walk below, with the number
-    /// of entries that walk looked at, so the reading can be read for what it is.
-    pub last_modified: Option<SystemTime>,
-    pub entries_scanned: usize,
-    pub scan_was_capped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +36,8 @@ impl Head {
 }
 
 /// How many directory entries the modified-time walk looks at before it stops.
-/// A workspace can be enormous and this runs on the UI thread.
+/// A workspace can be enormous, and the repository probe runs this every few
+/// seconds on its own thread.
 const SCAN_CAP: usize = 4000;
 
 /// Directories the walk never descends into. They are build output and vendored
@@ -65,15 +61,10 @@ impl Workspace {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| path.to_string_lossy().to_string());
 
-        let (last_modified, entries_scanned, scan_was_capped) = newest_mtime(&path);
-
         Self {
             head: read_head(&path),
             name,
             path,
-            last_modified,
-            entries_scanned,
-            scan_was_capped,
         }
     }
 }
@@ -114,7 +105,7 @@ fn read_head(root: &Path) -> Option<Head> {
 /// Returns what it found, how many entries it looked at, and whether it hit the
 /// cap, because a newest-change reading from a capped walk is a weaker claim
 /// than one over the whole tree and the window prints which it had.
-fn newest_mtime(root: &Path) -> (Option<SystemTime>, usize, bool) {
+pub(crate) fn newest_mtime(root: &Path) -> (Option<SystemTime>, usize, bool) {
     let mut newest: Option<SystemTime> = None;
     let mut scanned = 0usize;
     let mut stack = vec![root.to_path_buf()];

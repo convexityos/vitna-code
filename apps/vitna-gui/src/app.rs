@@ -14,7 +14,7 @@ use eframe::egui::{self, Rect, Vec2};
 use crate::catalog::{Catalog, Choice};
 use crate::daemon::{self, Worker};
 use crate::link::Link;
-use crate::repo::{Loading, Probe, RepoFacts};
+use crate::repo::{Loading, Probe};
 use crate::runs;
 use crate::theme;
 use crate::workspace::Workspace;
@@ -209,13 +209,6 @@ impl App {
         }
     }
 
-    pub(crate) fn facts(&mut self) -> Option<RepoFacts> {
-        match self.repo.poll() {
-            Loading::Done(f) => Some((**f).clone()),
-            Loading::Reading => None,
-        }
-    }
-
     /// Asks again. The answer arrives as an event, so this only states that
     /// the window is looking.
     pub(crate) fn reprobe(&mut self) {
@@ -277,6 +270,8 @@ impl App {
                     self.last_result = Some(result);
                     self.worker.send(daemon::Command::ListSessions);
                     self.worker.send(daemon::Command::ListTurns);
+                    // The turn changed files, so the bar's facts are stale.
+                    self.repo.refresh();
                     // A receipt was just written, so the ledger is stale. The
                     // new run becomes the open one.
                     self.runs = runs::Probe::start(&self.workspace.path);
@@ -318,9 +313,18 @@ impl eframe::App for App {
         self.shortcuts(ui.ctx());
         self.run_pending_edit(ui.ctx());
 
-        if matches!(self.repo.poll(), Loading::Reading) {
+        // The bar's facts are read again every few seconds while the window
+        // has focus, keeping the last answer on screen meanwhile, so the
+        // change and the time it states do not go stale in front of you.
+        let focused = ui.ctx().input(|i| i.viewport().focused).unwrap_or(true);
+        if focused && self.repo.since_asked() > crate::repo::REFRESH {
+            self.repo.refresh();
+        }
+        if matches!(self.repo.poll(), Loading::Reading) || self.repo.in_flight() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(120));
+        } else if focused {
+            ui.ctx().request_repaint_after(crate::repo::REFRESH);
         }
 
         let full = ui.max_rect();

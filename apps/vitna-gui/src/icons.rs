@@ -30,6 +30,14 @@ pub fn branch(p: &egui::Painter, c: Pos2, tone: Color32) {
     p.line_segment([c + Vec2::new(4.0, -1.8), c + Vec2::new(-3.0, 4.0)], st);
 }
 
+/// A commit: a ring on a line, as every git client draws one.
+pub fn commit(p: &egui::Painter, c: Pos2, tone: Color32) {
+    let st = s(tone);
+    p.circle_stroke(c, 3.0, st);
+    p.line_segment([c + Vec2::new(-7.0, 0.0), c + Vec2::new(-3.0, 0.0)], st);
+    p.line_segment([c + Vec2::new(3.0, 0.0), c + Vec2::new(7.0, 0.0)], st);
+}
+
 pub fn clock(p: &egui::Painter, c: Pos2, tone: Color32) {
     let st = s(tone);
     p.circle_stroke(c, 6.5, st);
@@ -37,13 +45,6 @@ pub fn clock(p: &egui::Painter, c: Pos2, tone: Color32) {
     p.line_segment([c, c + Vec2::new(3.0, 1.5)], st);
 }
 
-/// A diff: plus over minus.
-pub fn changes(p: &egui::Painter, c: Pos2, tone: Color32) {
-    let st = s(tone);
-    p.line_segment([c + Vec2::new(-6.0, -3.5), c + Vec2::new(-0.5, -3.5)], st);
-    p.line_segment([c + Vec2::new(-3.25, -6.25), c + Vec2::new(-3.25, -0.75)], st);
-    p.line_segment([c + Vec2::new(0.5, 4.0), c + Vec2::new(6.0, 4.0)], st);
-}
 
 pub fn plus(p: &egui::Painter, c: Pos2, tone: Color32) {
     let st = s(tone);
@@ -87,14 +88,6 @@ pub fn sliders(p: &egui::Painter, c: Pos2, tone: Color32) {
     }
 }
 
-/// A screen on a stand: where the turn runs.
-pub fn monitor(p: &egui::Painter, c: Pos2, tone: Color32) {
-    let st = s(tone);
-    let r = Rect::from_center_size(c + Vec2::new(0.0, -1.5), Vec2::new(13.0, 9.0));
-    p.rect_stroke(r, 2.0, st, egui::StrokeKind::Middle);
-    p.line_segment([c + Vec2::new(0.0, 3.0), c + Vec2::new(0.0, 5.5)], st);
-    p.line_segment([c + Vec2::new(-4.0, 5.5), c + Vec2::new(4.0, 5.5)], st);
-}
 
 /// The return key: down, then left, with a head.
 pub fn enter(p: &egui::Painter, c: Pos2, tone: Color32) {

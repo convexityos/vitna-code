@@ -6,7 +6,6 @@ use crate::app::App;
 use crate::icons;
 use crate::link::Link;
 use crate::theme;
-use crate::workspace;
 
 /// The centred column every surface in the main area shares.
 pub(crate) const COLUMN: f32 = 800.0;
@@ -44,9 +43,6 @@ impl App {
             ui.label(RichText::new("Let’s build").font(theme::display(28.0)).color(theme::INK));
         });
 
-        ui2.add_space(12.0);
-        self.facts_line(&mut ui2);
-
         if let Link::Absent { .. } = &self.link {
             ui2.add_space(10.0);
             ui2.vertical_centered(|ui| self.absent_line(ui));
@@ -57,60 +53,6 @@ impl App {
         self.run_list(&mut ui2);
 
         self.composer(ui, composer_rect);
-    }
-
-    /// One quiet line of facts with icons: changes, last touched. The branch
-    /// is a chip above the composer now, so it is not repeated here.
-    fn facts_line(&mut self, ui: &mut egui::Ui) {
-        let facts = self.facts();
-
-        let changes = match &facts {
-            None => "reading changes".to_string(),
-            Some(f) => {
-                let s = f.staged.unwrap_or(0);
-                let m = f.modified.unwrap_or(0);
-                let u = f.untracked.unwrap_or(0);
-                match s + m + u {
-                    0 => "clean".to_string(),
-                    _ => {
-                        let mut parts = Vec::new();
-                        if s > 0 { parts.push(format!("{s} staged")); }
-                        if m > 0 { parts.push(format!("{m} modified")); }
-                        if u > 0 { parts.push(format!("{u} untracked")); }
-                        parts.join(", ")
-                    }
-                }
-            }
-        };
-
-        let touched = match self.workspace.last_modified.and_then(workspace::ago) {
-            Some(when) if self.workspace.scan_was_capped => {
-                format!("{when} (first {} entries)", self.workspace.entries_scanned)
-            }
-            Some(when) => when,
-            None => "unknown".to_string(),
-        };
-
-        let f = theme::sans(13.0);
-        let w = |ui: &egui::Ui, s: &str| {
-            ui.painter().layout_no_wrap(s.to_string(), f.clone(), theme::MUTE).size().x
-        };
-        // Per fact: icon, two spacings and its text; 22px between facts.
-        let total = 2.0 * 34.0 + w(ui, &changes) + w(ui, &touched) + 22.0;
-        let pad = ((ui.available_width() - total) / 2.0).max(0.0);
-        ui.horizontal(|ui| {
-            ui.add_space(pad);
-            fact(ui, icons::changes, &changes, theme::MUTE);
-            ui.add_space(22.0);
-            fact(ui, icons::clock, &touched, theme::MUTE);
-        });
-
-        if let Some(t) = facts.as_ref().and_then(|f| f.trouble.clone()) {
-            ui.add_space(8.0);
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new(format!("git: {t}")).font(theme::mono(11.5)).color(theme::RUST));
-            });
-        }
     }
 
     fn absent_line(&mut self, ui: &mut egui::Ui) {

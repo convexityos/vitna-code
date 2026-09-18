@@ -1,16 +1,16 @@
 //! The composer: the thing you reach for.
 //!
-//! Its base is shaped after Claude Code's: a row of chips above the field
-//! saying where the turn will run, a return-key cap in the field, and a base
-//! row with attach and the mode on the left, the model and send on the right.
+//! Its base is shaped after Claude Code's: a bar above the field stating the
+//! repository the turn will run in (`bar.rs`), a return-key cap in the field,
+//! and a base row with attach and the mode on the left, the model and send on
+//! the right.
 
 use eframe::egui::{self, Align, Color32, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 
-use crate::app::{App, Mode, Placement};
+use crate::app::{App, Mode};
 use crate::icons;
 use crate::stage::column;
 use crate::theme;
-use crate::workspace::Head;
 
 impl App {
     pub(crate) fn composer(&mut self, ui: &mut egui::Ui, rect: Rect) {
@@ -22,7 +22,7 @@ impl App {
         // spacing added on top of them.
         ui.spacing_mut().item_spacing.y = 0.0;
 
-        self.context_row(&mut ui);
+        self.repo_bar(&mut ui);
         ui.add_space(8.0);
 
         // Four conditions, and each one has its own hover text below, because
@@ -144,55 +144,6 @@ impl App {
             self.composer_h = want;
             ui.ctx().request_repaint();
         }
-    }
-
-    /// The chips above the field, the way Claude Code states a turn's setup:
-    /// where it runs, which folder, which branch, and whether in a worktree.
-    fn context_row(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-
-            chip(ui, icons::monitor, "Local", theme::INK_2, egui::Sense::hover())
-                .on_hover_text("Runs on this machine. Vitna has no remote mode.");
-
-            let name = self.workspace.name.clone();
-            chip(ui, icons::folder, &name, theme::INK_2, egui::Sense::click())
-                .on_hover_text("Opening another folder is the daemon's to do, and it is not running.");
-
-            let (head, tone) = match &self.workspace.head {
-                Some(Head::Branch(b)) => (b.clone(), theme::INK_2),
-                Some(h) => (h.label(), theme::RUST),
-                None => ("no repository".to_string(), theme::FAINT),
-            };
-            chip(ui, icons::branch, &head, tone, egui::Sense::click())
-                .on_hover_text("The branch this window is on. Checking out another is the daemon's to do.");
-
-            // The worktree checkbox. Placement is the daemon's to enforce;
-            // this only states the preference.
-            let on = self.placement == Placement::Worktree;
-            let galley = ui.painter().layout_no_wrap("worktree".to_string(), theme::sans(12.5), theme::INK_2);
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 34.0, 24.0), egui::Sense::click());
-            chip_ground(ui, rect, resp.hovered());
-            let b = Rect::from_center_size(egui::pos2(rect.left() + 14.0, rect.center().y), Vec2::splat(12.0));
-            if on {
-                ui.painter().rect_filled(b, CornerRadius::same(3), theme::PERI);
-                let st = Stroke::new(1.6, theme::CANVAS);
-                let c = b.center();
-                ui.painter().line_segment([c + Vec2::new(-3.0, 0.0), c + Vec2::new(-1.0, 2.2)], st);
-                ui.painter().line_segment([c + Vec2::new(-1.0, 2.2), c + Vec2::new(3.2, -2.4)], st);
-            } else {
-                ui.painter().rect_stroke(b, CornerRadius::same(3), Stroke::new(1.2, theme::FAINT), egui::StrokeKind::Inside);
-            }
-            ui.painter().galley(egui::pos2(rect.left() + 26.0, rect.center().y - galley.size().y / 2.0), galley, theme::INK_2);
-            if resp.clicked() {
-                self.placement = if on { Placement::Local } else { Placement::Worktree };
-            }
-            resp.on_hover_text(if on {
-                "The turn runs in a fresh worktree of this repo; this checkout stays as it is."
-            } else {
-                "The turn runs on this checkout, in place."
-            });
-        });
     }
 
     /// The mode, as a plain word that opens a two-row menu.
@@ -375,7 +326,7 @@ fn kv(ui: &mut egui::Ui, key: &str, value: &str) {
     ui.painter().text(egui::pos2(r.right(), r.center().y), egui::Align2::RIGHT_CENTER, value, theme::sans(11.0), theme::INK_2);
 }
 
-fn thousands(n: u64) -> String {
+pub(crate) fn thousands(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, ch) in s.chars().enumerate() {
@@ -413,21 +364,6 @@ fn keycap(ui: &mut egui::Ui) {
     ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
     icons::enter(ui.painter(), r.center(), theme::MUTE);
     resp.on_hover_text("Enter sends. Shift+Enter starts a new line.");
-}
-
-/// A chip: an icon and a word on a quiet ground.
-fn chip(ui: &mut egui::Ui, icon: fn(&egui::Painter, egui::Pos2, Color32), text: &str, tone: Color32, sense: egui::Sense) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(text.to_string(), theme::sans(12.5), tone);
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(galley.size().x + 36.0, 24.0), sense);
-    chip_ground(ui, rect, resp.hovered() && sense.senses_click());
-    icon(ui.painter(), egui::pos2(rect.left() + 14.0, rect.center().y), theme::MUTE);
-    ui.painter().galley(egui::pos2(rect.left() + 26.0, rect.center().y - galley.size().y / 2.0), galley, tone);
-    resp
-}
-
-fn chip_ground(ui: &egui::Ui, rect: Rect, hot: bool) {
-    ui.painter().rect_filled(rect, CornerRadius::same(7), if hot { theme::FACE_2 } else { theme::FACE });
-    ui.painter().rect_stroke(rect, CornerRadius::same(7), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
 }
 
 impl crate::app::App {
