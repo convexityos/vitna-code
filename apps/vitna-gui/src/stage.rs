@@ -1,6 +1,6 @@
 //! The centre: what the window is looking at, stated once, then the composer.
 
-use eframe::egui::{self, Color32, Rect, RichText, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Rect, RichText, Stroke, Vec2};
 
 use crate::app::App;
 use crate::icons;
@@ -46,6 +46,8 @@ impl App {
             ui2.add_space(14.0);
             ui2.vertical_centered(|ui| self.absent_line(ui));
         }
+
+        self.turn_state(&mut ui2);
 
         self.composer(ui, composer_rect);
     }
@@ -129,4 +131,120 @@ fn fact(ui: &mut egui::Ui, icon: fn(&egui::Painter, egui::Pos2, Color32), text: 
     icons::inline(ui, 16.0, theme::FAINT, icon);
     ui.add_space(2.0);
     ui.add(egui::Label::new(RichText::new(text).font(theme::sans(13.0)).color(tone)).truncate());
+}
+
+impl App {
+    /// What the daemon is doing, or what it last said.
+    ///
+    /// Three states, and none of them is allowed to stand in for another: a
+    /// turn in flight, a turn that failed with the daemon's own words, and a
+    /// finished turn summarised from the receipt it wrote. A window with
+    /// nothing to report draws nothing.
+    fn turn_state(&mut self, ui: &mut egui::Ui) {
+        if self.turn_running {
+            ui.add_space(14.0);
+            ui.vertical_centered(|ui| {
+                ui.horizontal(|ui| {
+                    let (d, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
+                    ui.painter().circle_filled(d.center(), 3.0, theme::PERI);
+                    ui.label(
+                        RichText::new("Running. The daemon has the turn.")
+                            .font(theme::prose(12.5))
+                            .color(theme::FAINT),
+                    );
+                });
+            });
+            return;
+        }
+
+        if let Some(message) = self.last_error.clone() {
+            ui.add_space(14.0);
+            ui.vertical_centered(|ui| {
+                ui.horizontal(|ui| {
+                    let (d, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
+                    ui.painter().circle_filled(d.center(), 3.0, theme::RUST);
+                    // The daemon's own sentence, not a rewording of it. A
+                    // refusal that names the missing key is more use than a
+                    // tidier one that does not.
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(message)
+                                .font(theme::prose(12.5))
+                                .color(theme::FAINT),
+                        )
+                        .wrap(),
+                    );
+                });
+            });
+            return;
+        }
+
+        let Some(result) = self.last_result.clone() else {
+            return;
+        };
+
+        ui.add_space(18.0);
+        egui::Frame::default()
+            .fill(theme::GROUND)
+            .stroke(Stroke::new(1.0, theme::HAIR_2))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(egui::Margin::symmetric(16, 14))
+            .show(ui, |ui| {
+                if !result.text.is_empty() {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&result.text)
+                                .font(theme::prose(13.5))
+                                .color(theme::INK_2),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(10.0);
+                }
+
+                ui.horizontal_wrapped(|ui| {
+                    // What ran, off the receipt. The model line is the point
+                    // of the whole product, so it is stated plainly.
+                    fact(
+                        ui,
+                        icons::folder,
+                        &format!("{} ({})", result.model_sku, result.provider),
+                        theme::MUTE,
+                    );
+                    ui.add_space(14.0);
+                    fact(
+                        ui,
+                        icons::clock,
+                        &result.completion_state.replace('_', " "),
+                        theme::MUTE,
+                    );
+                    ui.add_space(14.0);
+                    let tokens = match (result.prompt_tokens, result.completion_tokens) {
+                        (Some(p), Some(c)) => format!("{p} in, {c} out"),
+                        // The provider reported nothing. Zero is a number
+                        // somebody would believe.
+                        _ => "-".to_string(),
+                    };
+                    fact(ui, icons::clock, &tokens, theme::MUTE);
+                });
+
+                if !result.files_modified.is_empty() {
+                    ui.add_space(8.0);
+                    for path in &result.files_modified {
+                        ui.label(
+                            RichText::new(path)
+                                .font(theme::mono(12.0))
+                                .color(theme::FAINT),
+                        );
+                    }
+                }
+
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(result.receipt_path.display().to_string())
+                        .font(theme::mono(11.5))
+                        .color(theme::FAINTER),
+                );
+            });
+    }
 }

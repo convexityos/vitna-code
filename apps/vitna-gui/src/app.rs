@@ -12,7 +12,8 @@
 use eframe::egui::{self, Rect, Vec2};
 
 use crate::catalog::{Catalog, Choice};
-use crate::link::{self, Link};
+use crate::daemon::{self, Worker};
+use crate::link::Link;
 use crate::repo::{Loading, Probe, RepoFacts};
 use crate::theme;
 use crate::workspace::Workspace;
@@ -85,6 +86,20 @@ pub struct App {
     pub(crate) workspace: Workspace,
     pub(crate) repo: Probe,
     pub(crate) link: Link,
+    /// The connection, on its own thread. The client blocks and a turn blocks
+    /// for as long as the model takes, so none of it happens here.
+    pub(crate) worker: Worker,
+    /// Sessions as the daemon lists them. Empty until it answers, which is
+    /// why the sidebar distinguishes "no sessions yet" from "not connected".
+    pub(crate) sessions: Vec<vitna_protocol::api::SessionInfo>,
+    /// The session a turn will be submitted against, once one exists.
+    pub(crate) active_session: Option<String>,
+    /// Set while a turn is in flight, so the composer says so rather than
+    /// offering a Send that silently queues.
+    pub(crate) turn_running: bool,
+    /// The last thing the daemon said, good or bad, for the stage to show.
+    pub(crate) last_result: Option<Box<vitna_protocol::api::TurnResultResponse>>,
+    pub(crate) last_error: Option<String>,
     pub(crate) catalog: Option<Catalog>,
     pub(crate) choices: Vec<Choice>,
     /// Index into `choices`. A preference, handed to the daemon with the turn;
@@ -115,13 +130,23 @@ impl App {
         // The SVG loader behind the mark.
         egui_extras::install_image_loaders(&cc.egui_ctx);
         let repo = Probe::start(&workspace.path);
+        // The worker wakes the UI when a reply lands, since an idle window
+        // would otherwise hold the answer until the next mouse move.
+        let worker = Worker::spawn(cc.egui_ctx.clone());
+        worker.send(daemon::Command::Connect);
         let catalog = Catalog::load().ok();
         let choices = catalog.as_ref().map(|c| c.choices()).unwrap_or_default();
         let model = catalog.as_ref().and_then(|c| c.default_choice(&choices));
         Self {
             workspace,
             repo,
-            link: link::probe(),
+            link: Link::Probing,
+            worker,
+            sessions: Vec::new(),
+            active_session: None,
+            turn_running: false,
+            last_result: None,
+            last_error: None,
             catalog,
             choices,
             model,
@@ -147,8 +172,53 @@ impl App {
         }
     }
 
+    /// Asks again. The answer arrives as an event, so this only states that
+    /// the window is looking.
     pub(crate) fn reprobe(&mut self) {
-        self.link = link::probe();
+        self.link = Link::Probing;
+        self.worker.send(daemon::Command::Connect);
+    }
+
+    /// Takes everything the worker has posted since the last frame.
+    pub(crate) fn drain_daemon(&mut self) {
+        for event in self.worker.drain() {
+            match event {
+                daemon::Event::Connected { endpoint, health } => {
+                    self.link = Link::Open { endpoint, health };
+                    self.last_error = None;
+                    // The session list is a fact of the daemon, so it is asked
+                    // for rather than assumed empty.
+                    self.worker.send(daemon::Command::ListSessions);
+                }
+                daemon::Event::Absent { tried, detail } => {
+                    self.link = Link::Absent { tried, detail };
+                    self.sessions.clear();
+                    self.active_session = None;
+                    self.turn_running = false;
+                }
+                daemon::Event::SessionCreated(s) => {
+                    self.active_session = Some(s.session_id.clone());
+                    self.last_error = None;
+                    self.worker.send(daemon::Command::ListSessions);
+                }
+                daemon::Event::Sessions(list) => {
+                    if self.active_session.is_none() {
+                        self.active_session = list.first().map(|s| s.session_id.clone());
+                    }
+                    self.sessions = list;
+                }
+                daemon::Event::TurnFinished(result) => {
+                    self.turn_running = false;
+                    self.last_error = None;
+                    self.last_result = Some(result);
+                    self.worker.send(daemon::Command::ListSessions);
+                }
+                daemon::Event::Failed(message) => {
+                    self.turn_running = false;
+                    self.last_error = Some(message);
+                }
+            }
+        }
     }
 
     /// "1 of 2 providers ready", from the environment, not from a guess.
@@ -175,6 +245,7 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.drain_daemon();
         self.shortcuts(ui.ctx());
         self.run_pending_edit(ui.ctx());
 

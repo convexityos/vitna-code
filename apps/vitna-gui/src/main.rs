@@ -11,6 +11,7 @@ mod app;
 mod brand;
 mod catalog;
 mod composer;
+mod daemon;
 mod icons;
 mod link;
 mod menu;
