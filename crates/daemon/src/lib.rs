@@ -292,4 +292,107 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    /// A daemon on an event log that outlives it, as `open_default` makes one.
+    fn daemon_on(db: &std::path::Path, dir: &std::path::Path) -> DaemonServer {
+        let store = EventStore::open(db).expect("open store");
+        let runner = FakeRunner::new(dir.join("test.journal")).expect("fake runner");
+        DaemonServer::new(
+            store,
+            std::sync::Arc::new(std::sync::Mutex::new(runner)),
+            vitna_receipts::generate_signing_key(),
+        )
+    }
+
+    /// One session with a turn and one without, made by one daemon and listed
+    /// by the next on the same log. The one without a turn is the case only a
+    /// `SessionCreated` event can bring back.
+    #[tokio::test]
+    async fn sessions_outlive_the_daemon_that_made_them() {
+        let dir = std::env::temp_dir().join(format!("vitna_daemon_restart_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        let db = dir.join("daemon.db");
+
+        let (busy, idle, run_id) = {
+            let daemon = daemon_on(&db, &dir);
+            let busy = daemon.create_session(&dir).expect("create session");
+            let provider = ScriptedProvider::new("scripted", vec![reply("Done.", vec![])]);
+            let result = daemon
+                .run_turn_with(
+                    &provider,
+                    &SubmitTurnRequest {
+                        session_id: busy.session_id.clone(),
+                        prompt: "leave it as it is".to_string(),
+                        provider: None,
+                        model_sku: Some("scripted-model-1".to_string()),
+                        auto_approve: true,
+                        verification_command: None,
+                    },
+                )
+                .await
+                .expect("the turn runs");
+            // Session ids are milliseconds; the next one needs its own.
+            std::thread::sleep(std::time::Duration::from_millis(3));
+            let idle = daemon.create_session(&dir).expect("create session");
+            (busy, idle, result.run_id)
+        };
+
+        let daemon = daemon_on(&db, &dir);
+        assert!(daemon.list_sessions().is_empty(), "nothing is held in memory across the restart");
+        let restored = daemon.restore_sessions().expect("restore");
+        assert_eq!(restored, server::Restored { sessions: 2, unreadable: 0, unplaced: vec![] });
+
+        let found = |id: &str| daemon.get_session(id).expect("listed after the restart");
+        assert_eq!(found(&busy.session_id).workspace_root, busy.workspace_root);
+        assert_eq!(found(&busy.session_id).latest_run_id.as_deref(), Some(run_id.as_str()));
+        assert_eq!(found(&idle.session_id).created_at_ms, idle.created_at_ms);
+        assert_eq!(found(&idle.session_id).latest_run_id, None);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A log written before `SessionCreated` existed: a session placed by the
+    /// receipt its turn wrote, a session nothing places, which is named rather
+    /// than given a guessed workspace, and a session event that will not parse,
+    /// which is counted.
+    #[tokio::test]
+    async fn a_session_from_before_session_events_is_placed_by_its_receipt() {
+        let dir = std::env::temp_dir().join(format!("vitna_daemon_legacy_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        let db = dir.join("daemon.db");
+        {
+            let store = EventStore::open(&db).expect("open store");
+            let event = |run: &str, seq: u64, kind: &str, body: serde_json::Value, prev: &str| {
+                let bytes = serde_json::to_vec(&body).expect("json");
+                vitna_store::EventRecord::new(format!("ev-{run}-{seq}"), run, seq, kind, 1_000 + seq, bytes, prev)
+            };
+            let genesis = vitna_store::GENESIS_HASH;
+            let turn = serde_json::json!({"prompt": "old", "session_id": "sess-1", "run_id": "run-1"});
+            let started = event("run-1", 0, server::TURN_STARTED, turn, genesis);
+            let receipt = dir.join(".vitna").join("receipts").join("run-1.json");
+            let written = serde_json::json!({"run_id": "run-1", "receipt_path": receipt.to_string_lossy()});
+            let generated = event("run-1", 1, vitna_orchestration::RECEIPT_GENERATED, written, &started.event_hash);
+            let lost = serde_json::json!({"prompt": "lost", "session_id": "sess-2", "run_id": "run-2"});
+            let orphan = event("run-2", 0, server::TURN_STARTED, lost, genesis);
+            let broken = event("sess-3", 0, server::SESSION_CREATED, serde_json::json!({"session_id": "sess-3"}), genesis);
+            for e in [&started, &generated, &orphan, &broken] {
+                store.append_event(e).expect("append");
+            }
+        }
+
+        let daemon = daemon_on(&db, &dir);
+        let restored = daemon.restore_sessions().expect("restore");
+        assert_eq!(
+            restored,
+            server::Restored { sessions: 1, unreadable: 1, unplaced: vec!["sess-2".to_string()] }
+        );
+        let session = daemon.get_session("sess-1").expect("rebuilt from its turn");
+        assert_eq!(session.workspace_root, dir);
+        assert_eq!(session.latest_run_id.as_deref(), Some("run-1"));
+        assert_eq!(session.created_at_ms, 1_000);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

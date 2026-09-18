@@ -14,6 +14,11 @@ use vitna_runner::Runner;
 use vitna_store::{EventRecord, EventStore, GENESIS_HASH};
 use vitna_tools::{ToolContext, ToolRegistry, ToolResult};
 
+/// The event a run closes with, naming where its receipt was written. The
+/// daemon reads it back to place a session that predates `SessionCreated`, so
+/// the writer and the reader share this one spelling.
+pub const RECEIPT_GENERATED: &str = "vitna.v1.ReceiptGenerated";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestrationConfig {
     pub session_id: String,
@@ -356,7 +361,7 @@ impl OrchestrationEngine {
             .map_err(|e| format!("Failed to write receipt file: {}", e))?;
 
         self.record_event(
-            "vitna.v1.ReceiptGenerated",
+            RECEIPT_GENERATED,
             &serde_json::json!({
                 "run_id": self.config.run_id,
                 "receipt_path": receipt_path.to_string_lossy(),

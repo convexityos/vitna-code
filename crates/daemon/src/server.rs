@@ -1,15 +1,15 @@
 use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use vitna_orchestration::{OrchestrationConfig, OrchestrationEngine};
+use vitna_orchestration::{OrchestrationConfig, OrchestrationEngine, RECEIPT_GENERATED};
 use vitna_protocol::api::{
     SubmitTurnRequest, TurnInfo, TurnListResponse, TurnResultResponse, UnreadableTurn,
 };
 use vitna_providers::{AnthropicProvider, CredentialResolver, OpenAIProvider, Provider};
 use vitna_runner::{ProcessRunner, Runner};
-use vitna_store::EventStore;
+use vitna_store::{EventRecord, EventStore, GENESIS_HASH};
 
 /// Declared in `vitna-protocol` so the window shares the definition rather than
 /// carrying a second one that can drift.
@@ -28,6 +28,23 @@ const MAX_ROUNDS: usize = 24;
 /// the writer no longer uses would find no turns and report none, which reads
 /// exactly like a daemon that has never run one.
 pub const TURN_STARTED: &str = "vitna.v1.TurnStarted";
+
+/// The event a session opens with, so that it outlives the daemon that made
+/// it, turns or no turns. Written once per session, as a one-event chain keyed
+/// by the session id, since a session is not a run.
+pub const SESSION_CREATED: &str = "vitna.v1.SessionCreated";
+
+/// What rebuilding the session list from the event log found.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Restored {
+    pub sessions: usize,
+    /// Events that failed their hash or would not parse, and so placed
+    /// nothing. Counted rather than skipped in silence.
+    pub unreadable: usize,
+    /// Sessions whose turns are logged with no workspace anywhere in the log,
+    /// so there is nothing to bind them to. Named, not guessed at.
+    pub unplaced: Vec<String>,
+}
 
 /// Builds the provider the caller asked for, or the first one whose credential
 /// actually resolves.
@@ -95,7 +112,20 @@ impl DaemonServer {
             .map_err(|e| format!("Failed to initialize process runner journal: {}", e))?;
 
         let signing_key = crate::key::load_or_create(parent.unwrap_or_else(|| Path::new(".")))?;
-        Ok(Self::new(store, Arc::new(runner), signing_key))
+        let server = Self::new(store, Arc::new(runner), signing_key);
+
+        let restored = server.restore_sessions()?;
+        tracing::info!(sessions = restored.sessions, "sessions restored from the event log");
+        if restored.unreadable > 0 {
+            tracing::warn!(events = restored.unreadable, "session events that failed their hash or would not parse");
+        }
+        if !restored.unplaced.is_empty() {
+            tracing::warn!(
+                sessions = ?restored.unplaced,
+                "sessions whose turns are logged with no workspace anywhere in the log, left out"
+            );
+        }
+        Ok(server)
     }
 
     /// The public half of the key receipts are signed with, as hex: what
@@ -118,6 +148,29 @@ impl DaemonServer {
             .as_millis() as u64;
 
         let session_id = format!("sess-{}", now_ms);
+
+        // Logged before it is listed: a session the log does not hold is gone
+        // at the next restart, and nothing would say it had ever existed.
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "session_id": session_id,
+            "workspace_root": ws,
+            "created_at_ms": now_ms,
+        }))
+        .map_err(|e| format!("the session could not be recorded: {e}"))?;
+        let event = EventRecord::new(
+            format!("ev-{session_id}-0"),
+            &session_id,
+            0,
+            SESSION_CREATED,
+            now_ms,
+            payload,
+            GENESIS_HASH,
+        );
+        self.store
+            .lock()
+            .map_err(|e| e.to_string())?
+            .append_event(&event)
+            .map_err(|e| format!("the session could not be recorded in the event log: {e}"))?;
 
         let info = SessionInfo {
             session_id: session_id.clone(),
@@ -149,6 +202,114 @@ impl DaemonServer {
         // Newest session first.
         list.sort_by_key(|s| std::cmp::Reverse(s.created_at_ms));
         list
+    }
+
+    /// Rebuilds the session list from the event log, which is what lets a
+    /// session outlive the daemon that made it. The map in memory forgot every
+    /// session on restart, so a window showed "No sessions yet" above the runs
+    /// those sessions had made.
+    ///
+    /// A session is read from its `SessionCreated` event. One made before that
+    /// event existed is rebuilt from its turns instead, placed at the workspace
+    /// its turn names or, for a turn logged before turns named one, at the one
+    /// its receipt was written under (`<workspace>/.vitna/receipts/<run>.json`,
+    /// as `ReceiptGenerated` records it). A session nothing in the log places
+    /// is left out and named in the report, not given a guessed workspace.
+    /// Sessions already in memory are kept as they are.
+    pub fn restore_sessions(&self) -> Result<Restored, String> {
+        let (created, turns, receipts) = {
+            let store = self.store.lock().map_err(|e| e.to_string())?;
+            let read = |type_url: &str| {
+                store
+                    .events_of_type(type_url)
+                    .map_err(|e| format!("the event log could not be read: {e}"))
+            };
+            (read(SESSION_CREATED)?, read(TURN_STARTED)?, read(RECEIPT_GENERATED)?)
+        };
+        let payload = |event: &EventRecord| -> Option<serde_json::Value> {
+            event
+                .verify_integrity()
+                .then(|| serde_json::from_slice(&event.encrypted_payload).ok())
+                .flatten()
+        };
+        let text = |v: &serde_json::Value, key: &str| v.get(key).and_then(|x| x.as_str()).map(str::to_string);
+
+        let mut report = Restored::default();
+        let mut found: HashMap<String, SessionInfo> = HashMap::new();
+        for event in &created {
+            let info = payload(event).and_then(|v| {
+                Some(SessionInfo {
+                    session_id: text(&v, "session_id")?,
+                    workspace_root: PathBuf::from(text(&v, "workspace_root")?),
+                    created_at_ms: v.get("created_at_ms")?.as_u64()?,
+                    status: "active".to_string(),
+                    latest_run_id: None,
+                })
+            });
+            match info {
+                Some(info) => {
+                    found.insert(info.session_id.clone(), info);
+                }
+                None => report.unreadable += 1,
+            }
+        }
+
+        // Where each run's receipt went: the workspace, three levels up.
+        let receipt_workspace: HashMap<String, PathBuf> = receipts
+            .iter()
+            .filter_map(|event| {
+                let path = PathBuf::from(text(&payload(event)?, "receipt_path")?);
+                Some((event.run_id.clone(), path.parent()?.parent()?.parent()?.to_path_buf()))
+            })
+            .collect();
+
+        // Oldest first, so the last turn seen for a session is its latest.
+        let mut from_turns: HashMap<String, SessionInfo> = HashMap::new();
+        for event in &turns {
+            let Some(v) = payload(event) else {
+                report.unreadable += 1;
+                continue;
+            };
+            let Some(session_id) = text(&v, "session_id") else {
+                report.unreadable += 1;
+                continue;
+            };
+            let workspace = text(&v, "workspace_root")
+                .map(PathBuf::from)
+                .or_else(|| receipt_workspace.get(&event.run_id).cloned());
+            let session = from_turns.entry(session_id.clone()).or_insert_with(|| SessionInfo {
+                session_id,
+                workspace_root: PathBuf::new(),
+                created_at_ms: event.timestamp_ms,
+                status: "active".to_string(),
+                latest_run_id: None,
+            });
+            session.latest_run_id = Some(event.run_id.clone());
+            if session.workspace_root.as_os_str().is_empty() {
+                if let Some(ws) = workspace {
+                    session.workspace_root = ws;
+                }
+            }
+        }
+        for (id, turned) in from_turns {
+            match found.get_mut(&id) {
+                Some(session) => session.latest_run_id = turned.latest_run_id,
+                None if turned.workspace_root.as_os_str().is_empty() => report.unplaced.push(id),
+                None => {
+                    found.insert(id, turned);
+                }
+            }
+        }
+        report.unplaced.sort();
+
+        let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+        for (id, session) in found {
+            if let std::collections::hash_map::Entry::Vacant(slot) = sessions.entry(id) {
+                slot.insert(session);
+                report.sessions += 1;
+            }
+        }
+        Ok(report)
     }
 
     /// Every turn the event log holds, read off its `TurnStarted` events.
@@ -269,6 +430,7 @@ impl DaemonServer {
             &serde_json::json!({
                 "prompt": req.prompt,
                 "session_id": req.session_id,
+                "workspace_root": session.workspace_root,
                 "run_id": run_id,
                 "auto_approve": req.auto_approve,
             }),

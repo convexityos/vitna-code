@@ -6,7 +6,7 @@ pub mod engine;
 
 pub use agent::AgentTurn;
 pub use dag::{TaskGraph, TaskNode, TaskStatus};
-pub use engine::{OrchestrationConfig, OrchestrationEngine, StepType};
+pub use engine::{OrchestrationConfig, OrchestrationEngine, StepType, RECEIPT_GENERATED};
 
 #[cfg(test)]
 mod tests {
