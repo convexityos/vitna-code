@@ -1,7 +1,6 @@
 use crate::broker::{ChangeSet, GitBroker, MergeConflict};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,50 +54,29 @@ impl MergeQueue {
 
     /// Processes the next item in the merge queue.
     /// Re-validates preimages against the current primary checkout before mutating anything.
+    /// A path the merge could not write without following a link is a
+    /// conflict too (see `GitBroker::validate_preimages`), and the write
+    /// itself goes through `GitBroker`'s, so the queue and `apply_changeset`
+    /// cannot drift apart again.
     pub fn process_next(&mut self) -> Option<(String, MergeQueueResult)> {
         let item = self.pending.pop_front()?;
         let task_id = item.task_id.clone();
 
         // 1. Re-validate preimages against the current primary state
-        let conflicts = match GitBroker::validate_preimages(&self.primary_repo_root, &item.changeset) {
-            Ok(c) => c,
-            Err(e) => {
-                let res = MergeQueueResult::Error { message: e };
-                self.history.push((item, res.clone()));
-                return Some((task_id, res));
-            }
+        let res = match GitBroker::validate_preimages(&self.primary_repo_root, &item.changeset) {
+            Err(message) => MergeQueueResult::Error { message },
+            Ok(conflicts) if !conflicts.is_empty() => MergeQueueResult::Conflict { conflicts },
+            // 2. Apply modifications to primary checkout
+            Ok(_) => match GitBroker::write_changes(
+                &self.primary_repo_root,
+                &item.agent_workspace_root,
+                &item.changeset,
+            ) {
+                Ok(applied_files) => MergeQueueResult::Merged { applied_files },
+                Err(message) => MergeQueueResult::Error { message },
+            },
         };
 
-        if !conflicts.is_empty() {
-            let res = MergeQueueResult::Conflict { conflicts };
-            self.history.push((item, res.clone()));
-            return Some((task_id, res));
-        }
-
-        // 2. Apply modifications to primary checkout
-        let mut applied = Vec::new();
-        for change in &item.changeset.files {
-            let src = item.agent_workspace_root.join(&change.path);
-            let dst = self.primary_repo_root.join(&change.path);
-
-            if let Some(parent) = dst.parent() {
-                if let Err(e) = fs::create_dir_all(parent) {
-                    let res = MergeQueueResult::Error { message: e.to_string() };
-                    self.history.push((item, res.clone()));
-                    return Some((task_id, res));
-                }
-            }
-
-            if let Err(e) = fs::copy(&src, &dst) {
-                let res = MergeQueueResult::Error { message: e.to_string() };
-                self.history.push((item, res.clone()));
-                return Some((task_id, res));
-            }
-
-            applied.push(change.path.clone());
-        }
-
-        let res = MergeQueueResult::Merged { applied_files: applied };
         self.history.push((item, res.clone()));
         Some((task_id, res))
     }
@@ -118,6 +96,7 @@ impl MergeQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use vitna_git_workspaces::AgentWorkspaceManager;
 
     #[test]

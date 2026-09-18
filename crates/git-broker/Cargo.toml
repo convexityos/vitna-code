@@ -13,3 +13,11 @@ sha2.workspace = true
 hex.workspace = true
 vitna-git-workspaces.workspace = true
 vitna-policy.workspace = true
+
+# `tree` opens files without following a final link or blocking on a FIFO,
+# and asks an opened handle where it lives. std exposes neither.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
