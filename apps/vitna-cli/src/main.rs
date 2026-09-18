@@ -152,11 +152,17 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 4. Device Signing Key
-    let key = vitna_receipts::generate_signing_key();
-    let pubkey_hex = hex::encode(key.verifying_key().to_bytes());
-    println!("[OK] Cryptographic Signing Core: Ed25519 Operational");
-    println!("     Device Public Key: {}", pubkey_hex);
+    // 4. The key receipts are signed with. This used to print a key generated
+    // on the spot, which matched nothing any daemon signs with. The daemon
+    // keeps the real one beside its store and publishes the public half in
+    // Health, so that is where it is read from.
+    match vitna_protocol::client::Client::connect().and_then(|mut c| c.health()) {
+        Ok(health) => match health.device_public_key {
+            Some(key) => println!("[OK] Receipt signing key (daemon pid {}): {}", health.pid, key),
+            None => println!("[WARN] The running daemon does not say which key it signs receipts with."),
+        },
+        Err(e) => println!("[WARN] No daemon answered, so there is no signing key to show: {}", e),
+    }
 
     println!("\nAll systems verified for Vitna local-first operation.");
     Ok(())
