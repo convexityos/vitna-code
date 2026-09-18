@@ -9,8 +9,10 @@
 #
 # It answers from a script keyed on the prompt: a prompt naming "release
 # notes" or "search palette" gets write_file calls for files under
-# .vitna/demo/ (gitignored) and then a closing line; anything else gets a
-# text answer. It reports no token usage, since it has none to report.
+# .vitna/demo/ (gitignored) and then a closing line; a prompt naming "keep
+# looking" gets a list_dir call on every round and never an answer, so the
+# daemon's loop meets its round cap; anything else gets a text answer. It
+# reports no token usage, since it has none to report.
 #
 # Everything that runs through it is a test double for the model, not a
 # model. Drive it with scripts/drive-daemon.py, which asks for the sku
@@ -53,7 +55,11 @@ class Handler(BaseHTTPRequestHandler):
             isinstance(b, dict) and b.get("type") == "tool_result" for b in last)
         prompt = first_user_text(msgs).lower()
         files = next((f for key, f in PLANS if key in prompt), [])
-        if files and not answered:
+        if "keep looking" in prompt:
+            reply = {"content": [{"type": "tool_use", "id": "toolu_stub_look_%d" % len(msgs),
+                                  "name": "list_dir", "input": {"path": "."}}],
+                     "stop_reason": "tool_use"}
+        elif files and not answered:
             blocks = [{"type": "tool_use", "id": "toolu_stub_%d" % i, "name": "write_file",
                        "input": {"path": p, "content": c}} for i, (p, c) in enumerate(files)]
             reply = {"content": blocks, "stop_reason": "tool_use"}
