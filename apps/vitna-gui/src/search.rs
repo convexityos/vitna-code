@@ -75,7 +75,8 @@ enum Action {
 struct Item {
     section: &'static str,
     icon: Option<Icon>,
-    dot: Option<Color32>,
+    /// The icon's tone: a run's standing, or quiet ink for the rest.
+    tone: Color32,
     title: String,
     /// Right-aligned facts, in order, each in its own tone.
     meta: Vec<(String, Color32)>,
@@ -115,10 +116,11 @@ impl App {
                         Some(k) => format!("{k} files"),
                         None => "not a receipt".to_string(),
                     };
+                    let (icon, tone) = crate::run_list::status(&row);
                     let item = Item {
                         section: "Runs",
-                        icon: None,
-                        dot: Some(row.state.2),
+                        icon: Some(icon),
+                        tone,
                         title: row.title.clone(),
                         meta: vec![
                             (files, theme::FAINT),
@@ -156,7 +158,7 @@ impl App {
                 let item = Item {
                     section: "Sessions",
                     icon: Some(icons::bubble),
-                    dot: None,
+                    tone: theme::MUTE,
                     title,
                     meta: vec![
                         (turns, theme::FAINT),
@@ -194,7 +196,7 @@ impl App {
         let act = |icon: Icon, title: &str, shortcut: String, keys: &str, target: Action| Item {
             section: "Actions",
             icon: Some(icon),
-            dot: None,
+            tone: theme::MUTE,
             title: title.to_string(),
             meta: if shortcut.is_empty() { vec![] } else { vec![(shortcut, theme::FAINTER)] },
             keys: keys.to_string(),
@@ -468,11 +470,8 @@ fn row(ui: &mut egui::Ui, ctx: &egui::Context, item: &Item, i: usize, keyed: boo
         }
     }
     let mark = egui::pos2(r2.left() + 16.0, r2.center().y);
-    if let Some(c) = item.dot {
-        ui.painter().circle_filled(mark, 3.5, c);
-    }
     if let Some(icon) = item.icon {
-        icon(ui.painter(), mark, if item.enabled { theme::MUTE } else { theme::FAINTER });
+        icon(ui.painter(), mark, if item.enabled { item.tone } else { theme::FAINTER });
     }
     // The facts, laid right to left.
     let mut right = r2.right() - 12.0;

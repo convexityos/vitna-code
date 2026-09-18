@@ -163,8 +163,9 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, workspace: Workspace) -> Self {
         theme::install(&cc.egui_ctx);
         crate::chrome::match_frame(cc);
-        // The SVG loader behind the mark.
+        // The SVG loader behind the mark, and the icons it draws.
         egui_extras::install_image_loaders(&cc.egui_ctx);
+        crate::icons::install(&cc.egui_ctx);
         let repo = Probe::start(&workspace.path);
         let workspace_for_runs = workspace.path.clone();
         // The worker wakes the UI when a reply lands, since an idle window

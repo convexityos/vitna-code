@@ -48,21 +48,21 @@ fn fact_right(ui: &egui::Ui, id: &str, right: f32, cy: f32, icon: Option<Icon>, 
 /// A pill with a tinted ground: the change and the merge, the two facts a
 /// person acts on.
 #[allow(clippy::too_many_arguments)]
-fn pill_right(ui: &egui::Ui, id: &str, right: f32, cy: f32, dot: Option<Color32>, parts: &[(String, Color32)], ground: Color32, hint: &str) -> f32 {
+fn pill_right(ui: &egui::Ui, id: &str, right: f32, cy: f32, mark: Option<(Icon, Color32)>, parts: &[(String, Color32)], ground: Color32, hint: &str) -> f32 {
     let galleys: Vec<_> = parts
         .iter()
         .map(|(t, c)| theme::line(ui, t, theme::sans(12.0), *c, 300.0))
         .collect();
-    let dot_w = if dot.is_some() { 10.0 } else { 0.0 };
-    let inner: f32 = dot_w
+    let mark_w = if mark.is_some() { 18.0 } else { 0.0 };
+    let inner: f32 = mark_w
         + galleys.iter().map(|g| g.size().x).sum::<f32>()
         + 6.0 * (galleys.len().saturating_sub(1)) as f32;
-    let r = Rect::from_min_max(egui::pos2(right - inner - 16.0, cy - 10.0), egui::pos2(right, cy + 10.0));
-    ui.painter().rect_filled(r, CornerRadius::same(10), ground);
-    if let Some(c) = dot {
-        ui.painter().circle_filled(egui::pos2(r.left() + 10.5, cy), 2.5, c);
+    let r = Rect::from_min_max(egui::pos2(right - inner - 16.0, cy - 11.0), egui::pos2(right, cy + 11.0));
+    ui.painter().rect_filled(r, CornerRadius::same(11), ground);
+    if let Some((icon, tone)) = mark {
+        icon(ui.painter(), egui::pos2(r.left() + 15.0, cy), tone);
     }
-    let mut x = r.left() + 8.0 + dot_w;
+    let mut x = r.left() + 8.0 + mark_w;
     for (g, (_, c)) in galleys.into_iter().zip(parts) {
         let w = g.size().x;
         ui.painter().galley(egui::pos2(x, cy - g.size().y / 2.0), g, *c);
@@ -257,7 +257,7 @@ fn merge(ui: &egui::Ui, facts: Option<&RepoFacts>, right: f32, cy: f32) -> f32 {
         None => hint.push_str("\ngit could not answer the merge check."),
         _ => {}
     }
-    pill_right(ui, "merge", right, cy, Some(tone), &[(text, tone)], tone.gamma_multiply(0.14), &hint)
+    pill_right(ui, "merge", right, cy, Some((icons::merge, tone)), &[(text, tone)], tone.gamma_multiply(0.14), &hint)
 }
 
 /// The uncommitted change, in lines against HEAD, and the untracked files.

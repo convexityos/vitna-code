@@ -1,24 +1,21 @@
 //! Recent runs: the content of the start screen's centre.
 //!
-//! After Cursor's agent home, one row per run: a small card holding how many
-//! files the run changed and how it ended, and beside it a title and one line
-//! of facts. Everything in a row is read off the receipt on disk except the
+//! After Cursor's agent home, one row per run: a status icon, the title, and
+//! one quiet line of facts under it. Everything in a row is read off the receipt on disk except the
 //! title, which is the run's prompt when the daemon's log has one and the run
 //! id when it does not. A file in the receipts directory that will not parse
 //! gets a row of its own, where its timestamp puts it, rather than vanishing.
 
 use std::time::SystemTime;
 
-use eframe::egui::{self, Color32, CornerRadius, Rect, Sense, Stroke, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Sense, Vec2};
 
 use crate::app::App;
 use crate::link::Link;
 use crate::runs;
 use crate::theme;
 
-const ROW_H: f32 = 58.0;
-const CARD_W: f32 = 124.0;
-const CARD_H: f32 = 44.0;
+const ROW_H: f32 = 52.0;
 
 /// A completion state in words: a short one for the card, the full phrase for
 /// the hover, and a tone. The phrases are `apps/vitna-desktop`'s, so the two
@@ -51,12 +48,31 @@ pub(crate) struct Row {
     /// Files the run changed; None for a file that is not a receipt.
     pub files: Option<usize>,
     pub state: (&'static str, String, Color32),
+    /// The receipt's completion state as written, for the status icon.
+    pub state_key: String,
     pub provider: String,
     pub sku: String,
+    /// The catalog's name for the sku, or the sku itself when the pinned
+    /// catalog does not list it.
+    pub model: String,
     pub age: Option<String>,
     pub age_long: Option<String>,
     pub failed_checks: Vec<String>,
     pub written: Option<SystemTime>,
+}
+
+/// The icon a row's standing is drawn with, and its tone. A failed check
+/// and a file that is not a receipt outrank whatever the receipt claims.
+pub(crate) fn status(row: &Row) -> (fn(&egui::Painter, egui::Pos2, Color32), Color32) {
+    if row.run.is_none() || !row.failed_checks.is_empty() {
+        return (crate::icons::alert, theme::RUST);
+    }
+    match row.state_key.as_str() {
+        "completed_with_evidence" => (crate::icons::done, theme::OK),
+        "failed" => (crate::icons::failed, theme::RUST),
+        "cancelled" => (crate::icons::failed, theme::FAINT),
+        _ => (crate::icons::alert, theme::RUST),
+    }
 }
 
 pub(crate) struct Rows {
@@ -69,6 +85,7 @@ impl App {
     /// The ledger as rows, newest first, or None while it is still being read.
     pub(crate) fn run_rows(&mut self) -> Option<Rows> {
         let prompts = self.prompts.as_ref();
+        let choices = &self.choices;
         let waiting = match (&self.link, &self.prompts_trouble) {
             (_, Some(e)) => format!("The daemon did not list its prompts: {e}"),
             (Link::Open { .. }, None) => "Waiting for the daemon to list its prompts.".to_string(),
@@ -114,8 +131,17 @@ impl App {
                 title_hint,
                 files: Some(run.receipt.changeset.files_modified.len()),
                 state: completion(&run.receipt.completion_state),
+                state_key: run.receipt.completion_state.clone(),
                 provider: run.receipt.model_selection.provider.clone(),
                 sku: run.receipt.model_selection.model_sku.clone(),
+                model: {
+                    let m = &run.receipt.model_selection;
+                    choices
+                        .iter()
+                        .find(|c| c.sku == m.model_sku && c.provider_id == m.provider)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_else(|| m.model_sku.clone())
+                },
                 age: runs::short_age(run.written),
                 age_long: runs::age(run.written),
                 failed_checks: run.report.errors.clone(),
@@ -136,8 +162,10 @@ impl App {
                 title_hint: u.path.display().to_string(),
                 files: None,
                 state: ("Unreadable", u.reason.clone(), theme::RUST),
+                state_key: String::new(),
                 provider: String::new(),
                 sku: String::new(),
+                model: String::new(),
                 age: runs::short_age(u.written),
                 age_long: runs::age(u.written),
                 failed_checks: Vec::new(),
@@ -225,96 +253,68 @@ impl App {
 }
 
 /// One row. Returns the run's index when it was clicked.
+///
+/// A status icon on the title's line, the title, the age at the right, and
+/// one quiet line under it: how the run ended, what served it, what it
+/// changed. No card and no tinted pill: the state is an icon with its word
+/// beside it, which is all a list needs to say it.
 fn paint_row(ui: &mut egui::Ui, row: &Row) -> Option<usize> {
     let sense = if row.run.is_some() { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), sense);
+    let ui: &egui::Ui = ui;
     let p = ui.painter().clone();
     let hot = resp.hovered() && row.run.is_some();
     if hot {
         p.rect_filled(rect, CornerRadius::same(10), theme::FACE);
     }
 
-    // The card: what the run changed, over how it ended.
-    let card = Rect::from_min_size(
-        rect.min + Vec2::new(6.0, (ROW_H - CARD_H) / 2.0),
-        Vec2::new(CARD_W, CARD_H),
-    );
-    p.rect_filled(card, CornerRadius::same(8), theme::GROUND);
-    p.rect_stroke(
-        card,
-        CornerRadius::same(8),
-        Stroke::new(1.0, theme::HAIR_2),
-        egui::StrokeKind::Inside,
-    );
-    let files = match row.files {
-        Some(0) => "No files".to_string(),
-        Some(1) => "1 file".to_string(),
-        Some(n) => format!("{n} files"),
-        None => "Not a receipt".to_string(),
-    };
-    p.text(
-        card.left_top() + Vec2::new(10.0, 13.0),
-        egui::Align2::LEFT_CENTER,
-        files,
-        theme::sans(12.0),
-        theme::INK_2,
-    );
-    let (word, full, tone) = &row.state;
-    let g = theme::line(ui, word, theme::sans(11.5), *tone, CARD_W - 34.0);
-    let pill = Rect::from_min_size(
-        card.left_top() + Vec2::new(7.0, 23.0),
-        Vec2::new(g.size().x + 23.0, 16.0),
-    );
-    p.rect_filled(pill, CornerRadius::same(8), tone.gamma_multiply(0.16));
-    p.circle_filled(egui::pos2(pill.left() + 8.5, pill.center().y), 2.5, *tone);
-    p.galley(
-        egui::pos2(pill.left() + 15.0, pill.center().y - g.size().y / 2.0),
-        g,
-        *tone,
-    );
+    let title_y = rect.center().y - 9.0;
+    let meta_y = rect.center().y + 10.0;
+    let (icon, tone) = status(row);
+    icon(&p, egui::pos2(rect.left() + 20.0, title_y), tone);
 
-    // Beside it: the title, then one line of facts.
-    let x = card.right() + 14.0;
-    let w = (rect.right() - x - 10.0).max(0.0);
-    let (font, ink) = if row.titled {
-        (theme::sans(13.5), theme::INK)
-    } else {
-        (theme::sans(13.0), theme::MUTE)
-    };
-    let tg = theme::line(ui, &row.title, font, ink, w);
-    p.galley(egui::pos2(x, rect.center().y - 10.0 - tg.size().y / 2.0), tg, ink);
-
-    let my = rect.center().y + 10.0;
-    let mut cx = x;
-    if row.run.is_some() {
-        // The model the receipt says served the run, under its provider's mark.
-        crate::composer::provider_badge(ui, egui::pos2(cx + 6.0, my), 12.0, &row.provider, &row.provider);
-        cx += 18.0;
-        let sg = theme::line(ui, &row.sku, theme::sans(12.0), theme::FAINT, w * 0.5);
-        let sw = sg.size().x;
-        p.galley(egui::pos2(cx, my - sg.size().y / 2.0), sg, theme::FAINT);
-        cx += sw + 14.0;
-    }
+    // The age, on the title's line at the right.
+    let x = rect.left() + 40.0;
+    let mut title_right = rect.right() - 14.0;
     if let Some(a) = &row.age {
-        let ag = theme::line(ui, a, theme::sans(12.0), theme::FAINTER, 60.0);
-        let aw = ag.size().x;
-        p.galley(egui::pos2(cx, my - ag.size().y / 2.0), ag, theme::FAINTER);
-        cx += aw + 14.0;
+        let g = theme::line(ui, a, theme::sans(12.0), theme::FAINTER, 60.0);
+        let w = g.size().x;
+        p.galley(egui::pos2(title_right - w, title_y - g.size().y / 2.0), g, theme::FAINTER);
+        title_right -= w + 16.0;
     }
+    let ink = match (row.titled, hot) {
+        (true, true) => theme::INK,
+        (true, false) => theme::INK_2,
+        (false, _) => theme::MUTE,
+    };
+    let tg = theme::line(ui, &row.title, theme::sans(14.0), ink, (title_right - x).max(0.0));
+    p.galley(egui::pos2(x, title_y - tg.size().y / 2.0), tg, ink);
+
+    // One quiet line, laid left to right.
+    let mut cx = x;
+    let mut put = |text: &str, tone: Color32| {
+        let g = theme::line(ui, text, theme::sans(12.0), tone, (rect.right() - 14.0 - cx).max(0.0));
+        let w = g.size().x;
+        p.galley(egui::pos2(cx, meta_y - g.size().y / 2.0), g, tone);
+        cx += w + 14.0;
+    };
+    let (word, full, _) = &row.state;
     if row.run.is_none() {
-        // A file that is not a receipt says why, in place of a model.
-        let rg = theme::line(ui, full, theme::sans(12.0), theme::FAINT, (rect.right() - cx - 10.0).max(0.0));
-        p.galley(egui::pos2(cx, my - rg.size().y / 2.0), rg, theme::FAINT);
-    } else if !row.failed_checks.is_empty() {
-        // A failed check is the loudest thing a row can say.
-        p.circle_filled(egui::pos2(cx + 3.0, my), 3.0, theme::RUST);
-        p.text(
-            egui::pos2(cx + 11.0, my),
-            egui::Align2::LEFT_CENTER,
-            "Check failed",
-            theme::sans(12.0),
-            theme::RUST,
-        );
+        put(full, theme::FAINT);
+    } else {
+        if row.failed_checks.is_empty() {
+            put(word, theme::FAINT);
+        } else {
+            put("Check failed", theme::RUST);
+        }
+        put(&row.model, theme::FAINT);
+        let files = match row.files {
+            Some(0) => "No files".to_string(),
+            Some(1) => "1 file".to_string(),
+            Some(n) => format!("{n} files"),
+            None => String::new(),
+        };
+        put(&files, theme::FAINTER);
     }
 
     let mut hint = row.title_hint.clone();
