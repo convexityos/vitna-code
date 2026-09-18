@@ -15,6 +15,7 @@ use crate::catalog::{Catalog, Choice};
 use crate::daemon::{self, Worker};
 use crate::link::Link;
 use crate::repo::{Loading, Probe, RepoFacts};
+use crate::runs;
 use crate::theme;
 use crate::workspace::Workspace;
 
@@ -40,6 +41,26 @@ impl Mode {
 pub enum Placement {
     Local,
     Worktree,
+}
+
+/// The inspector's tabs. Three, because three is what the receipt can answer
+/// for on its own. Cursor's fourth and fifth (Terminal, Secrets) have nothing
+/// behind them here, and an events tab needs the daemon to expose the chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Receipt,
+    Changes,
+    Evidence,
+}
+
+impl Tab {
+    pub fn label(self) -> &'static str {
+        match self {
+            Tab::Receipt => "Receipt",
+            Tab::Changes => "Changes",
+            Tab::Evidence => "Evidence",
+        }
+    }
 }
 
 /// The pages of the settings modal.
@@ -100,6 +121,13 @@ pub struct App {
     /// The last thing the daemon said, good or bad, for the stage to show.
     pub(crate) last_result: Option<Box<vitna_protocol::api::TurnResultResponse>>,
     pub(crate) last_error: Option<String>,
+    /// The receipts on disk. Read and verified by this window, not by the
+    /// daemon that wrote them.
+    pub(crate) runs: runs::Probe,
+    /// Which run the centre is showing, as an index into the ledger. None is
+    /// the start state.
+    pub(crate) open_run: Option<usize>,
+    pub(crate) tab: Tab,
     pub(crate) catalog: Option<Catalog>,
     pub(crate) choices: Vec<Choice>,
     /// Index into `choices`. A preference, handed to the daemon with the turn;
@@ -130,6 +158,7 @@ impl App {
         // The SVG loader behind the mark.
         egui_extras::install_image_loaders(&cc.egui_ctx);
         let repo = Probe::start(&workspace.path);
+        let workspace_for_runs = workspace.path.clone();
         // The worker wakes the UI when a reply lands, since an idle window
         // would otherwise hold the answer until the next mouse move.
         let worker = Worker::spawn(cc.egui_ctx.clone());
@@ -147,6 +176,14 @@ impl App {
             turn_running: false,
             last_result: None,
             last_error: None,
+            runs: runs::Probe::start(&workspace_for_runs),
+            // VITNA_GUI_OPEN_RUN=<index> opens a run on the first frame, the
+            // way the menu and settings hooks do, so a capture can show this
+            // surface before the run list exists to reach it from.
+            open_run: std::env::var("VITNA_GUI_OPEN_RUN")
+                .ok()
+                .map(|v| v.trim().parse::<usize>().unwrap_or(0)),
+            tab: Tab::Receipt,
             catalog,
             choices,
             model,
@@ -212,6 +249,10 @@ impl App {
                     self.last_error = None;
                     self.last_result = Some(result);
                     self.worker.send(daemon::Command::ListSessions);
+                    // A receipt was just written, so the ledger is stale. The
+                    // new run becomes the open one.
+                    self.runs = runs::Probe::start(&self.workspace.path);
+                    self.open_run = Some(0);
                 }
                 daemon::Event::Failed(message) => {
                     self.turn_running = false;
@@ -262,7 +303,34 @@ impl eframe::App for App {
         if self.sidebar_open {
             self.sidebar(ui, sidebar);
         }
-        self.stage(ui, main);
+
+        match self.open_run {
+            // A run is open: Cursor's split, the run in the centre and the
+            // inspector down the right. The composer stays, because a follow
+            // up is another turn on the same session rather than a new place.
+            Some(_) => {
+                let w = crate::inspector::WIDTH.min(main.width() * 0.42);
+                let centre =
+                    Rect::from_min_max(main.min, egui::pos2(main.right() - w, main.bottom()));
+                let panel =
+                    Rect::from_min_max(egui::pos2(centre.right(), main.top()), main.max);
+
+                let composer_h = self.composer_h;
+                let body = Rect::from_min_max(
+                    centre.min,
+                    egui::pos2(centre.right(), centre.bottom() - composer_h),
+                );
+                let composer_rect = Rect::from_min_max(
+                    egui::pos2(centre.left(), body.bottom()),
+                    centre.max,
+                );
+
+                self.run_view(ui, crate::stage::column(body));
+                self.composer(ui, composer_rect);
+                self.inspector(ui, panel);
+            }
+            None => self.stage(ui, main),
+        }
         // The strip goes last so its menu sits over everything else.
         self.strip(ui, full);
         self.settings_modal(ui);

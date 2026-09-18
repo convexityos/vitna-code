@@ -11,6 +11,10 @@ arboard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 vitna-protocol.workspace = true
+# The window verifies receipts itself rather than asking the daemon to
+# vouch for its own work. Both crates are serde plus hashing, no runtime.
+vitna-receipts.workspace = true
+vitna-receipt-verify.workspace = true
 
 [[bin]]
 name = "vitna-code"

@@ -5,7 +5,7 @@
 //! and size, and every one is legible at 14px in the sidebar and 16px beside a
 //! heading.
 
-use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
+use eframe::egui::{self, pos2, Color32, Pos2, Rect, Stroke, Vec2};
 
 fn s(tone: Color32) -> Stroke {
     Stroke::new(1.5, tone)
@@ -165,4 +165,11 @@ pub fn close(p: &egui::Painter, c: Pos2, tone: Color32) {
     let st = s(tone);
     p.line_segment([c + Vec2::new(-4.5, -4.5), c + Vec2::new(4.5, 4.5)], st);
     p.line_segment([c + Vec2::new(4.5, -4.5), c + Vec2::new(-4.5, 4.5)], st);
+}
+
+/// A back chevron, for leaving a run.
+pub fn chevron_left(p: &egui::Painter, c: Pos2, tone: Color32) {
+    let s = Stroke::new(1.4, tone);
+    p.line_segment([pos2(c.x + 2.0, c.y - 4.0), pos2(c.x - 2.0, c.y)], s);
+    p.line_segment([pos2(c.x - 2.0, c.y), pos2(c.x + 2.0, c.y + 4.0)], s);
 }

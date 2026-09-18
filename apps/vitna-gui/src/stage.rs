@@ -48,6 +48,7 @@ impl App {
         }
 
         self.turn_state(&mut ui2);
+        self.unreadable_line(&mut ui2);
 
         self.composer(ui, composer_rect);
     }
@@ -246,5 +247,52 @@ impl App {
                         .color(theme::FAINTER),
                 );
             });
+    }
+}
+
+impl App {
+    /// Receipts in this workspace that would not parse.
+    ///
+    /// Shown rather than skipped, and shown on the START screen rather than
+    /// buried, because a receipt that cannot be read is the most interesting
+    /// file in the directory: it is either corrupt or it is not a receipt, and
+    /// either way a product whose pitch is receipts should not quietly drop it.
+    fn unreadable_line(&mut self, ui: &mut egui::Ui) {
+        let broken: Vec<(String, String)> = match self.runs.poll() {
+            crate::runs::Loading::Done(ledger) => ledger
+                .unreadable
+                .iter()
+                .map(|u| (u.path.display().to_string(), u.reason.clone()))
+                .collect(),
+            crate::runs::Loading::Reading => return,
+        };
+        if broken.is_empty() {
+            return;
+        }
+
+        ui.add_space(14.0);
+        ui.vertical_centered(|ui| {
+            ui.horizontal(|ui| {
+                let (d, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
+                ui.painter().circle_filled(d.center(), 3.0, theme::RUST);
+                let n = broken.len();
+                let label = format!(
+                    "{n} file{} in .vitna/receipts could not be read as a receipt.",
+                    if n == 1 { "" } else { "s" }
+                );
+                ui.label(
+                    RichText::new(label)
+                        .font(theme::prose(12.5))
+                        .color(theme::FAINT),
+                )
+                .on_hover_text(
+                    broken
+                        .iter()
+                        .map(|(p, r)| format!("{p}: {r}"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            });
+        });
     }
 }
