@@ -42,12 +42,12 @@
 
 | Deliverable | Target Location | Verification Method | Status |
 |---|---|---|---|
-| Strong Sandbox Execution Engine | `crates/vitna-sandbox/src/executor.rs` | Bubblewrap, Seatbelt, and Windows AppContainer execution with timeout tests | Verified |
+| Guarded Sandbox Planning | `crates/vitna-sandbox/src/lib.rs` | Decides the invocation that delivers the requested guarantee and refuses when it cannot. Bubblewrap (Linux) and Seatbelt (macOS) implemented; **Windows has no backend**, so `run_command` there is refused unless unsandboxed execution is explicitly approved. `strong` (container or VM) is not implemented and returns an error rather than being served by something weaker. | Partial |
 | MCP Protocol & Client | `crates/mcp/src/protocol.rs`, `client.rs` | JSON-RPC 2.0 handshake, capability negotiation, and tool discovery tested | Verified |
 | MCP Exact-Action Capability Broker | `crates/mcp/src/broker.rs` | Untrusted MCP tool bridging with exact-action digests and operator approval | Verified |
 | OS Keychain Secret Store | `crates/providers/src/keyring.rs` | Unified secret vault (`wincred`, Keychain, Secret Service) with zero disk leaks | Verified |
 | Browser Verification Evidence Capture | `crates/tools/src/browser_verify.rs` | Web and DOM snapshot verification emitting `sandbox_captured` evidence | Verified |
-| Sandbox Execution Tests | `crates/vitna-sandbox/tests/sandbox_execution_test.rs` | Command execution, ambient variable scrubbing, and hard timeout termination | Verified |
+| Sandbox Enforcement Tests | `crates/vitna-runner/tests/sandbox_enforcement.rs` | Runs real commands through `ProcessRunner`: refusal when no backend exists, writes outside the workspace blocked, `.git/config` unwritable, process tree terminated on timeout (mutation checked: with the job object disabled the timed-out command survives and the test fails). `VITNA_REQUIRE_SANDBOX_BACKEND` turns a missing backend into a failure in CI instead of a skip. | Verified |
 | MCP Client & Bridge Tests | `crates/mcp/tests/mcp_client_test.rs` | Handshake, tool list, and brokered tool invocation tests | Verified |
 | Phase 3 Gate Report | `docs/PHASE_3_GATE_REPORT.md` | Formal audit certifying Phase 3 deliverables and authorizing Phase 4 progression | Verified |
 
@@ -86,7 +86,7 @@
 | Fake Provider & Streaming Replay | `crates/providers/src/fake.rs`, `fixtures/providers/` | Deterministic replay of 4 golden streams (turn, tool-call, rate-limit, mid-stream-drop) | Verified |
 | Runner Fault Injection Harness | `crates/vitna-runner/src/fake.rs` | Simulation of 4 crash modes (before start, mid-run, unack, timeout) with action journal | Verified |
 | Hostile Repository Corpus | `fixtures/hostile-repos/` | Git hook and config injection: three vectors (`core.fsmonitor`, `post-index-change`, `filter.*.clean`) confirmed to execute under plain git and blocked under `host_git::command`, in `crates/git-workspaces/tests/host_git_hardening.rs`. Path traversal: `crates/tools/src/path_safety.rs`, `test_traversal_rejection`. Prompt injection and terminal escapes: fixture text only, with no enforcement code and no test. | Partial |
-| Platform Sandbox Enforcement | `crates/vitna-sandbox/src/lib.rs` | Linux bwrap, macOS seatbelt, and Windows AppContainer generator proof tests in `sandbox_proof_tests.rs` | Verified |
+| Platform Sandbox Argument Generation | `crates/vitna-sandbox/src/lib.rs` | `sandbox_proof_tests.rs` asserts on generated arguments and profiles only, and starts no process. Whether anything is actually confined is asserted separately by `crates/vitna-runner/tests/sandbox_enforcement.rs`. The Windows AppContainer entry generates a deterministic **name**, which is an identifier and not a container. | Partial |
 | Cryptographic Policy Fixtures | `crates/policy/src/lib.rs`, `fixtures/policies/` | Valid, tampered, and expired signed policy fixtures verified in `crates/receipts/tests/signing_fixtures_test.rs` | Verified |
 | Phase 0C Gate Report | `docs/PHASE_0C_GATE_REPORT.md` | Formal gate report certifying platform proof and authorizing Phase 0 exit | Verified |
 
@@ -125,7 +125,7 @@
 
 1. **Local first**: Daemon, runner, storage, and receipt verification operate with zero cloud connectivity. (Verified in ADR-0001, ADR-0005).
 2. **Customer-held credentials**: OS keychain and dedicated credential provider interface; no ambient environment scraping. (Verified in ADR-0001, Authority Inventory).
-3. **Security outside the model**: Model proposes, deterministic policy decides, OS-level sandbox enforces. (Verified in ADR-0001, ADR-0002).
+3. **Security outside the model**: Model proposes, deterministic policy decides, OS-level sandbox enforces. Enforced on Linux (bubblewrap) and macOS (Seatbelt). On Windows no sandbox backend exists, so the policy refuses the command rather than running it unconfined; that refusal is the enforcement there. (ADR-0001, ADR-0002, `crates/vitna-runner/tests/sandbox_enforcement.rs`.)
 4. **Evidence over confidence**: Typed evidence grades with explicit trust assumptions. (Verified in ADR-0001, schemas/vitna-run-receipt-v1.json).
 5. **No silent effects**: Every effect entry point records policy decision and ledger event. (Verified in Authority Inventory).
 6. **No silent model switch**: Provider fallback restricted to safe turn boundaries with explicit receipt disclosure. (Verified in ADR-0001, Authority Inventory).

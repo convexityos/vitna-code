@@ -29,6 +29,13 @@ enum Commands {
         auto_approve: bool,
         #[arg(long)]
         verify_cmd: Option<String>,
+        /// Run commands with no OS sandbox when none is available.
+        ///
+        /// Separate from --auto-approve on purpose: that one approves the work,
+        /// this one approves removing the boundary around it. Without it, a
+        /// command is refused rather than run unprotected.
+        #[arg(long)]
+        allow_unsandboxed: bool,
     },
     /// Resume an existing session
     Resume { session_id: Option<String> },
@@ -82,9 +89,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             workspace,
             auto_approve,
             verify_cmd,
+            allow_unsandboxed,
             ..
         }) => {
-            run_task_cli(&task, &workspace, auto_approve, verify_cmd).await?;
+            run_task_cli(&task, &workspace, auto_approve, verify_cmd, allow_unsandboxed).await?;
         }
         Some(Commands::Sessions) => {
             run_list_sessions()?;
@@ -201,6 +209,7 @@ async fn run_task_cli(
     workspace: &Path,
     auto_approve: bool,
     verify_cmd: Option<String>,
+    allow_unsandboxed: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Vitna Code Task Execution");
     println!("-------------------------");
@@ -215,7 +224,13 @@ async fn run_task_cli(
 
     println!("Starting turn execution...");
     let receipt = daemon
-        .run_task(&session.session_id, task, auto_approve, verify_cmd)
+        .run_task(
+            &session.session_id,
+            task,
+            auto_approve,
+            verify_cmd,
+            allow_unsandboxed,
+        )
         .await?;
 
     println!("\nTask Execution Complete!");

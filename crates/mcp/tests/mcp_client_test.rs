@@ -65,10 +65,7 @@ async fn test_mcp_client_handshake_and_tool_brokering() {
     let fake_runner = FakeRunner::new(&journal_path).expect("runner");
     let runner = Arc::new(std::sync::Mutex::new(fake_runner));
 
-    let ctx = ToolContext {
-        workspace_root: PathBuf::from("."),
-        runner,
-    };
+    let ctx = ToolContext::new(PathBuf::from("."), runner);
 
     let result = bridge.execute(call_args, &ctx).await.expect("execute succeeds");
     assert!(result.success);

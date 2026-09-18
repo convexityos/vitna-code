@@ -91,13 +91,18 @@ impl FakeRunner {
     }
 }
 
+/// The fake runner never starts a process, so it never has a sandbox either.
+/// It says `none` rather than borrowing a real backend's name, so a test that
+/// asserts on isolation cannot pass against a runner that isolates nothing.
 #[async_trait]
 impl crate::Runner for std::sync::Mutex<FakeRunner> {
+    fn spawns_processes(&self) -> bool {
+        false
+    }
+
     async fn run_command(
         &self,
-        command: &str,
-        _working_dir: &Path,
-        _timeout_ms: u64,
+        request: crate::CommandRequest,
     ) -> Result<crate::ExecutionOutput, String> {
         let action_id = format!(
             "fake-act-{}",
@@ -106,6 +111,7 @@ impl crate::Runner for std::sync::Mutex<FakeRunner> {
                 .unwrap_or_default()
                 .as_nanos()
         );
+        let command = request.command.as_str();
         let arg_digest = hex::encode(Sha256::digest(command.as_bytes()));
         let mut runner = self.lock().map_err(|e| e.to_string())?;
         let entry = runner
@@ -115,15 +121,18 @@ impl crate::Runner for std::sync::Mutex<FakeRunner> {
         let exit_code = entry.exit_code.unwrap_or(0);
         let stdout = format!("Fake output for: {}", command);
         let stderr = String::new();
+        let backend = crate::BACKEND_NO_PROCESS;
 
         Ok(crate::ExecutionOutput {
             statement_digest: crate::compute_statement_digest(
-                &action_id, command, exit_code, &stdout, &stderr,
+                &action_id, command, exit_code, &stdout, &stderr, backend, backend,
             ),
             exit_code,
             stdout,
             stderr,
             duration_ms: 5,
+            sandbox_backend: backend.to_string(),
+            sandbox_enforcement: backend.to_string(),
         })
     }
 }

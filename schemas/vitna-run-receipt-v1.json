@@ -109,7 +109,17 @@
         "properties": {
           "action_id": { "type": "string" },
           "statement_digest": { "type": "string" },
-          "signature": { "type": "string" }
+          "signature": { "type": "string" },
+          "sandbox_backend": {
+            "type": "string",
+            "description": "Mechanism that confined this action. 'none' means a real process ran with no OS sandbox; 'no_process' means no process was started. Omitted on receipts written before the runner recorded it.",
+            "enum": ["bubblewrap", "seatbelt", "appcontainer", "none", "no_process"]
+          },
+          "sandbox_enforcement": {
+            "type": "string",
+            "description": "How completely the backend applied the guarantee.",
+            "enum": ["fully_enforced", "fallback", "none", "no_process"]
+          }
         }
       }
     },

@@ -22,7 +22,7 @@ Vitna Code targets Tier 1 release status across Linux, macOS, and Windows. This 
 
 | Security Dimension | Linux (x86_64 & ARM64) | macOS (x86_64 & Apple Silicon) | Windows 11 (x64 & ARM64) |
 |---|---|---|---|
-| **Guarded Engine** | Bubblewrap (`bwrap`) + Landlock LSM + seccomp filter | `sandbox-exec` / OS Sandbox Profile (entitlements-based) | Windows AppContainer + Restricted Token + Job Objects |
+| **Guarded Engine** | Bubblewrap (`bwrap`). Implemented. Landlock and seccomp are not used. | `sandbox-exec` Seatbelt profile. Implemented. | **Not implemented.** No AppContainer launcher exists; `generate_windows_appcontainer_name` returns an identifier, not a container. Job Objects are used for process-tree termination only. Commands are refused unless unsandboxed execution is explicitly approved. |
 | **Strong Engine** | Rootless Podman container / MicroVM (Firecracker/KVM) | Lightweight VM (`Virtualization.framework`) | Disposable locked-down WSL2 / Hyper-V VM (no host drive interop) |
 | **Filesystem Isolation** | Mount namespaces (`CLONE_NEWNS`); read-only system mounts; tmpfs for transient state | Seatbelt sandbox profile restricting writes exclusively to agent clone path | AppContainer SID filesystem ACLs denying access to host user profile and system drives |
 | **Process Tree Control** | PID namespaces (`CLONE_NEWPID`); cgroups v2 memory and CPU limits | `posix_spawn` with resource limits; process group tree termination | Win32 Job Objects with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` |
@@ -47,6 +47,16 @@ Every isolation guarantee must be empirically validated in automated CI test sui
 1. **File Quarantine Test**: Attempt writing outside designated workspace clone path. Verify that operation returns `EPERM`.
 2. **Keychain Access Test**: Attempt to invoke `/usr/bin/security dump-keychain`. Verify that command fails and prompt does not reach user.
 3. **Process Hierarchy Cleanup**: Spawn long-running background tasks. Send `SIGINT` to runner parent and assert that entire process tree is terminated within 500ms.
+
+### Implementation status of these proof plans
+
+The files named below do not exist. What does exist is
+`crates/vitna-runner/tests/sandbox_enforcement.rs`, which runs real commands
+through the runner and asserts: a command is refused where no backend exists,
+a sandboxed command cannot write outside the workspace, a sandboxed command
+cannot write `.git/config`, the workspace itself stays writable, and a timed
+out command's process tree does not outlive its action. Fork bombs, network
+isolation, and namespace teardown are not covered by any test.
 
 ### Windows 11 Proof Plan (`crates/vitna-sandbox/tests/windows_proof.rs`)
 1. **AppContainer Traversal Test**: Attempt to read `C:\Users\<User>\AppData\Roaming` and `C:\Windows\System32\config\SAM`. Verify `ERROR_ACCESS_DENIED`.

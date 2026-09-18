@@ -58,7 +58,8 @@ This inventory specifies every effect and access entry point mediated by Vitna C
 - **Action**: `process:exec_structured`, `process:pty_session`.
 - **Resource**: Executable binary, arguments, environment, working directory.
 - **Deciding Authority**: Execution policy rules; User approval binding exact action digest.
-- **Enforcement Mechanism**: `vitna-runner` resolves executable binary without ambient `PATH` ambiguity, verifies binary content hash, applies OS sandbox (Bubblewrap, AppContainer, or Container), binds working directory, applies CPU/memory/process limits, and attaches PTY.
+- **Enforcement Mechanism**: `vitna-runner` asks `vitna-sandbox` for an invocation that delivers the requested guarantee and refuses to run when it cannot get one. Bubblewrap on Linux and Seatbelt on macOS; **Windows has no backend**, so commands there are refused unless unsandboxed execution is explicitly approved, separately from any general auto-approve. The environment is cleared and rebuilt. The applied backend and enforcement level are recorded in the action journal and in the receipt's runner statement, and only code that applied a backend sets `VITNA_SANDBOX`.
+- **Not implemented**: binary resolution without ambient `PATH`, binary content hashing, CPU/memory/process limits, and PTY attachment. `SandboxConfig` carries limit fields that nothing applies.
 - **Receipt Statement**: Emits `runner_execution_statement` signed by local runner identity, recording action digest, canonical cwd, exit code, stdout hash, and stderr hash.
 - **Failure/Denial Behavior**: If unapproved, denied by policy, or sandbox initialization fails, execution is halted immediately. In the event of a timeout or abort, the full process tree is terminated. Interrupted commands enter `needs_reconciliation` and are never retried automatically.
 

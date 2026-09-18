@@ -33,6 +33,7 @@ async fn test_durable_vertical_slice_end_to_end() {
         provider_name: "fake".to_string(),
         sandbox_guarantee: "guarded".to_string(),
         verification_command: Some("cargo test".to_string()),
+        allow_unsandboxed: false,
     };
 
     let mut engine = OrchestrationEngine::new(config, store.clone(), runner, signing_key);

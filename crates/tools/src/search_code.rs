@@ -188,6 +188,7 @@ impl Tool for SearchCodeTool {
             postimage_hash: None,
             diff: None,
             exit_code: None,
+            ..Default::default()
         })
     }
 }

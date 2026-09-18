@@ -20,6 +20,9 @@ pub enum ActionState {
     Finished,
     Acknowledged,
     NeedsReconciliation,
+    /// Decided against before anything ran. Terminal, and distinct from
+    /// `NeedsReconciliation` because nothing happened that needs reconciling.
+    Refused,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +36,21 @@ pub struct JournalEntry {
     pub exit_code: Option<i32>,
     pub stdout_digest: Option<String>,
     pub stderr_digest: Option<String>,
+    /// The sandbox mechanism that confined this action, or `none`. Absent on
+    /// entries written before the runner recorded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_enforcement: Option<String>,
+    /// Why the action stopped, when it did not stop by finishing: `timeout`,
+    /// `sandbox_unavailable`, `spawn_failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub termination: Option<String>,
+    /// How far the process-tree teardown reached. A timeout that could not
+    /// account for every descendant says so here rather than reading as a
+    /// clean kill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teardown: Option<String>,
 }
 
 pub struct ActionJournal {
@@ -95,7 +113,76 @@ impl ActionJournal {
             exit_code: None,
             stdout_digest: None,
             stderr_digest: None,
+            sandbox_backend: None,
+            sandbox_enforcement: None,
+            termination: None,
+            teardown: None,
         };
+        self.append_entry(entry)
+    }
+
+    /// Records the isolation that is about to apply, before the child starts.
+    ///
+    /// Written separately from the outcome so that a crash between start and
+    /// finish still leaves behind what the action was allowed to do.
+    pub fn record_sandbox(
+        &mut self,
+        action_id: &str,
+        backend: &str,
+        enforcement: &str,
+    ) -> io::Result<()> {
+        let mut entry = self
+            .entries
+            .get(action_id)
+            .cloned()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "action not found"))?;
+
+        entry.sandbox_backend = Some(backend.to_string());
+        entry.sandbox_enforcement = Some(enforcement.to_string());
+        self.append_entry(entry)
+    }
+
+    /// Records an action that was never started, and why.
+    pub fn record_refused(
+        &mut self,
+        action_id: &str,
+        reason: &str,
+        timestamp_ms: u64,
+    ) -> io::Result<()> {
+        let mut entry = self
+            .entries
+            .get(action_id)
+            .cloned()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "action not found"))?;
+
+        entry.state = ActionState::Refused;
+        entry.finished_at_ms = Some(timestamp_ms);
+        entry.termination = Some(reason.to_string());
+        self.append_entry(entry)
+    }
+
+    /// Records an action that started and was stopped before it finished.
+    ///
+    /// The state is `NeedsReconciliation`: the command was interrupted part way
+    /// through, so its effect on the workspace is unknown, and per ADR-0002 an
+    /// interrupted mutating action is never retried automatically.
+    pub fn record_interrupted(
+        &mut self,
+        action_id: &str,
+        reason: &str,
+        teardown: &str,
+        timestamp_ms: u64,
+    ) -> io::Result<()> {
+        let mut entry = self
+            .entries
+            .get(action_id)
+            .cloned()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "action not found"))?;
+
+        entry.state = ActionState::NeedsReconciliation;
+        entry.finished_at_ms = Some(timestamp_ms);
+        entry.termination = Some(reason.to_string());
+        entry.teardown = Some(teardown.to_string());
         self.append_entry(entry)
     }
 
@@ -144,6 +231,32 @@ impl ActionJournal {
 
     pub fn query_action(&self, action_id: &str) -> Option<&JournalEntry> {
         self.entries.get(action_id)
+    }
+
+    /// Every record in the log, in the order it was appended.
+    ///
+    /// The in-memory map keeps only the latest state per action, so this reads
+    /// the file. The append-only history is the durable evidence; a reader that
+    /// wants to see that an action went prepared, started, then interrupted has
+    /// to come here.
+    pub fn read_log<P: AsRef<Path>>(path: P) -> io::Result<Vec<JournalEntry>> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let file = File::open(path)?;
+        let mut out = Vec::new();
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<JournalEntry>(&line) {
+                out.push(entry);
+            }
+        }
+        Ok(out)
     }
 
     /// Evaluates journal entries on crash recovery. If an action was started

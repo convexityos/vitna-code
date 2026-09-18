@@ -3,6 +3,7 @@ use crate::{Tool, ToolContext, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use vitna_runner::CommandRequest;
 
 pub struct RunCommandTool;
 
@@ -65,14 +66,27 @@ impl Tool for RunCommandTool {
 
         let resolved_wd = resolve_workspace_path(&ctx.workspace_root, wd_str)?;
 
-        let output = ctx
-            .runner
-            .run_command(command, &resolved_wd, timeout_ms)
-            .await?;
+        // The runner decides isolation and refuses when it cannot get it. This
+        // tool passes the workspace root because that, not the working
+        // directory, is what the sandbox makes writable.
+        let mut request = CommandRequest::new(
+            command,
+            &resolved_wd,
+            &ctx.workspace_root,
+            timeout_ms,
+        );
+        request.allow_unsandboxed = ctx.allow_unsandboxed;
+        request.allow_network = ctx.allow_network;
+
+        let output = ctx.runner.run_command(request).await?;
 
         let mut formatted_output = format!(
-            "Command executed: {}\nExit code: {}\nDuration: {} ms\n",
-            command, output.exit_code, output.duration_ms
+            "Command executed: {}\nExit code: {}\nDuration: {} ms\nIsolation: {} ({})\n",
+            command,
+            output.exit_code,
+            output.duration_ms,
+            output.sandbox_backend,
+            output.sandbox_enforcement
         );
 
         if !output.stdout.is_empty() {
@@ -91,6 +105,8 @@ impl Tool for RunCommandTool {
             postimage_hash: None,
             diff: None,
             exit_code: Some(output.exit_code),
+            sandbox_backend: Some(output.sandbox_backend),
+            sandbox_enforcement: Some(output.sandbox_enforcement),
         })
     }
 }

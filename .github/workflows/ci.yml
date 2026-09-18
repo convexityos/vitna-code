@@ -41,14 +41,17 @@ jobs:
             arch: x86_64
             runner: ubuntu-latest
             triple: x86_64-unknown-linux-gnu
+            sandbox_backend: bubblewrap
           - os: linux
             arch: aarch64
             runner: ubuntu-24.04-arm
             triple: aarch64-unknown-linux-gnu
+            sandbox_backend: bubblewrap
           - os: macos
             arch: aarch64
             runner: macos-latest
             triple: aarch64-apple-darwin
+            sandbox_backend: seatbelt
           - os: windows
             arch: x86_64
             runner: windows-latest
@@ -71,6 +74,18 @@ jobs:
         with:
           key: ${{ matrix.target.triple }}
 
+      - name: Install Linux sandbox backend
+        if: matrix.target.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 denies unprivileged user namespaces by default, which
+          # is exactly what bwrap needs. Without this it installs cleanly and
+          # then fails at "setting up uid map".
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --ro-bind / / --unshare-pid --unshare-net --die-with-parent -- /bin/true
+          echo "bwrap is usable on this runner"
+
       - name: Cargo Check
         run: cargo check --workspace --all-targets
 
@@ -78,4 +93,10 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Cargo Test
+        env:
+          # Where a platform is supposed to have a sandbox, a test that cannot
+          # find one fails instead of skipping. A suite that quietly skips its
+          # own subject is how "Sandbox Enforcement: Verified" survived with
+          # nothing calling the sandbox at all.
+          VITNA_REQUIRE_SANDBOX_BACKEND: ${{ matrix.target.sandbox_backend }}
         run: cargo test --workspace --no-fail-fast

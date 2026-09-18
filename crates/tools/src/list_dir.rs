@@ -98,6 +98,7 @@ impl Tool for ListDirTool {
             postimage_hash: None,
             diff: None,
             exit_code: None,
+            ..Default::default()
         })
     }
 }

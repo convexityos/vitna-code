@@ -138,6 +138,7 @@ impl Tool for WriteFileTool {
             postimage_hash: Some(postimage_hash),
             diff: Some(diff),
             exit_code: None,
+            ..Default::default()
         })
     }
 }

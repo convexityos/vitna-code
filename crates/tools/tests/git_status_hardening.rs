@@ -66,12 +66,10 @@ async fn git_status_tool_does_not_run_repository_controlled_commands() {
     fs::write(repo.join("file.txt"), "hello\n").expect("restat");
 
     let journal = root.join("fake.journal");
-    let ctx = ToolContext {
-        workspace_root: repo.clone(),
-        runner: Arc::new(Mutex::new(
-            FakeRunner::new(&journal).expect("fake runner"),
-        )),
-    };
+    let ctx = ToolContext::new(
+        repo.clone(),
+        Arc::new(Mutex::new(FakeRunner::new(&journal).expect("fake runner"))),
+    );
 
     let result = GitStatusTool
         .execute(serde_json::json!({}), &ctx)

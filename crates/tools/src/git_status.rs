@@ -91,6 +91,7 @@ impl Tool for GitStatusTool {
             postimage_hash: None,
             diff: None,
             exit_code: None,
+            ..Default::default()
         })
     }
 }
