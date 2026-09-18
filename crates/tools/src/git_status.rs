@@ -2,7 +2,7 @@ use crate::{Tool, ToolContext, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::process::Command;
+use vitna_git_workspaces::host_git;
 
 pub struct GitStatusTool;
 
@@ -37,10 +37,15 @@ impl Tool for GitStatusTool {
     }
 
     async fn execute(&self, _args: serde_json::Value, ctx: &ToolContext) -> Result<ToolResult, String> {
-        let branch_out = Command::new("git")
+        // The workspace is untrusted input and git executes commands its own
+        // configuration names, so both invocations below are built by
+        // `host_git::command`. This tool runs on the host, outside any sandbox,
+        // and asks for no approval, which is exactly why it must not be able to
+        // run anything the repository chose. See `host_git` for the three keys
+        // that reach a shell from `git status`.
+        let branch_out = host_git::command(&ctx.workspace_root)?
             .arg("branch")
             .arg("--show-current")
-            .current_dir(&ctx.workspace_root)
             .output();
 
         let branch = match branch_out {
@@ -51,10 +56,15 @@ impl Tool for GitStatusTool {
             _ => "(not a git repository or git unavailable)".to_string(),
         };
 
-        let status_out = Command::new("git")
+        // `--ignore-submodules=dirty` keeps status from scanning submodule
+        // working trees. Filter drivers are neutralized per repository, and a
+        // submodule carries its own config in `.git/modules/<name>/config`,
+        // which this enumeration does not reach. Submodule commit changes are
+        // still reported; only their working-tree contents are skipped.
+        let status_out = host_git::command(&ctx.workspace_root)?
             .arg("status")
             .arg("--porcelain=v1")
-            .current_dir(&ctx.workspace_root)
+            .arg("--ignore-submodules=dirty")
             .output();
 
         let status_text = match status_out {
