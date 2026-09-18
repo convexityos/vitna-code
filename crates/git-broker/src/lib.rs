@@ -2,6 +2,7 @@
 
 pub mod broker;
 pub mod merge_queue;
+mod tree;
 
 pub use broker::{ChangeSet, FileChange, GitBroker, MergeConflict, MergeResult, NULL_HASH};
 pub use merge_queue::{MergeQueue, MergeQueueItem, MergeQueueResult};

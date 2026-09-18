@@ -1,4 +1,53 @@
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
+
+/// Component equality, case insensitive only where the filesystem is.
+/// Lowercasing everywhere would make `/WORKSPACE` and `/workspace` the same
+/// directory on Linux, where they are not, which would itself be an escape.
+#[cfg(windows)]
+fn same_component(a: &OsStr, b: &OsStr) -> bool {
+    a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+}
+
+#[cfg(not(windows))]
+fn same_component(a: &OsStr, b: &OsStr) -> bool {
+    a == b
+}
+
+/// Collapses `.` and `..` lexically. Returns None when `..` walks above the root.
+fn normalize(path: &Path) -> Option<PathBuf> {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(p) => out.push(Component::Prefix(p)),
+            Component::RootDir => out.push(Component::RootDir),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            Component::Normal(n) => out.push(n),
+        }
+    }
+    Some(out)
+}
+
+/// True when `path` is `root` or lies beneath it. Containment is compared
+/// COMPONENT BY COMPONENT: a string prefix test accepts /workspace_other as
+/// living inside /workspace, which is how a sibling directory used to pass
+/// this guard. Both paths must already be normalized or canonical; nothing
+/// here touches the filesystem.
+pub(crate) fn is_within(path: &Path, root: &Path) -> bool {
+    let root_parts: Vec<&OsStr> = root.components().map(|c| c.as_os_str()).collect();
+    let path_parts: Vec<&OsStr> = path.components().map(|c| c.as_os_str()).collect();
+
+    path_parts.len() >= root_parts.len()
+        && root_parts
+            .iter()
+            .zip(path_parts.iter())
+            .all(|(r, p)| same_component(r, p))
+}
 
 /// Resolves a requested relative or absolute path against workspace_root,
 /// strictly enforcing that the resolved path does not escape the workspace boundary.
@@ -12,28 +61,19 @@ pub fn resolve_workspace_path<P: AsRef<Path>>(workspace_root: P, requested_path:
         root.join(requested)
     };
 
-    let mut normalized = PathBuf::new();
-    for component in combined.components() {
-        match component {
-            Component::Prefix(p) => normalized.push(Component::Prefix(p)),
-            Component::RootDir => normalized.push(Component::RootDir),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    return Err(format!(
-                        "Path traversal attempt detected: '{}' escapes workspace root",
-                        requested_path
-                    ));
-                }
-            }
-            Component::Normal(n) => normalized.push(n),
-        }
-    }
+    let normalized = normalize(&combined).ok_or_else(|| {
+        format!(
+            "Path traversal attempt detected: '{}' escapes workspace root",
+            requested_path
+        )
+    })?;
+    let root_normalized = normalize(root).ok_or_else(|| {
+        format!("Workspace root is not a usable path: '{}'", root.display())
+    })?;
 
-    let root_str = root.to_string_lossy().to_lowercase().replace('\\', "/");
-    let norm_str = normalized.to_string_lossy().to_lowercase().replace('\\', "/");
-
-    if !norm_str.starts_with(&root_str) {
+    // This check is lexical. It cannot see links; `workspace_fs` repeats it
+    // on the path the operating system actually resolves.
+    if !is_within(&normalized, &root_normalized) {
         return Err(format!(
             "Access denied: path '{}' escapes workspace root '{}'",
             requested_path,

@@ -11,3 +11,8 @@ tracing.workspace = true
 sha2.workspace = true
 hex.workspace = true
 async-trait.workspace = true
+
+# Materialization opens source files without following a final link or
+# blocking on a FIFO swapped in mid-copy. std exposes neither flag.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

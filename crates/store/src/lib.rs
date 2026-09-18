@@ -327,7 +327,7 @@ mod tests {
         store.append_event(&e1).expect("append e1 failed");
 
         // Malicious or corrupted event pointing to wrong prev_hash
-        let mut e2 = EventRecord::new(
+        let e2 = EventRecord::new(
             "evt-2",
             "run-002",
             1,

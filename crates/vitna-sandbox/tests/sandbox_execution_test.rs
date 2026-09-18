@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use vitna_sandbox::{SandboxConfig, SandboxExecutor, SandboxGuarantee};
 
 #[tokio::test]
@@ -6,11 +5,8 @@ async fn test_sandbox_executor_basic_execution() {
     let workspace = std::env::temp_dir();
     let config = SandboxConfig::new(&workspace, SandboxGuarantee::Guarded);
 
-    let cmd = if cfg!(windows) {
-        "echo vitna_sandbox_test"
-    } else {
-        "echo vitna_sandbox_test"
-    };
+    // echo is spelled the same by cmd.exe and sh, so this needs no platform branch.
+    let cmd = "echo vitna_sandbox_test";
 
     let res = SandboxExecutor::execute(&config, cmd, &workspace, 5000)
         .await

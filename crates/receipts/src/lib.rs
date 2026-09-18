@@ -199,6 +199,7 @@ mod tests {
                 statement_digest: "stmt-digest-1".to_string(),
                 signature: "sig-1".to_string(),
             }],
+            child_receipt_roots: Vec::new(),
             device_signature: String::new(),
         };
 
