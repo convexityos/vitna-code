@@ -77,22 +77,18 @@ pub fn sans(size: f32) -> FontId {
 /// long as the fonts are not sold on their own and the licence travels with
 /// them, which is why each file has its OFL.txt beside it.
 const INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Variable.ttf");
-const SPACE_GROTESK: &[u8] = include_bytes!("../assets/fonts/SpaceGrotesk-Variable.ttf");
-const JETBRAINS_MONO: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Variable.ttf");
 
 /// Weights. The variable masters default to Regular, which on a dark ground
 /// reads thin; these are the cuts the window actually uses.
 const WGHT_UI: f32 = 440.0;
 const WGHT_DISPLAY: f32 = 540.0;
 const WGHT_PROSE: f32 = 370.0;
-const WGHT_MONO: f32 = 440.0;
 
-/// Inter is every word in the window except the header: labels, controls,
-/// chips, meta lines, sentences and the composer. The owner's rule is that a
-/// font change is universal except for the header, so the UI face and the
-/// prose face change together. Space Grotesk keeps only the display cut (the
-/// "Let's build" headline, the lockup's "Code", page titles), where its
-/// character is the point rather than a distraction.
+/// Inter is all of the text in the window, on the owner's instruction
+/// (2026-09-17): labels, controls, chips, meta lines, sentences, the composer,
+/// the headline and the code-like text (paths, hashes, the receipt JSON). The
+/// roles survive as WEIGHTS on Inter's `wght` axis rather than as separate
+/// faces: 540 for the display cut, 440 for the interface, 370 for sentences.
 pub fn display(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("display".into()))
 }
@@ -118,9 +114,7 @@ pub fn install(ctx: &egui::Context) {
     // static bytes, so the binary carries the face once.
     fonts.font_data.insert("Inter".to_owned(), face(INTER, WGHT_UI));
     fonts.font_data.insert("InterProse".to_owned(), face(INTER, WGHT_PROSE));
-    fonts.font_data.insert("SpaceGrotesk".to_owned(), face(SPACE_GROTESK, WGHT_UI));
-    fonts.font_data.insert("SpaceGroteskDisplay".to_owned(), face(SPACE_GROTESK, WGHT_DISPLAY));
-    fonts.font_data.insert("JetBrainsMono".to_owned(), face(JETBRAINS_MONO, WGHT_MONO));
+    fonts.font_data.insert("InterDisplay".to_owned(), face(INTER, WGHT_DISPLAY));
 
     // Each family leads with the design's face and keeps egui's defaults
     // behind it, so a glyph the face lacks (emoji, a stray symbol) still draws
@@ -138,19 +132,21 @@ pub fn install(ctx: &egui::Context) {
     };
     fonts
         .families
-        .insert(FontFamily::Proportional, chain(&["Inter", "SpaceGrotesk"]));
-    fonts.families.insert(
-        FontFamily::Name("display".into()),
-        chain(&["SpaceGroteskDisplay", "SpaceGrotesk"]),
-    );
+        .insert(FontFamily::Proportional, chain(&["Inter"]));
+    fonts
+        .families
+        .insert(FontFamily::Name("display".into()), chain(&["InterDisplay", "Inter"]));
     fonts
         .families
         .insert(FontFamily::Name("prose".into()), chain(&["InterProse", "Inter"]));
+    // Code-like text too. Inter is proportional, so hashes and the receipt
+    // JSON lose column alignment; egui's own monospace face stays behind it
+    // only as a fallback for glyphs Inter lacks.
     fonts
         .families
         .entry(FontFamily::Monospace)
         .or_default()
-        .insert(0, "JetBrainsMono".to_owned());
+        .insert(0, "Inter".to_owned());
     ctx.set_fonts(fonts);
 
     ctx.all_styles_mut(|style| {

@@ -23,35 +23,34 @@ To update, copy the files again from vitna-web rather than editing these.
 
 ## fonts/
 
-Three variable TrueType faces, each the canonical OFL master from Google's
-`fonts` repository (`github.com/google/fonts`, `ofl/`), fetched 2026-09-17,
-each with its `OFL-*.txt` beside it. The SIL Open Font License permits bundling
-and redistribution with software, provided the fonts are not sold on their own
-and the licence travels with them.
+One face, Inter, as the variable TrueType master from Google's `fonts`
+repository (`github.com/google/fonts`, `ofl/inter/`), fetched 2026-09-17, with
+`OFL-Inter.txt` beside it. The SIL Open Font License permits bundling and
+redistribution with software, provided the font is not sold on its own and the
+licence travels with it.
 
 | file | sha256 |
 |---|---|
 | `Inter-Variable.ttf` | `29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031` |
-| `SpaceGrotesk-Variable.ttf` | `acad6de1fc93436f5c0f1f4137751ef04f1aea3063e7036535970ffcfbd79f72` |
-| `JetBrainsMono-Variable.ttf` | `48715a42ec242c21e9f02692891e147d022299a52e48d5e413e1a942193ffeda` |
 
-Roles, as `theme.rs` registers them. Inter is every word in the window except
-the header: labels, controls, chips, meta lines, sentences and the composer, at
-440 for the interface and 370 for sentences, both set on its `wght` axis (its
-`opsz` axis is left at the default 14, which suits text at these sizes). Space
-Grotesk keeps only the display cut, at 540, for the "Let's build" headline, the
-lockup's "Code" and page titles. JetBrains Mono, at 440, is for paths, hashes,
-counts and the receipt JSON, a role no proportional face can fill. Each family
-keeps egui's default faces behind it so a glyph these lack still draws.
+Inter is all of the text in the window, on the owner's instruction: labels,
+controls, chips, meta lines, sentences, the composer, the headline, and the
+code-like text (paths, hashes, the receipt JSON). The roles survive as weights
+on its `wght` axis, set when `theme.rs` registers it: 540 for the display cut,
+440 for the interface, 370 for sentences. Its `opsz` axis stays at the default
+14. The one real cost is that code-like text is now proportional, so hashes and
+JSON lose column alignment; egui's own monospace face stays behind Inter only
+as a fallback for glyphs Inter lacks.
 
-How it got here, so nobody re-litigates it from the git log: the owner asked on
-2026-09-17 for a face in the register of Google Sans, which is proprietary and
-cannot be bundled. Plus Jakarta Sans went in first as the UI face, a Lato trial
-followed and was not kept, and Inter was chosen. The owner's rule is that a
-font change is universal except for the header, so Inter replaced both the UI
-face and the prose face; Manrope (one of vitna-web's own `tokens.css` faces,
-previously the prose face) and Plus Jakarta Sans are therefore no longer
-bundled, since the window should carry only what it draws.
+How it got here, so nobody re-litigates it from the git log. On 2026-09-17 the
+owner asked for a face in the register of Google Sans, which is proprietary and
+cannot be bundled. Plus Jakarta Sans went in first as the UI face; a Lato trial
+followed and was not kept; Inter was chosen, first for everything except the
+header, then for all text. Manrope, Space Grotesk and JetBrains Mono (the three
+faces vitna-web's `tokens.css` names, which this directory previously carried)
+and Plus Jakarta Sans are therefore no longer bundled, since the window should
+carry only what it draws. To bring any of them back, copy the master from
+`google/fonts` again and record its sha256 here.
 
 ## logos/
 

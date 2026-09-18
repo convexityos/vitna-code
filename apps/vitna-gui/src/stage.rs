@@ -36,7 +36,7 @@ impl App {
         ui2.vertical_centered(|ui| {
             ui.add(egui::Image::new(crate::brand::mark()).fit_to_exact_size(Vec2::splat(40.0)));
             ui.add_space(10.0);
-            ui.label(RichText::new("Let's build").font(theme::display(28.0)).color(theme::INK));
+            ui.label(RichText::new("Let’s build").font(theme::display(28.0)).color(theme::INK));
         });
 
         ui2.add_space(22.0);
