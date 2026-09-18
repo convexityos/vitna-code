@@ -135,14 +135,9 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
     println!("[OK] OS: {} ({})", std::env::consts::OS, std::env::consts::ARCH);
 
     // 2. Git
-    let git_check = std::process::Command::new("git").arg("--version").output();
-    match git_check {
-        Ok(out) if out.status.success() => {
-            println!("[OK] Git: {}", String::from_utf8_lossy(&out.stdout).trim());
-        }
-        _ => {
-            println!("[WARN] Git executable not found on PATH.");
-        }
+    match vitna_git_workspaces::host_git::version() {
+        Some(version) => println!("[OK] Git: {}", version),
+        None => println!("[WARN] Git executable not found on PATH."),
     }
 
     // 3. SQLite WAL support
