@@ -166,7 +166,7 @@ impl OrchestrationEngine {
         // A run that stopped because it ran out of rounds is not a completed
         // one, and the receipt has to say so before it is signed.
         turn.hit_round_limit = true;
-        self.completion_state = "stopped_at_round_limit".to_string();
+        self.completion_state = vitna_receipts::STOPPED_AT_ROUND_LIMIT.to_string();
         turn.prompt_tokens = saw_usage.then_some(prompt_tokens.min(u32::MAX as u64) as u32);
         turn.completion_tokens = saw_usage.then_some(completion_tokens.min(u32::MAX as u64) as u32);
         Ok(turn)

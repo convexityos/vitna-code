@@ -30,6 +30,11 @@ pub(crate) fn completion(state: &str) -> (&'static str, String, Color32) {
         "failed" => ("Failed", "Failed".into(), theme::RUST),
         "cancelled" => ("Cancelled", "Cancelled".into(), theme::FAINT),
         "needs_reconciliation" => ("Reconcile", "Needs reconciliation".into(), theme::RUST),
+        "stopped_at_round_limit" => (
+            "Round limit",
+            "Stopped at the round limit, before the model concluded".into(),
+            theme::RUST,
+        ),
         other => ("Unknown", format!("Unknown completion state: {other}"), theme::RUST),
     }
 }

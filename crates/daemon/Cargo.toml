@@ -41,6 +41,8 @@ windows-sys = { workspace = true, features = [
 [dev-dependencies]
 # The scripted provider the turn tests drive the agent loop with.
 async-trait.workspace = true
+# A round-capped receipt is checked the way anyone holding it would check it.
+vitna-receipt-verify.workspace = true
 
 [[bin]]
 name = "vitna-coded"

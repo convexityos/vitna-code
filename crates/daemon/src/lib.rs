@@ -293,6 +293,56 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A model that asks for a tool on every round until the loop's cap. The
+    /// receipt says the run stopped there, and it passes every check its
+    /// holder can run, the signature included. It read "Check failed" while
+    /// the schema and the verifier did not know the state the loop writes.
+    #[tokio::test]
+    async fn a_run_stopped_at_the_round_limit_passes_its_own_checks() {
+        let dir = std::env::temp_dir().join(format!("vitna_daemon_cap_{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let daemon = daemon_in(&dir);
+        let session = daemon.create_session(&dir).expect("create session");
+
+        let look = || {
+            reply(
+                "",
+                vec![ProviderToolCall {
+                    id: "call-1".to_string(),
+                    name: "list_dir".to_string(),
+                    arguments: serde_json::json!({ "path": "." }),
+                }],
+            )
+        };
+        let provider = ScriptedProvider::new("scripted", (0..server::MAX_ROUNDS).map(|_| look()).collect());
+        let result = daemon
+            .run_turn_with(
+                &provider,
+                &SubmitTurnRequest {
+                    session_id: session.session_id.clone(),
+                    prompt: "keep looking".to_string(),
+                    provider: None,
+                    model_sku: Some("scripted-model-1".to_string()),
+                    auto_approve: true,
+                    verification_command: None,
+                },
+            )
+            .await
+            .expect("the turn runs to its cap");
+
+        assert_eq!(result.completion_state, vitna_receipts::STOPPED_AT_ROUND_LIMIT);
+        assert_eq!(provider.seen.lock().unwrap().len(), server::MAX_ROUNDS, "every round was asked");
+
+        let receipt: vitna_receipts::VitnaRunReceiptV1 =
+            serde_json::from_str(&fs::read_to_string(&result.receipt_path).expect("the receipt")).expect("parses");
+        let report = vitna_receipt_verify::ReceiptVerifier::verify_receipt(&receipt, Some(&daemon.device_public_key()))
+            .expect("a report");
+        assert!(report.is_valid, "a capped run passes its checks: {:?}", report.errors);
+        assert!(report.signature_verified);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// A daemon on an event log that outlives it, as `open_default` makes one.
     fn daemon_on(db: &std::path::Path, dir: &std::path::Path) -> DaemonServer {
         let store = EventStore::open(db).expect("open store");

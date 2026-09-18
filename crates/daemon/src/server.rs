@@ -21,7 +21,7 @@ pub use vitna_protocol::api::SessionInfo;
 /// concluding would otherwise run until the credentials do. Twenty-four is
 /// enough for ordinary multi-file work and is reported when it is reached, so
 /// a cut-off run is never presented as a finished one.
-const MAX_ROUNDS: usize = 24;
+pub(crate) const MAX_ROUNDS: usize = 24;
 
 /// The event a turn opens with, and the only record of its prompt. One
 /// constant for the writer and the reader, since a reader looking for a type

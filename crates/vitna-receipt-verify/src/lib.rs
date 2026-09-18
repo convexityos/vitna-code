@@ -66,16 +66,8 @@ impl ReceiptVerifier {
             errors.push(format!("Unknown isolation label: {}", receipt.isolation_label));
         }
 
-        // 3. Completion state check
-        let valid_states = [
-            "completed_with_evidence",
-            "completed_with_unknowns",
-            "blocked",
-            "failed",
-            "cancelled",
-            "needs_reconciliation",
-        ];
-        if !valid_states.contains(&receipt.completion_state.as_str()) {
+        // 3. Completion state check, against the one list the writer uses too
+        if !vitna_receipts::COMPLETION_STATES.contains(&receipt.completion_state.as_str()) {
             errors.push(format!("Unknown completion state: {}", receipt.completion_state));
         }
 
@@ -120,6 +112,22 @@ impl ReceiptVerifier {
 mod tests {
     use super::*;
     use vitna_receipts::*;
+
+    /// The schema and the verifier accept the same completion states, in the
+    /// same order, read out of the schema file rather than restated here.
+    #[test]
+    fn the_schema_and_the_verifier_accept_the_same_completion_states() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/vitna-run-receipt-v1.json");
+        let schema: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).expect("the schema file")).expect("the schema parses");
+        let listed: Vec<&str> = schema["properties"]["completion_state"]["enum"]
+            .as_array()
+            .expect("an enum")
+            .iter()
+            .map(|v| v.as_str().expect("a string"))
+            .collect();
+        assert_eq!(listed, COMPLETION_STATES);
+    }
 
     #[test]
     fn test_verifier_report() {
