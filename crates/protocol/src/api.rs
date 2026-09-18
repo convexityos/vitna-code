@@ -55,6 +55,11 @@ pub struct HealthResponse {
     pub endpoint: String,
     pub providers_ready: Vec<String>,
     pub session_count: usize,
+    /// The public half of the key this daemon signs receipts with, as hex. A
+    /// client checks a receipt's `device_signature` against it. `None` from a
+    /// daemon too old to say, which is not the same as "unsigned".
+    #[serde(default)]
+    pub device_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

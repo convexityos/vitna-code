@@ -116,6 +116,7 @@ pub async fn dispatch(daemon: &DaemonServer, request: &ProtocolEnvelope) -> Prot
                     endpoint,
                     providers_ready: crate::providers_ready(),
                     session_count: daemon.list_sessions().len(),
+                    device_public_key: Some(daemon.device_public_key()),
                 },
             )
         }
@@ -336,6 +337,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let endpoint = test_endpoint("roundtrip");
         let daemon = daemon_in(&dir);
+        let signs_with = daemon.device_public_key();
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<String>();
         let serving = tokio::spawn({
@@ -387,6 +389,11 @@ mod tests {
 
         assert_eq!(health.pid, std::process::id());
         assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            health.device_public_key.as_deref(),
+            Some(signs_with.as_str()),
+            "Health publishes the key receipts are signed with"
+        );
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, session.session_id);
         assert_eq!(session.status, "active");

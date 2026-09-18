@@ -1,6 +1,7 @@
 //! Local daemon engine managing session lifecycle, persistence, and IPC dispatch.
 
 pub mod ipc;
+pub mod key;
 pub mod server;
 
 pub use server::{DaemonServer, SessionInfo};
@@ -187,6 +188,21 @@ mod tests {
         let receipt_on_disk =
             fs::read_to_string(&result.receipt_path).expect("the receipt is where it said");
         assert!(receipt_on_disk.contains("scripted"));
+
+        // Signed with the key the daemon publishes, so anyone holding that key
+        // can check it, which nobody could while the key was remade on every
+        // start and kept nowhere.
+        let receipt: vitna_receipts::VitnaRunReceiptV1 =
+            serde_json::from_str(&receipt_on_disk).expect("the receipt parses");
+        let published: [u8; 32] = hex::decode(daemon.device_public_key())
+            .expect("hex")
+            .try_into()
+            .expect("32 bytes");
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&published).expect("a public key");
+        assert!(
+            receipt.verify_signature(&key).expect("checkable"),
+            "the receipt verifies with the published key"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

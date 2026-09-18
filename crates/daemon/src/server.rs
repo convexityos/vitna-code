@@ -8,7 +8,6 @@ use vitna_protocol::api::{
     SubmitTurnRequest, TurnInfo, TurnListResponse, TurnResultResponse, UnreadableTurn,
 };
 use vitna_providers::{AnthropicProvider, CredentialResolver, OpenAIProvider, Provider};
-use vitna_receipts::generate_signing_key;
 use vitna_runner::{ProcessRunner, Runner};
 use vitna_store::EventStore;
 
@@ -76,7 +75,9 @@ impl DaemonServer {
         }
     }
 
-    /// Initializes a daemon server with a persistent SQLite WAL event store and default process runner.
+    /// Initializes a daemon server with a persistent SQLite WAL event store,
+    /// the default process runner, and the signing key kept beside the store
+    /// (see [`crate::key`]), made on the first start and read on every other.
     pub fn open_default<P: AsRef<Path>>(db_path: P) -> Result<Self, String> {
         let parent = db_path.as_ref().parent();
         if let Some(p) = parent {
@@ -93,8 +94,15 @@ impl DaemonServer {
         let runner = ProcessRunner::open_or_create(journal_path)
             .map_err(|e| format!("Failed to initialize process runner journal: {}", e))?;
 
-        let signing_key = generate_signing_key();
+        let signing_key = crate::key::load_or_create(parent.unwrap_or_else(|| Path::new(".")))?;
         Ok(Self::new(store, Arc::new(runner), signing_key))
+    }
+
+    /// The public half of the key receipts are signed with, as hex: what
+    /// `Health` publishes so that a receipt can be checked by someone other
+    /// than the daemon that wrote it.
+    pub fn device_public_key(&self) -> String {
+        hex::encode(self.signing_key.verifying_key().to_bytes())
     }
 
     /// Creates a new workspace-bound session.
