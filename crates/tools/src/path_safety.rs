@@ -33,6 +33,22 @@ fn normalize(path: &Path) -> Option<PathBuf> {
     Some(out)
 }
 
+/// True when `path` is `root` or lies beneath it. Containment is compared
+/// COMPONENT BY COMPONENT: a string prefix test accepts /workspace_other as
+/// living inside /workspace, which is how a sibling directory used to pass
+/// this guard. Both paths must already be normalized or canonical; nothing
+/// here touches the filesystem.
+pub(crate) fn is_within(path: &Path, root: &Path) -> bool {
+    let root_parts: Vec<&OsStr> = root.components().map(|c| c.as_os_str()).collect();
+    let path_parts: Vec<&OsStr> = path.components().map(|c| c.as_os_str()).collect();
+
+    path_parts.len() >= root_parts.len()
+        && root_parts
+            .iter()
+            .zip(path_parts.iter())
+            .all(|(r, p)| same_component(r, p))
+}
+
 /// Resolves a requested relative or absolute path against workspace_root,
 /// strictly enforcing that the resolved path does not escape the workspace boundary.
 pub fn resolve_workspace_path<P: AsRef<Path>>(workspace_root: P, requested_path: &str) -> Result<PathBuf, String> {
@@ -55,19 +71,9 @@ pub fn resolve_workspace_path<P: AsRef<Path>>(workspace_root: P, requested_path:
         format!("Workspace root is not a usable path: '{}'", root.display())
     })?;
 
-    // Containment is compared COMPONENT BY COMPONENT. A string prefix test
-    // accepts /workspace_other as living inside /workspace, which is how a
-    // sibling directory used to pass this guard.
-    let root_parts: Vec<&OsStr> = root_normalized.components().map(|c| c.as_os_str()).collect();
-    let norm_parts: Vec<&OsStr> = normalized.components().map(|c| c.as_os_str()).collect();
-
-    let contained = norm_parts.len() >= root_parts.len()
-        && root_parts
-            .iter()
-            .zip(norm_parts.iter())
-            .all(|(r, n)| same_component(r, n));
-
-    if !contained {
+    // This check is lexical. It cannot see links; `workspace_fs` repeats it
+    // on the path the operating system actually resolves.
+    if !is_within(&normalized, &root_normalized) {
         return Err(format!(
             "Access denied: path '{}' escapes workspace root '{}'",
             requested_path,
