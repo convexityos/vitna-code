@@ -1,4 +1,4 @@
-use crate::path_safety::resolve_workspace_path;
+use crate::workspace_fs::{Resolved, Workspace};
 use crate::{Tool, ToolContext, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
@@ -43,11 +43,13 @@ impl Tool for ListDirTool {
             .and_then(|p| p.as_str())
             .unwrap_or(".");
 
-        let resolved_path = resolve_workspace_path(&ctx.workspace_root, path_str)?;
-
-        if !resolved_path.exists() {
-            return Err(format!("Directory does not exist: {}", path_str));
-        }
+        // Resolved on the real filesystem, so a directory link cannot list
+        // what lies outside the workspace.
+        let workspace = Workspace::new(&ctx.workspace_root)?;
+        let resolved_path = match workspace.resolve(path_str)? {
+            Resolved::Existing(real_path) => real_path,
+            Resolved::Missing(_) => return Err(format!("Directory does not exist: {}", path_str)),
+        };
 
         if !resolved_path.is_dir() {
             return Err(format!("Path is not a directory: {}", path_str));
