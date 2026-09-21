@@ -109,15 +109,14 @@ async fn start(tag: &str) -> Fixture {
     let session = daemon.create_session(&workspace).expect("create session");
     let run_id = format!("run-{}", unique("t"));
 
-    // `latest_run_id` is set by run_task, which needs a provider. A
-    // subscription only needs the session to name a run, so the test names one
-    // directly rather than running a turn to get one.
-    {
-        let mut sessions = daemon.sessions.lock().expect("lock sessions");
-        if let Some(s) = sessions.get_mut(&session.session_id) {
-            s.latest_run_id = Some(run_id.clone());
-        }
-    }
+    // These tests append events by hand, so they register the run by hand, and
+    // through the SAME call `run_task` makes. An earlier version set
+    // `latest_run_id` directly, in an order production never used, and that
+    // is what kept a stream which forwarded nothing live from failing any
+    // test. `turns_in_a_session.rs` drives the real `run_task` instead.
+    daemon
+        .register_run(&session.session_id, &run_id)
+        .expect("register the fixture's run");
 
     let endpoint = endpoint_for(tag);
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();

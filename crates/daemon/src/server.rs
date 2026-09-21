@@ -15,7 +15,18 @@ pub struct SessionInfo {
     pub workspace_root: PathBuf,
     pub created_at_ms: u64,
     pub status: String,
+    /// The run most recently STARTED in this session. Kept equal to the last
+    /// entry of `runs`; see [`DaemonServer::register_run`].
     pub latest_run_id: Option<String>,
+    /// Every run in this session, in the order they started.
+    ///
+    /// The event store indexes events by run, and the table that would map a
+    /// session to its runs is never written, so a subscriber following a
+    /// session reads its runs from here. Knowing only the latest run was not
+    /// enough: a late subscriber was replayed that run alone, and a session's
+    /// earlier runs were on disk and unreachable.
+    #[serde(default)]
+    pub runs: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -77,6 +88,7 @@ impl DaemonServer {
             created_at_ms: now_ms,
             status: "active".to_string(),
             latest_run_id: None,
+            runs: Vec::new(),
         };
 
         let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
@@ -89,6 +101,48 @@ impl DaemonServer {
     pub fn get_session(&self, session_id: &str) -> Option<SessionInfo> {
         let sessions = self.sessions.lock().ok()?;
         sessions.get(session_id).cloned()
+    }
+
+    /// Records that `run_id` belongs to `session_id`, as the session's latest.
+    ///
+    /// Called when a run STARTS, before it records anything. A subscriber
+    /// decides whether a live event belongs to the session it is following by
+    /// asking this list, so a run registered only once it had finished, which
+    /// is how this used to work, streamed nothing live while it ran: its
+    /// events arrived before the session knew the run was its own.
+    ///
+    /// The one way to register a run, for the daemon and for tests alike. A
+    /// test fixture that named a run by setting a field directly, in an order
+    /// production never used, is what kept that defect invisible.
+    pub fn register_run(&self, session_id: &str, run_id: &str) -> Result<(), String> {
+        let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        session.runs.push(run_id.to_string());
+        session.latest_run_id = Some(run_id.to_string());
+        Ok(())
+    }
+
+    /// The sequence the session's next event should carry.
+    ///
+    /// One past the highest sequence any of its runs actually recorded, read
+    /// from the store, or `FIRST_EVENT_SEQUENCE` for a session with nothing
+    /// recorded yet. Read across every run rather than only the latest, so a
+    /// run that started and recorded nothing cannot reset the count.
+    pub fn next_session_sequence(&self, session_id: &str) -> Result<u64, String> {
+        let runs = self
+            .get_session(session_id)
+            .ok_or_else(|| format!("Session not found: {session_id}"))?
+            .runs;
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        let mut highest: Option<u64> = None;
+        for run in &runs {
+            if let Some(last) = store.last_sequence(run).map_err(|e| e.to_string())? {
+                highest = Some(highest.map_or(last, |h| h.max(last)));
+            }
+        }
+        Ok(highest.map_or(vitna_protocol::FIRST_EVENT_SEQUENCE, |h| h + 1))
     }
 
     /// Lists all known active sessions.
@@ -137,12 +191,21 @@ impl DaemonServer {
             allow_unsandboxed,
         };
 
+        // In this order, and both before anything is recorded. The number is
+        // read from the session's EXISTING runs, so it has to come first; then
+        // the run joins the session, so a subscriber following the session
+        // recognises this run's events as they arrive rather than after the
+        // run is over.
+        let next_sequence = self.next_session_sequence(session_id)?;
+        self.register_run(session_id, &run_id)?;
+
         let mut engine = OrchestrationEngine::new(
             config,
             self.store.clone(),
             self.runner.clone(),
             (*self.signing_key).clone(),
-        );
+        )
+        .continuing_at(next_sequence);
 
         // Record initial user task prompt in event store
         engine.record_event(
@@ -169,15 +232,9 @@ impl DaemonServer {
             }).await?;
         }
 
-        // Step 3: Finalize run and generate cryptographic receipt
+        // Step 3: Finalize run and generate cryptographic receipt. The run was
+        // registered with its session when it started, not here.
         let receipt = engine.finalize_run().await?;
-
-        // Update session with latest run ID
-        if let Ok(mut sessions) = self.sessions.lock() {
-            if let Some(s) = sessions.get_mut(session_id) {
-                s.latest_run_id = Some(run_id);
-            }
-        }
 
         Ok(receipt)
     }

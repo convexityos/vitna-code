@@ -167,3 +167,73 @@ fn the_desktop_client_still_opens_subscriptions_at_zero() {
          has moved, the two sides no longer agree about where a stream starts."
     );
 }
+
+/// Records `count` events on an engine continuing a session at `next`.
+fn recorded_sequences_continuing_at(next: u64, count: usize) -> Vec<u64> {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "vitna_sequence_continue_{}_{}_{}",
+        std::process::id(),
+        next,
+        count
+    ));
+    fs::create_dir_all(&temp_dir).expect("create test workspace");
+
+    let store = Arc::new(Mutex::new(
+        EventStore::open_in_memory().expect("open store"),
+    ));
+    let runner = Arc::new(Mutex::new(
+        FakeRunner::new(temp_dir.join("runner.journal")).expect("open fake runner"),
+    ));
+    let config = OrchestrationConfig {
+        session_id: "sess-sequence-continue".to_string(),
+        run_id: RUN_ID.to_string(),
+        workspace_root: temp_dir,
+        auto_approve: true,
+        model_sku: "test-sku".to_string(),
+        provider_name: "fake".to_string(),
+        sandbox_guarantee: "guarded".to_string(),
+        verification_command: None,
+        allow_unsandboxed: false,
+    };
+
+    let mut engine =
+        OrchestrationEngine::new(config, store.clone(), runner, generate_signing_key())
+            .continuing_at(next);
+    for i in 0..count {
+        engine
+            .record_event(
+                vitna_protocol::type_url::event::DIAGNOSTIC,
+                &serde_json::json!({ "message": format!("event {i}") }),
+            )
+            .expect("record event");
+    }
+
+    let store = store.lock().expect("lock store");
+    store
+        .get_events(RUN_ID, 0)
+        .expect("read events back")
+        .into_iter()
+        .map(|e| e.sequence)
+        .collect()
+}
+
+/// A session's later run continues its count rather than restarting it,
+/// because the protocol numbers events per session and a restarted count reads
+/// as replays of the run before.
+#[test]
+fn a_continuing_run_numbers_from_where_the_session_stopped() {
+    assert_eq!(recorded_sequences_continuing_at(6, 3), vec![6, 7, 8]);
+}
+
+/// Continuing "at 0" would number an event 0, which a first subscription can
+/// never receive. So a value below `FIRST_EVENT_SEQUENCE` is raised to it.
+#[test]
+fn continuing_below_the_first_sequence_is_raised_to_it() {
+    assert_eq!(
+        recorded_sequences_continuing_at(0, 2),
+        vec![
+            vitna_protocol::FIRST_EVENT_SEQUENCE,
+            vitna_protocol::FIRST_EVENT_SEQUENCE + 1
+        ]
+    );
+}
