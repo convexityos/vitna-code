@@ -23,9 +23,20 @@
 >   `vitna-sandbox` imported it, so `run_command` was never sandboxed at all
 >   while both spawn paths set `VITNA_SANDBOX=1` and receipts recorded
 >   `sandbox_captured` under an `isolation_label` of `guarded`.
-> - Browser verification does not verify a browser. For an `http` or `https`
->   target `browser_verify` fabricates the document, hashes the fabrication as
->   its DOM digest, and matches `expected_text` against what it just made up.
+> - **Browser verification does not verify a browser, and section 2.4
+>   describes a tool that never existed.** It credits `browser_verify` with
+>   inspecting "web application output, localhost dev servers, or local HTML
+>   documents" and computing a "SHA-256 DOM digest". Of those three targets
+>   only the last was ever read, and the digest is of bytes rather than of a
+>   DOM. For an `http` or `https` target the tool fabricated the document,
+>   hashed the fabrication as its DOM digest, and matched `expected_text`
+>   against what it had just made up, so that assertion passed for any URL
+>   including an unreachable one. Since 2026-09-20 (#14) a remote target is
+>   refused with an error naming the missing authority, and what remains is a
+>   digest of the bytes of a workspace file on disk: no renderer runs, and the
+>   report says so. Nothing in this build can verify a live page, since
+>   `net:http_fetch` has no broker and the `egress_call` event is
+>   unimplemented (`docs/AUTHORITY_INVENTORY.md` section 5).
 
 
 - Status: PASSED
