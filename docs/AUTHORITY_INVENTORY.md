@@ -46,7 +46,7 @@ This inventory specifies every effect and access entry point mediated by Vitna C
 - **Action**: `git:create_mirror`, `git:create_agent_clone`, `git:snapshot_dirty`, `git:apply_changeset`.
 - **Resource**: Vitna private mirror directory, disposable agent clone directories, primary repository checkout.
 - **Deciding Authority**: Execution policy; Explicit user approval for final changeset apply to primary checkout.
-- **Enforcement Mechanism**: `vitna-git-broker` executes sanitized Git CLI commands with `-c core.hooksPath=/dev/null` and disabled external filters/aliases. Disposable clones are created without Git alternates or shared metadata.
+- **Enforcement Mechanism**: Every host-side git command is built by `vitna_git_workspaces::host_git::command`, which points `core.hooksPath` at an empty directory this process owns, sets `core.fsmonitor=false`, clears each filter driver declared in `local` or `worktree` scope, and refuses to run at all when a protection cannot be established. `vitna-git-broker` does not itself invoke git. Disposable workspaces are file copies that exclude `.git`, so they carry no git metadata rather than self-contained metadata.
 - **Receipt Statement**: Emits `workspace_snapshot` and `changeset_applied` events recording base commit SHA, dirty snapshot diff digest, and final merge commit SHA.
 - **Failure/Denial Behavior**: If Git operations encounter conflicts or dirty tree collision, the action enters `needs_reconciliation` and stops. The primary checkout is never modified without explicit user approval.
 

@@ -106,19 +106,29 @@ impl AgentWorkspaceManager {
     }
 
     fn determine_base_commit(primary_repo: &Path) -> String {
-        // Try git rev-parse HEAD if git is present
-        let output = std::process::Command::new("git")
-            .arg("rev-parse")
-            .arg("HEAD")
-            .current_dir(primary_repo)
-            .output();
+        // Try git rev-parse HEAD if git is present. The repository is untrusted
+        // input, so this goes through the hardened invocation rather than a bare
+        // `git`; when the protections cannot be established we fall through to
+        // the fingerprint below rather than running git unprotected.
+        match crate::host_git::command(primary_repo) {
+            Ok(mut cmd) => {
+                let output = cmd.arg("rev-parse").arg("HEAD").output();
 
-        if let Ok(out) = output {
-            if out.status.success() {
-                let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if sha.len() == 40 {
-                    return sha;
+                if let Ok(out) = output {
+                    if out.status.success() {
+                        let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if sha.len() == 40 {
+                            return sha;
+                        }
+                    }
                 }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping git base-commit detection for {}: {}",
+                    primary_repo.display(),
+                    e
+                );
             }
         }
 
