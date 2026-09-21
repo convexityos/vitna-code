@@ -1,32 +1,88 @@
 # Vitna Code Implementation Status
 
-- Status: Complete (v1.0.0 General Availability Verified)
-- Date: 2026-09-16
+- Status: Pre-release. The v1.0.0 General Availability certification is withdrawn.
+- Date: 2026-09-16, audited and corrected 2026-09-20
 - Tracking Mode: Evidence-backed milestones (no percentage estimates)
+
+## Audit note, 2026-09-20
+
+This document certified "v1.0.0 General Availability Verified" on 2026-09-16 and
+marked every deliverable across Phases 0A to 5 "Verified".
+
+**The Rust workspace did not compile on that date, anywhere.** All five `Build &
+Test` legs failed at manifest load in 6 to 24 seconds without reaching a line of
+Rust, so none of the 54 tests the tree then held had ever run. It first compiled
+on 2026-09-18 (#4). CI first concluded `success` on 2026-09-20 (#10, run
+35546151349), because until then the Windows ARM64 leg named a runner label that
+does not exist and was cancelled 24 hours later, which made every run in the
+repository's history conclude `cancelled`.
+
+A "Verified" written before the code could build attests that a file exists, not
+that a claim is true. Every row below has been re-checked against what the tree
+and its 142 passing tests now actually assert.
+
+The phase gate reports are dated records of what was believed at the time. They
+have not been rewritten, because how this happened is itself worth keeping. Each
+one that overclaims now opens with a correction naming what it got wrong.
+
+### The standard used here
+
+| Status | Means |
+|---|---|
+| **Verified** | A test in this repository asserts the claim, and it runs in CI. |
+| **Partial** | Some of the claim is asserted and some is not. The row says which. |
+| **Smoke tested** | A happy-path test constructs the thing and exercises it once. None of the specific properties the row describes is asserted. |
+| **Unverified** | No test asserts it. The code may well be correct; nothing here shows it. |
+
+### What the audit found
+
+1. **Phase 5's release evidence was never produced by running anything.** The
+   benchmark report, the signed release manifest and its SHA-256 digests were
+   committed on 2026-09-16 in a tree that could not build. See the Phase 5
+   ledger below.
+2. **The `v1.0.0` tag points at `cb35d7d`, a commit that does not compile.** No
+   GitHub release exists, and the five archives the manifest hashes have never
+   been built.
+3. **Several surfaces marked Verified have no tests at all**: `apps/vitna-cli`
+   (0), `crates/skills` (0) and `crates/telemetry` (0). `apps/vitna-tui`,
+   `crates/daemon`, `crates/mcp`, `crates/context` and `crates/policy` have one
+   lifecycle smoke test each.
+4. **The invariant record cited design documents as verification.** An ADR
+   records intent; it cannot verify an implementation. That section now names a
+   test or says that nothing asserts the invariant.
+5. **One tool fabricates its own evidence.** `browser_verify` performs no
+   network I/O. For an `http` or `https` target it builds a fixed HTML string,
+   hashes that as the "DOM Digest" it returns as a `postimage_hash`, and tests
+   the caller's `expected_text` against the string it just made up, so
+   `expected_text: "App Loaded"` passes for any URL including an unreachable
+   one. It is untested, it is not gated behind approval, and its output is
+   shaped to land in a receipt. This is a live defect rather than a
+   documentation error, and it is the same failure that #7 found in
+   `run_command`: an evidence type asserted over something that did not happen.
 
 ## Phase Gates Overview
 
 | Phase | Description | Status | Evidence / Verification Gate |
 |---|---|---|---|
-| **Phase 0A** | Authority, Invariants, Threat Model, Platform & Dependency Matrices | **COMPLETE** | See `docs/PHASE_0A_GATE_REPORT.md` |
-| **Phase 0B** | Protocol Envelope, Event Store, Runner Journal, Receipt Trust Model | **COMPLETE** | See `docs/PHASE_0B_GATE_REPORT.md` |
-| **Phase 0C** | Platform Proof: Fake Provider & Runner, Hostile Repos, Hardware CI | **COMPLETE** | See `docs/PHASE_0C_GATE_REPORT.md` |
-| **Phase 1** | Durable Vertical Slice (CLI, TUI, Daemon, Guarded Runner, Local Receipt v0) | **COMPLETE** | See `docs/PHASE_1_GATE_REPORT.md` |
-| **Phase 2** | Competitive Solo-Agent Alpha (OpenAI/Anthropic adapters, Git broker, inspect/build) | **COMPLETE** | See `docs/PHASE_2_GATE_REPORT.md` |
-| **Phase 3** | Trustworthy Solo-Agent Beta (Strong sandbox, MCP, keychain secrets, Playwright) | **COMPLETE** | See `docs/PHASE_3_GATE_REPORT.md` |
-| **Phase 4** | Durable Multi-Agent Beta (DAG scheduler, per-agent clones, merge queue) | **COMPLETE** | See `docs/PHASE_4_GATE_REPORT.md` |
-| **Phase 5** | V1 Hardening and Release (Packaging, signed installers, SBOM, public benchmarks) | **COMPLETE** | See `docs/PHASE_5_GATE_REPORT.md` |
+| **Phase 0A** | Authority, Invariants, Threat Model, Platform & Dependency Matrices | **COMPLETE** | A documentation phase: every artifact exists. See `docs/PHASE_0A_GATE_REPORT.md` |
+| **Phase 0B** | Protocol Envelope, Event Store, Runner Journal, Receipt Trust Model | **COMPLETE** | Framing, hash chain, journal and replay are all asserted by tests. See `docs/PHASE_0B_GATE_REPORT.md` |
+| **Phase 0C** | Platform Proof: Fake Provider & Runner, Hostile Repos, Hardware CI | **PARTIAL** | Two of five deliverables are Partial. Hardware CI was not real until 2026-09-20: the Windows ARM64 leg had never executed. See `docs/PHASE_0C_GATE_REPORT.md` |
+| **Phase 1** | Durable Vertical Slice (CLI, TUI, Daemon, Guarded Runner, Local Receipt v0) | **PARTIAL** | The slice runs end to end, but the CLI has no tests and the TUI and daemon have one smoke test each. See `docs/PHASE_1_GATE_REPORT.md` |
+| **Phase 2** | Competitive Solo-Agent Alpha (OpenAI/Anthropic adapters, Git broker, inspect/build) | **COMPLETE** | The best covered phase: golden stream replay, and 86 tests across tools, git-broker and git-workspaces. See `docs/PHASE_2_GATE_REPORT.md` |
+| **Phase 3** | Trustworthy Solo-Agent Beta (Strong sandbox, MCP, keychain secrets, Playwright) | **PARTIAL** | Strong isolation is not implemented and is refused rather than downgraded. Windows has no sandbox backend. MCP has one test. See `docs/PHASE_3_GATE_REPORT.md` |
+| **Phase 4** | Durable Multi-Agent Beta (DAG scheduler, per-agent clones, merge queue) | **COMPLETE** | Cycle detection, cascading cancellation, merge queue and the 3-agent pipeline are asserted. See `docs/PHASE_4_GATE_REPORT.md` |
+| **Phase 5** | V1 Hardening and Release (Packaging, signed installers, SBOM, public benchmarks) | **WITHDRAWN** | Its release evidence was committed without being produced. Nothing was built, measured or published. See `docs/PHASE_5_GATE_REPORT.md` |
 
 ## Phase 5 Deliverables Ledger
 
 | Deliverable | Target Location | Verification Method | Status |
 |---|---|---|---|
-| Signed Release Manifest System | `schemas/vitna-release-manifest-v1.json`, `releases/v1.0.0/manifest.json` | JSON schema validation, Tier 1 targets, and Ed25519 publisher signature | Verified |
-| Automated Packaging Scripts | `scripts/package-release.ps1`, `scripts/package-release.sh` | Cross-platform archive creation, binary staging, and SHA256SUMS computation | Verified |
-| Software Bill of Materials (SBOM) | `releases/v1.0.0/vitna-code-v1.0.0.spdx.json` | SPDX 2.3 JSON specification with 32 packages and permissive licenses | Verified |
-| Benchmark & Evaluation Suite | `crates/evals/src/benchmark.rs`, `evals/results/benchmark_report_v1.0.0.json` | Throughput and latency metrics for verification (8.4k/s), Merkle (708/s), DAG (35k/s) | Verified |
-| Launch Release Notes | `RELEASE_NOTES_v1.0.0.md` | Full v1.0.0 announcement detailing pillars, CLI/TUI, platform support, and quickstart | Verified |
-| Phase 5 Gate Report | `docs/PHASE_5_GATE_REPORT.md` | Formal audit certifying Phase 5 completion and GA v1.0.0 launch authorization | Verified |
+| Signed Release Manifest System | `schemas/vitna-release-manifest-v1.json`, `releases/v1.0.0/manifest.json` | The schema exists and the manifest parses against it. **Its contents describe files that have never existed.** It lists five archives with SHA-256 digests and byte sizes, committed 2026-09-16 in a tree that did not compile, so no binary was built to hash. No code reads this manifest and nothing verifies the `publisher_signature`, contrary to the Phase 5 report's claim that it was "verified offline". There is no GitHub release, and the `v1.0.0` tag points at `cb35d7d`, which does not build. | Unverified, and the digests are not real |
+| Automated Packaging Scripts | `scripts/package-release.ps1`, `scripts/package-release.sh` | Both files exist. Neither is invoked by CI or by any test, and neither has been run in this repository: they are the scripts that would have produced the archives the manifest hashes, and those archives do not exist. | Unverified |
+| Software Bill of Materials (SBOM) | `releases/v1.0.0/vitna-code-v1.0.0.spdx.json` | Valid SPDX 2.3 listing 32 packages, of which 20 are this workspace's own crates and applications. **The resolved dependency graph is 283 packages**, so it catalogs about 12 of roughly 263 external ones. The claim of "zero copyleft" cannot be supported from that sample, and `Cargo.lock` is in `.gitignore`, so the set is not pinned. Regenerating this from a committed lockfile is the fix. | Unverified, and materially incomplete |
+| Benchmark & Evaluation Suite | `crates/evals/src/benchmark.rs`, `evals/results/benchmark_report_v1.0.0.json` | `test_benchmark_suite_execution` runs the suite and asserts only that there are three metrics and that each is greater than zero. It never compares against the committed report, so any positive numbers pass. **The committed figures (8,483/s, 708/s, 35,186/s) were never measured**: the report is stamped `2026-09-16T22:00:00Z` and was committed in `cb35d7d`, two days before the workspace first compiled, and it has not been regenerated since the code could run. It records no hardware, no toolchain and no build profile. | Unverified, and the figures are not measurements |
+| Launch Release Notes | `RELEASE_NOTES_v1.0.0.md` | The document exists. It announces a GA release that did not happen, for binaries that were never built. | Unverified |
+| Phase 5 Gate Report | `docs/PHASE_5_GATE_REPORT.md` | Exists, and is the document that certified the above. It now opens with a correction. | Corrected 2026-09-20 |
 
 ## Phase 4 Deliverables Ledger
 
@@ -43,10 +99,10 @@
 | Deliverable | Target Location | Verification Method | Status |
 |---|---|---|---|
 | Guarded Sandbox Planning | `crates/vitna-sandbox/src/lib.rs` | Decides the invocation that delivers the requested guarantee and refuses when it cannot. Bubblewrap (Linux) and Seatbelt (macOS) implemented; **Windows has no backend**, so `run_command` there is refused unless unsandboxed execution is explicitly approved. `strong` (container or VM) is not implemented and returns an error rather than being served by something weaker. | Partial |
-| MCP Protocol & Client | `crates/mcp/src/protocol.rs`, `client.rs` | JSON-RPC 2.0 handshake, capability negotiation, and tool discovery tested | Verified |
-| MCP Exact-Action Capability Broker | `crates/mcp/src/broker.rs` | Untrusted MCP tool bridging with exact-action digests and operator approval | Verified |
-| OS Keychain Secret Store | `crates/providers/src/keyring.rs` | Unified secret vault (`wincred`, Keychain, Secret Service) with zero disk leaks | Verified |
-| Browser Verification Evidence Capture | `crates/tools/src/browser_verify.rs` | Web and DOM snapshot verification emitting `sandbox_captured` evidence | Verified |
+| MCP Protocol & Client | `crates/mcp/src/protocol.rs`, `client.rs` | One test covers this crate: `test_mcp_client_handshake_and_tool_brokering`. It exercises a handshake and a brokered call on the happy path. Capability negotiation and tool discovery are implemented but nothing asserts them, and there is no test for a hostile or malformed server response. | Smoke tested |
+| MCP Exact-Action Capability Broker | `crates/mcp/src/broker.rs` | Covered only by the same single test above, on its approval path. Nothing asserts that an unapproved action is refused, which is the property the broker exists for. | Smoke tested |
+| OS Keychain Secret Store | `crates/providers/src/keyring.rs` | `keyring::tests::test_keyring_store_lifecycle` covers store and retrieve. "Zero disk leaks" is not asserted anywhere: no test looks for a secret written to disk, and none of the three named OS backends is exercised against a real keychain in CI. | Partial |
+| Browser Verification Evidence Capture | `crates/tools/src/browser_verify.rs` | **This tool fabricates its evidence for any URL and must not be used.** It has no tests and performs no network I/O. Given an `http` or `https` target it does not fetch it: it builds the literal string `<html><body><h1>App Loaded</h1><p>Target: {url}</p></body></html>`, hashes that as the "DOM Digest" and returns it as the result's `postimage_hash`, then tests `expected_text` against the string it just made up. So `expected_text: "App Loaded"` passes for every URL, including one that is unreachable, and every other expected text fails no matter what the real page renders. A local path is read honestly; only the URL branch is synthetic. Tracked as a defect, not a deliverable. | Unverified, and it manufactures evidence |
 | Sandbox Enforcement Tests | `crates/vitna-runner/tests/sandbox_enforcement.rs` | Runs real commands through `ProcessRunner`: refusal when no backend exists, writes outside the workspace blocked, `.git/config` unwritable, process tree terminated on timeout (mutation checked: with the job object disabled the timed-out command survives and the test fails). `VITNA_REQUIRE_SANDBOX_BACKEND` turns a missing backend into a failure in CI instead of a skip. | Verified |
 | MCP Client & Bridge Tests | `crates/mcp/tests/mcp_client_test.rs` | Handshake, tool list, and brokered tool invocation tests | Verified |
 | Phase 3 Gate Report | `docs/PHASE_3_GATE_REPORT.md` | Formal audit certifying Phase 3 deliverables and authorizing Phase 4 progression | Verified |
@@ -71,11 +127,11 @@
 | Deliverable | Target Location | Verification Method | Status |
 |---|---|---|---|
 | Standard Brokered Tools | `crates/tools/` (`read_file`, `write_file`, `apply_patch`, `list_dir`, `search_code`, `run_command`, `path_safety`, `workspace_fs`) | Lexical traversal rejection in `path_safety`, then containment on the real path for every file tool: links resolved, regular files only (no blocking on a FIFO, no following a final link), and the opened handle's own path re-checked (`/proc/self/fd`, `F_GETPATH`, `GetFinalPathNameByHandleW`). The postimage is hashed from the bytes read back after `sync_all`, and a mismatch fails the write (mutation checked); line endings are written byte-exact and kept in the diff. `read_file` loads at most 16 MiB and returns at most 256 KiB, with truncation notices; `search_code` reports unreadable paths as a partial result, never as no matches. Run in CI on Linux, macOS and Windows x86_64. Writes are in place, not atomic, and `run_command`'s working directory is still checked lexically only, its confinement being the runner sandbox's. | Verified |
-| Context Assembler & Prompt Core | `crates/context/src/assembler.rs` | Project guidelines ingestion (AGENTS.md), diff inclusion, and context digest tested | Verified |
+| Context Assembler & Prompt Core | `crates/context/src/assembler.rs` | One test covers this crate: `test_context_assembler_lifecycle`. It exercises assembly once. Prompt injection through an ingested `AGENTS.md` is a Phase 0C fixture with no enforcement code and no test, so ingestion is covered but its hostile case is not. | Smoke tested |
 | Orchestration State Machine | `crates/orchestration/src/engine.rs` | Turn lifecycle, exact-action approval check, and Merkle root receipt calculation | Verified |
-| Local Daemon & Session Store | `crates/daemon/src/server.rs` | Workspace session mapping, task execution loop, and SQLite WAL event storage | Verified |
-| Non-Interactive CLI Suite | `apps/vitna-cli/src/main.rs` | `vitna run`, `vitna doctor`, `vitna verify`, `vitna serve`, `vitna sessions` subcommands | Verified |
-| Calm Terminal TUI Client | `apps/vitna-tui/src/lib.rs` & `main.rs` | Ratatui split-pane layout, single amber signal budget, and approval modal interface | Verified |
+| Local Daemon & Session Store | `crates/daemon/src/server.rs` | One test covers this crate: `test_daemon_server_session_and_run`, a happy-path session and run. The event store beneath it is separately and properly tested (`crates/store`, hash chain and replay). The daemon's own behaviour under a dropped connection, a concurrent session or a restart is not asserted. | Smoke tested |
+| Non-Interactive CLI Suite | `apps/vitna-cli/src/main.rs` | **`apps/vitna-cli` contains no tests at all.** The subcommands exist and the crate compiles and clippy-passes on five platforms. No test invokes any subcommand, checks an exit code, or covers argument parsing. | Unverified |
+| Calm Terminal TUI Client | `apps/vitna-tui/src/lib.rs` & `main.rs` | One test covers this crate: `test_terminal_app_lifecycle`. None of the three properties this row names is asserted by it: not the split-pane layout, not the single amber signal budget, and not the approval modal. | Smoke tested |
 | End-to-End Vertical Slice Test | `crates/orchestration/tests/vertical_slice_test.rs` | Full execution: inspection -> creation -> modification -> verification -> signed receipt | Verified |
 | Phase 1 Gate Report | `docs/PHASE_1_GATE_REPORT.md` | Formal audit certifying Phase 1 deliverables and authorizing Phase 2 progression | Verified |
 
@@ -123,17 +179,27 @@
 
 ## Invariant Conformance Record
 
-1. **Local first**: Daemon, runner, storage, and receipt verification operate with zero cloud connectivity. (Verified in ADR-0001, ADR-0005).
-2. **Customer-held credentials**: OS keychain and dedicated credential provider interface; no ambient environment scraping. (Verified in ADR-0001, Authority Inventory).
+Every line here except 3 and 12 used to end in "(Verified in ADR-0001)" or
+similar. **An ADR records a decision. It cannot verify an implementation.**
+Citing one as evidence that code upholds an invariant is a category error, and
+it is the error that let this document certify a workspace that did not compile.
+
+Each line now names a test that asserts the invariant, or says plainly that
+nothing does. "No test asserts this" is not an accusation that the code is
+wrong. It means the claim is currently a design intention.
+
+
+1. **Local first**: Daemon, runner, storage, and receipt verification operate with zero cloud connectivity. **No test asserts this.** Nothing in the suite blocks or observes network egress, so "zero cloud connectivity" is a design intention that no run has demonstrated. Specified in ADR-0001 and ADR-0005.
+2. **Customer-held credentials**: OS keychain and dedicated credential provider interface; no ambient environment scraping. **Partly asserted.** `credentials::tests::test_mask_key` and `keyring::tests::test_keyring_store_lifecycle` cover masking and a store/retrieve round trip. No test asserts the absence of ambient environment scraping, and no OS keychain backend is exercised against a real keychain in CI.
 3. **Security outside the model**: Model proposes, deterministic policy decides, OS-level sandbox enforces. Enforced on Linux (bubblewrap) and macOS (Seatbelt). On Windows no sandbox backend exists, so the policy refuses the command rather than running it unconfined; that refusal is the enforcement there. (ADR-0001, ADR-0002, `crates/vitna-runner/tests/sandbox_enforcement.rs`.)
-4. **Evidence over confidence**: Typed evidence grades with explicit trust assumptions. (Verified in ADR-0001, schemas/vitna-run-receipt-v1.json).
-5. **No silent effects**: Every effect entry point records policy decision and ledger event. (Verified in Authority Inventory).
-6. **No silent model switch**: Provider fallback restricted to safe turn boundaries with explicit receipt disclosure. (Verified in ADR-0001, Authority Inventory).
-7. **No silent retry of ambiguous mutations**: Interrupted mutating actions transition to `needs_reconciliation`. (Verified in ADR-0002).
-8. **No shared mutable workspace for writers**: Each write-capable agent receives an independent disposable clone. (Verified in ADR-0002).
-9. **Repository content is untrusted input**: Instructions cannot expand security capabilities. (Verified in Threat Model).
-10. **Unknown stays unknown**: Uncertain prices, coverage, or effects are labeled plainly. (Verified in ADR-0001).
-11. **Compatibility before reinventing ecosystems**: Support standard formats (AGENTS.md, SKILL.md, MCP) under strict authority constraints. (Verified in Authority Inventory).
+4. **Evidence over confidence**: Typed evidence grades with explicit trust assumptions. **Partly asserted.** `tests::test_receipt_canonicalization_and_signing` and `tests::test_verifier_report` cover canonical form, signing and offline verification. Nothing asserts that an evidence grade matches what actually happened, and `browser_verify` is a live counterexample: it emits a DOM digest of a document it fabricated. See the Phase 3 ledger.
+5. **No silent effects**: Every effect entry point records policy decision and ledger event. **Asserted** by `journal::tests::test_action_journal_lifecycle`, `a_refused_action_is_journalled_as_refused` and `the_journal_records_the_isolation_that_applied`. The coverage is of the runner's journal; no test enumerates the ten effect entry points in `AUTHORITY_INVENTORY.md` and checks each one writes a record.
+6. **No silent model switch**: Provider fallback restricted to safe turn boundaries with explicit receipt disclosure. **No test asserts this.** No test performs a provider fallback, so neither the turn boundary restriction nor the receipt disclosure has been exercised.
+7. **No silent retry of ambiguous mutations**: Interrupted mutating actions transition to `needs_reconciliation`. **Asserted** by `journal::tests::test_crash_recovery_forces_reconciliation`, `tests::test_corrupt_hash_chain_forces_reconciliation` and `test_fixture_crash_post_finish_unack`, against the recorded crash-recovery fixtures.
+8. **No shared mutable workspace for writers**: Each write-capable agent receives an independent disposable clone. **Asserted** by `workspace::tests::test_agent_workspace_lifecycle` and `workspace::tests::test_existing_workspace_directory_is_not_reused`, and by the multi-agent pipeline in `test_multi_agent_dag_execution_and_receipt_aggregation`.
+9. **Repository content is untrusted input**: Instructions cannot expand security capabilities. **The best asserted invariant in the repository**, and only since 2026-09-20. `hardened_git_does_not_run_repository_controlled_commands` and `git_status_tool_does_not_run_repository_controlled_commands` confirm the three git execution keys fire under plain git and are blocked here; `no_crate_builds_a_bare_git_command` sweeps the source; and thirty-six tests across `workspace_fs`, `materialize`, `tree` and `path_safety` cover links, FIFOs, devices and post-check swaps. Before that date a repository could execute code through `git status` with operator privileges and no prompt.
+10. **Unknown stays unknown**: Uncertain prices, coverage, or effects are labeled plainly. **No test asserts this.** This document is the clearest measure of how the invariant was actually held, and until this audit it was not: unverified claims were labelled Verified throughout.
+11. **Compatibility before reinventing ecosystems**: Support standard formats (AGENTS.md, SKILL.md, MCP) under strict authority constraints. **Partly asserted.** `AGENTS.md` ingestion is covered by `tests::test_context_assembler_lifecycle` and MCP by a single handshake test. `crates/skills` contains no tests, so SKILL.md support is unverified.
 12. **Windows is first class**: Native Windows 11 x64 and ARM64 release targets in CI matrix and platform guarantees. Windows ARM64 carried this claim unverified until 2026-09-20. From 2026-09-16 the ARM64 leg named the runner label `windows-11-arm64`, which GitHub does not publish, so no runner ever matched it: the job was queued and cancelled 24 hours later without executing a step, and every run in that window concluded `cancelled` while its other six jobs passed. The label is `windows-11-arm`. Run 35546151349 is the first execution of this leg, and it reports `cargo check`, `cargo clippy -- -D warnings` and 54 passed / 0 failed on `aarch64-pc-windows-msvc`, matching `x86_64-unknown-linux-gnu` test for test. (Verified in `PLATFORM_MATRIX.md`, `.github/workflows/ci.yml`, `scripts/check-runner-labels.mjs`).
-13. **Provider disclosure**: Transparent accounting of egress destinations and prompt content. (Verified in Authority Inventory, Threat Model).
-14. **No em-dashes**: Zero em-dash characters in repository. (Enforced in `scripts/dev.ps1`, `scripts/dev.sh`, `.github/workflows/ci.yml`).
+13. **Provider disclosure**: Transparent accounting of egress destinations and prompt content. **No test asserts this.** `crates/telemetry` contains no tests, and nothing records or checks an egress destination during a run.
+14. **No em-dashes**: Zero em-dash characters in repository. **Asserted**, and the only invariant that was genuinely enforced on every commit throughout: the `check-rules` job greps the whole tree and fails the build. Also in `scripts/dev.ps1` and `scripts/dev.sh`.

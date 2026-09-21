@@ -1,5 +1,33 @@
 # Phase 3 Gate Report: Trustworthy Solo-Agent Beta
 
+> **Correction, 2026-09-20.** This report is kept as a dated record of what was
+> believed on 2026-09-16, and has deliberately not been rewritten. It was
+> written in a tree where the Rust workspace did not compile: all five
+> `Build & Test` legs failed at manifest load in 6 to 24 seconds, so no test in
+> this repository had ever run. The workspace first compiled on 2026-09-18 (#4)
+> and CI first concluded `success` on 2026-09-20 (#10). Read every "PASSED" and
+> every "verified" below in that light. The corrected status is in the audit
+> note at the top of `IMPLEMENTATION_STATUS.md`.
+>
+> Specific to this report, which overclaims more than any other:
+> - **Windows had and has no sandbox backend.** "AppContainer profile identity
+>   mapping" is a deterministic string: `generate_windows_appcontainer_name`
+>   returns a name and no container was ever created to go with it. Since
+>   2026-09-20 `run_command` is refused on Windows rather than run unconfined.
+> - **"Strong" isolation is not implemented.** Per `docs/PLATFORM_MATRIX.md`,
+>   Strong means a container or hardware VM. It is now refused rather than
+>   served by something weaker.
+> - `SandboxExecutor` and `crates/vitna-sandbox/src/executor.rs`, cited in
+>   section 2.1, were deleted on 2026-09-20 (#7). The crate decides and no
+>   longer spawns. At the time this report was written nothing outside
+>   `vitna-sandbox` imported it, so `run_command` was never sandboxed at all
+>   while both spawn paths set `VITNA_SANDBOX=1` and receipts recorded
+>   `sandbox_captured` under an `isolation_label` of `guarded`.
+> - Browser verification does not verify a browser. For an `http` or `https`
+>   target `browser_verify` fabricates the document, hashes the fabrication as
+>   its DOM digest, and matches `expected_text` against what it just made up.
+
+
 - Status: PASSED
 - Date: 2026-09-16
 - Working product: Vitna Code (vitna)

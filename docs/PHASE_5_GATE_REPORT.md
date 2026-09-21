@@ -1,5 +1,33 @@
 # Phase 5 Gate Report: V1 Hardening and Release
 
+> **Correction, 2026-09-20.** This report is kept as a dated record of what was
+> believed on 2026-09-16, and has deliberately not been rewritten. It was
+> written in a tree where the Rust workspace did not compile: all five
+> `Build & Test` legs failed at manifest load in 6 to 24 seconds, so no test in
+> this repository had ever run. The workspace first compiled on 2026-09-18 (#4)
+> and CI first concluded `success` on 2026-09-20 (#10). Read every "PASSED" and
+> every "verified" below in that light. The corrected status is in the audit
+> note at the top of `IMPLEMENTATION_STATUS.md`.
+>
+> Specific to this report: **none of the release evidence it certifies was
+> produced by running anything.**
+> - The benchmark figures (8,483/s, 708/s, 35,186/s) were never measured. The
+>   report they come from is stamped `2026-09-16T22:00:00Z` and was committed in
+>   `cb35d7d`, two days before the workspace first compiled. It has not been
+>   regenerated since the code could run, and no test compares against it:
+>   `test_benchmark_suite_execution` asserts only that three metrics exist and
+>   are greater than zero.
+> - The signed release manifest lists five archives with SHA-256 digests and
+>   byte sizes. Those archives have never been built. No code reads the manifest
+>   and nothing verifies its `publisher_signature`, so "verified offline" in
+>   section 2.1 is not true.
+> - The SBOM lists 32 packages, 20 of which are this workspace's own crates. The
+>   resolved dependency graph is 283 packages, and `Cargo.lock` is gitignored, so
+>   neither the catalog nor the "zero copyleft" finding covers the real set.
+> - There is no GitHub release. The `v1.0.0` tag points at `cb35d7d`, a commit
+>   that does not compile.
+
+
 - Status: PASSED
 - Date: 2026-09-16
 - Working product: Vitna Code (vitna)
