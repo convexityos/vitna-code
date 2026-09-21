@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Exposes MemoryCredentialStore to other crates' tests, through their
+# [dev-dependencies]. No shipped binary enables it: a store that forgets every
+# key when the process exits is a test double, not a credential source.
+test-support = []
+
 [dependencies]
 tokio.workspace = true
 serde.workspace = true
@@ -14,3 +20,21 @@ async-trait.workspace = true
 reqwest.workspace = true
 sha2.workspace = true
 hex.workspace = true
+keyring-core = "1"
+
+# One operating system credential store per platform, and nothing else: no
+# file-backed fallback and no environment fallback. A platform missing from
+# this list has no KeyringStore backend, and opening one there fails.
+[target.'cfg(target_os = "windows")'.dependencies]
+# Without the default `search` feature, which pulls in regex for a credential
+# enumeration KeyringStore never performs.
+windows-native-keyring-store = { version = "1", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+# The pure-Rust Secret Service client (zbus), rather than the libdbus binding,
+# so a Linux build needs no system D-Bus headers. The cfg matches the one the
+# keyring crate itself uses for this store.
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dependencies]
+zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
