@@ -3,8 +3,12 @@ name: Vitna Code CI
 on:
   push:
     branches: [main]
+  # Every pull request, not only those targeting main. A stacked pull request
+  # targets the branch below it, so `branches: [main]` meant it got no checks at
+  # all: not queued, not skipped, just absent. That is indistinguishable from
+  # passing when read quickly, and this repository has had four stacked pull
+  # requests open at once.
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -12,7 +16,7 @@ concurrency:
 
 jobs:
   check-rules:
-    name: Repository Hygiene & Em-Dash Scan
+    name: Repository Hygiene (em-dashes, runner labels)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +28,33 @@ jobs:
             exit 1
           fi
           echo "Em-dash check passed."
+      # A runner label that matches no runner does not fail. It queues, and
+      # GitHub cancels it 24 hours later, so the run concludes "cancelled"
+      # with every step green. This job gates matrix-build, so a bad label
+      # is caught before any leg can hang on it.
+      - name: Validate runner labels
+        run: node scripts/check-runner-labels.mjs
+
+  desktop:
+    name: Desktop frontend (typecheck, test, build)
+    needs: check-rules
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/vitna-desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/vitna-desktop/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Also runs scripts/check-bundle.mjs: no third-party host, no sample
+      # session and a Content-Security-Policy in the production bundle.
+      - run: npm run build
 
   matrix-build:
     name: Build & Test (${{ matrix.target.os }} - ${{ matrix.target.arch }})
@@ -51,7 +82,7 @@ jobs:
             triple: x86_64-pc-windows-msvc
           - os: windows
             arch: aarch64
-            runner: windows-11-arm64
+            runner: windows-11-arm
             triple: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4

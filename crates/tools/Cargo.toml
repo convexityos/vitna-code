@@ -11,6 +11,7 @@ serde.workspace = true
 serde_json.workspace = true
 vitna-protocol.workspace = true
 vitna-runner.workspace = true
+vitna-git-workspaces.workspace = true
 vitna-policy.workspace = true
 vitna-sandbox.workspace = true
 sha2.workspace = true
