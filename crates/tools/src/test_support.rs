@@ -36,10 +36,7 @@ impl Scratch {
 
     pub(crate) fn ctx(&self) -> ToolContext {
         let runner = FakeRunner::new(self.base.join("test.journal")).expect("open fake runner");
-        ToolContext {
-            workspace_root: self.ws(),
-            runner: Arc::new(Mutex::new(runner)),
-        }
+        ToolContext::new(self.ws(), Arc::new(Mutex::new(runner)))
     }
 }
 

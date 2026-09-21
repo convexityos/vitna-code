@@ -38,7 +38,7 @@ pub struct ToolDefinition {
     pub requires_approval: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolResult {
     pub call_id: String,
     pub tool_name: String,
@@ -52,11 +52,37 @@ pub struct ToolResult {
     pub diff: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    /// The sandbox that confined this tool's work, when it ran a process at
+    /// all. Carried so the receipt records what was applied rather than what
+    /// the configuration hoped for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_enforcement: Option<String>,
 }
 
 pub struct ToolContext {
     pub workspace_root: PathBuf,
     pub runner: Arc<dyn Runner>,
+    /// Explicit operator approval to run a command with no OS sandbox.
+    ///
+    /// Separate from any general auto-approve, and false unless a human said
+    /// yes to this specific thing. `ToolContext::new` is the way to build one
+    /// so that adding a permission is always a visible edit.
+    pub allow_unsandboxed: bool,
+    pub allow_network: bool,
+}
+
+impl ToolContext {
+    /// A context that grants nothing beyond the workspace.
+    pub fn new(workspace_root: PathBuf, runner: Arc<dyn Runner>) -> Self {
+        Self {
+            workspace_root,
+            runner,
+            allow_unsandboxed: false,
+            allow_network: false,
+        }
+    }
 }
 
 #[async_trait]
@@ -155,10 +181,7 @@ mod tests {
         let fake_runner = FakeRunner::new(&journal_path).expect("open fake runner");
         let runner = Arc::new(std::sync::Mutex::new(fake_runner));
 
-        let ctx = ToolContext {
-            workspace_root: temp_dir.clone(),
-            runner,
-        };
+        let ctx = ToolContext::new(temp_dir.clone(), runner);
 
         // 1. Write file
         let write_args = serde_json::json!({

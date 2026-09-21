@@ -183,6 +183,7 @@ impl Tool for ReadFileTool {
             postimage_hash: content_hash,
             diff: None,
             exit_code: None,
+            ..Default::default()
         })
     }
 }

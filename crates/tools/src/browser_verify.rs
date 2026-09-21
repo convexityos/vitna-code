@@ -91,6 +91,7 @@ impl Tool for BrowserVerifyTool {
             postimage_hash: Some(dom_hash),
             diff: None,
             exit_code: if text_matched { Some(0) } else { Some(1) },
+            ..Default::default()
         })
     }
 }

@@ -24,6 +24,14 @@ pub struct OrchestrationConfig {
     pub provider_name: String,
     pub sandbox_guarantee: String,
     pub verification_command: Option<String>,
+    /// Explicit operator approval to run commands with no OS sandbox.
+    ///
+    /// Deliberately not folded into `auto_approve`. Approving the actions a run
+    /// wants to take and approving that they run outside a sandbox are
+    /// different decisions, and `serde` defaults this to false so a config
+    /// written before this field existed does not silently grant it.
+    #[serde(default)]
+    pub allow_unsandboxed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,11 +198,47 @@ impl OrchestrationEngine {
             )?;
         }
 
+        // Step 3b: Isolation is part of the policy decision, not a detail of
+        // execution. A command that cannot be sandboxed needs its own approval,
+        // and `auto_approve` does not supply it: the operator approved the work,
+        // not the removal of the boundary around it.
+        if tool_name == "run_command" && self.runner.spawns_processes() {
+            if let Err(reason) = vitna_runner::sandbox_status(&self.config.workspace_root, false) {
+                self.record_event(
+                    "vitna.v1.ApprovalRequested",
+                    &serde_json::json!({
+                        "tool_name": tool_name,
+                        "action_digest": action_digest,
+                        "reason": "sandbox_unavailable",
+                        "detail": reason,
+                    }),
+                )?;
+
+                if !self.config.allow_unsandboxed {
+                    return Err(format!(
+                        "No OS sandbox is available for this workspace ({}). Running \
+                         '{}' unsandboxed requires explicit approval.",
+                        reason, tool_name
+                    ));
+                }
+
+                self.record_event(
+                    "vitna.v1.ApprovalGranted",
+                    &serde_json::json!({
+                        "tool_name": tool_name,
+                        "action_digest": action_digest,
+                        "reason": "unsandboxed_execution_approved",
+                    }),
+                )?;
+            }
+        }
+
         // Step 4: Execute tool via guarded runner / sandbox
-        let ctx = ToolContext {
-            workspace_root: self.config.workspace_root.clone(),
-            runner: self.runner.clone(),
-        };
+        let mut ctx = ToolContext::new(
+            self.config.workspace_root.clone(),
+            self.runner.clone(),
+        );
+        ctx.allow_unsandboxed = self.config.allow_unsandboxed;
 
         self.record_event(
             "vitna.v1.ToolStarted",
@@ -237,6 +281,8 @@ impl OrchestrationEngine {
                 action_id: format!("act-{}", self.runner_statements.len() + 1),
                 statement_digest: stmt_digest,
                 signature: hex::encode([0u8; 64]), // Signed statement placeholder
+                sandbox_backend: result.sandbox_backend.clone(),
+                sandbox_enforcement: result.sandbox_enforcement.clone(),
             });
         }
 
@@ -256,6 +302,32 @@ impl OrchestrationEngine {
         });
 
         Ok(result)
+    }
+
+    /// The isolation this run actually had, which is not always the one it was
+    /// configured with.
+    ///
+    /// `docs/PLATFORM_MATRIX.md` defines full access as host execution with no
+    /// OS sandbox and says it must never be described as sandboxed in a
+    /// receipt. So a single action that ran unsandboxed decides the label for
+    /// the whole run, however the config was written. Before this, the daemon's
+    /// hardcoded "guarded" was copied into every receipt regardless.
+    ///
+    /// A runner that starts no process reports `no_process` and does not
+    /// trigger the downgrade: there was nothing to confine, which is not the
+    /// same as something having escaped confinement.
+    fn observed_isolation_label(&self) -> String {
+        let ran_unsandboxed = self.runner_statements.iter().any(|s| {
+            s.sandbox_backend
+                .as_deref()
+                .map(|b| b == vitna_runner::BACKEND_NONE)
+                .unwrap_or(false)
+        });
+
+        if ran_unsandboxed {
+            return "full_access".to_string();
+        }
+        self.config.sandbox_guarantee.clone()
     }
 
     /// Finalizes the run, runs verification command if configured, and signs the cryptographic receipt.
@@ -305,7 +377,7 @@ impl OrchestrationEngine {
                 policy_digest: None,
             },
             event_hash_chain_root: merkle_root,
-            isolation_label: self.config.sandbox_guarantee.clone(),
+            isolation_label: self.observed_isolation_label(),
             completion_state: "completed_with_evidence".to_string(),
             evidence_items: self.evidence_items.clone(),
             changeset: ChangeSetRecord {

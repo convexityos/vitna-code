@@ -79,6 +79,7 @@ impl Tool for McpToolBridge {
             postimage_hash: None,
             diff: None,
             exit_code: None,
+            ..Default::default()
         })
     }
 }

@@ -41,6 +41,16 @@ pub struct RunnerExecutionStatementRecord {
     pub action_id: String,
     pub statement_digest: String,
     pub signature: String,
+    /// The sandbox mechanism that confined this action: `bubblewrap`,
+    /// `seatbelt`, `appcontainer`, or `none`.
+    ///
+    /// Omitted when absent so that receipts written before this field existed
+    /// still produce the same canonical bytes and still verify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_backend: Option<String>,
+    /// `fully_enforced`, `fallback`, or `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_enforcement: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +208,8 @@ mod tests {
                 action_id: "act-1".to_string(),
                 statement_digest: "stmt-digest-1".to_string(),
                 signature: "sig-1".to_string(),
+                sandbox_backend: None,
+                sandbox_enforcement: None,
             }],
             child_receipt_roots: Vec::new(),
             device_signature: String::new(),
