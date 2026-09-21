@@ -4,6 +4,7 @@ use rusqlite::{params, Connection, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use tokio::sync::broadcast;
 
 pub const GENESIS_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -121,14 +122,31 @@ pub struct RunSummary {
     pub total_events: usize,
 }
 
+/// How many appended events the broadcast holds for a subscriber that has
+/// stopped reading.
+///
+/// A subscriber slower than this does not lose events: `broadcast` reports
+/// `Lagged` rather than skipping silently, and the reader's contract is to
+/// treat that as a cue to replay from the store, which is the durable copy.
+/// The channel is an optimization over polling, never the record.
+const EVENT_BROADCAST_CAPACITY: usize = 1024;
+
 pub struct EventStore {
     conn: Connection,
+    /// Fan-out for appended events.
+    ///
+    /// It lives here rather than in the daemon because this is the one place
+    /// every writer passes through. A fan-out attached to a caller instead
+    /// would cover the writers that remembered to use it, and the writer that
+    /// skipped the shared path is the one whose events would vanish from a
+    /// live stream while still reaching disk.
+    event_tx: broadcast::Sender<EventRecord>,
 }
 
 impl EventStore {
     pub fn open<P: AsRef<Path>>(path: P) -> SqliteResult<Self> {
         let conn = Connection::open(path)?;
-        let store = Self { conn };
+        let store = Self::wrap(conn);
         store.configure_pragmas()?;
         store.apply_migrations()?;
         Ok(store)
@@ -136,10 +154,25 @@ impl EventStore {
 
     pub fn open_in_memory() -> SqliteResult<Self> {
         let conn = Connection::open_in_memory()?;
-        let store = Self { conn };
+        let store = Self::wrap(conn);
         store.configure_pragmas()?;
         store.apply_migrations()?;
         Ok(store)
+    }
+
+    fn wrap(conn: Connection) -> Self {
+        let (event_tx, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
+        Self { conn, event_tx }
+    }
+
+    /// Every event appended from now on.
+    ///
+    /// This carries no history. A subscriber that needs what came before reads
+    /// it with [`EventStore::events_after`] first, then follows this, and
+    /// de-duplicates on `sequence` because an event can legitimately arrive
+    /// through both during the handover.
+    pub fn subscribe(&self) -> broadcast::Receiver<EventRecord> {
+        self.event_tx.subscribe()
     }
 
     fn configure_pragmas(&self) -> SqliteResult<()> {
@@ -177,7 +210,44 @@ impl EventStore {
             ],
         )?;
 
+        // Only after the row is durable. Publishing first would let a
+        // subscriber see an event that a failed insert then rolled back, and
+        // a stream that runs ahead of the record is worse than one that lags:
+        // the receipt is the record, and the stream would be claiming more
+        // than it can prove. A send with no subscribers returns Err and is
+        // not a failure of the append.
+        let _ = self.event_tx.send(event.clone());
+
         Ok(())
+    }
+
+    /// Events strictly AFTER `after_sequence`, in order.
+    ///
+    /// This is what `SubscribeEvents.resume_after_sequence` means: the client
+    /// names the last sequence it holds and gets what follows. Distinct from
+    /// [`EventStore::get_events`], which is inclusive from `since_sequence`
+    /// and is what replay wants. Mixing them up re-sends an event the client
+    /// already applied, or skips one it never saw, and the two mistakes look
+    /// identical from here.
+    pub fn events_after(
+        &self,
+        run_id: &str,
+        after_sequence: u64,
+    ) -> SqliteResult<Vec<EventRecord>> {
+        // SQLite binds integers as i64, so a sequence above i64::MAX cannot be
+        // a query parameter at all: rusqlite refuses it with a conversion
+        // error rather than wrapping it negative, which is the safe direction
+        // but still an error a caller would have to invent a meaning for. No
+        // event can carry such a sequence either, so "after" one is empty by
+        // construction and the database need not be asked.
+        //
+        // The value is a client's, straight off the wire, so this is reachable
+        // by anything that sends a large resume_after_sequence.
+        if after_sequence >= i64::MAX as u64 {
+            return Ok(Vec::new());
+        }
+        let from = after_sequence.saturating_add(1);
+        self.get_events(run_id, from)
     }
 
     pub fn get_events(&self, run_id: &str, since_sequence: u64) -> SqliteResult<Vec<EventRecord>> {
@@ -242,7 +312,9 @@ impl EventStore {
             }
 
             // Simple transition mapping based on type_url
-            if event.type_url.contains("ToolProposed") || event.type_url.contains("ApprovalRequested") {
+            if event.type_url.contains("ToolProposed")
+                || event.type_url.contains("ApprovalRequested")
+            {
                 current_state = ReplayedRunState::WaitingForApproval;
             } else if event.type_url.contains("ToolStarted") {
                 current_state = ReplayedRunState::RunningTool;
@@ -250,11 +322,19 @@ impl EventStore {
                 current_state = ReplayedRunState::RunningModel;
             } else if event.type_url.contains("RunStateChanged") {
                 // If the event payload indicates completed/failed, map state
-                if event.encrypted_payload.windows(9).any(|w| w == b"completed") {
+                if event
+                    .encrypted_payload
+                    .windows(9)
+                    .any(|w| w == b"completed")
+                {
                     current_state = ReplayedRunState::Completed;
                 } else if event.encrypted_payload.windows(6).any(|w| w == b"failed") {
                     current_state = ReplayedRunState::Failed;
-                } else if event.encrypted_payload.windows(20).any(|w| w == b"needs_reconciliation") {
+                } else if event
+                    .encrypted_payload
+                    .windows(20)
+                    .any(|w| w == b"needs_reconciliation")
+                {
                     current_state = ReplayedRunState::NeedsReconciliation;
                 }
             }
