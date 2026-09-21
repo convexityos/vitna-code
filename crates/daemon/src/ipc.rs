@@ -192,6 +192,17 @@ async fn stream_events(
         store.subscribe()
     };
 
+    // KNOWN DEFECT, latent until SubmitTurn is served: correct for a session
+    // with one run, wrong for a second. The protocol and every client treat
+    // `sequence` as monotonic per SESSION (one resume_after_sequence, one
+    // lastSequence), but the engine numbers each RUN from 1. So once a
+    // session's first run has sent 1..N, its second run's 1..N compare at or
+    // below `last_sent` and are dropped here, and the client would drop them
+    // too as replays if they arrived. Its N+1 then lands contiguous, so
+    // neither side can see the loss. Reproduced by the window-port session's
+    // trace and a scratch test. Unreachable today, since nothing over the wire
+    // can start a run, and it must be fixed before anything can: the fix is
+    // to number events per session, not to patch this comparison.
     let mut last_sent = resume_after;
 
     // The run this session is on. The store indexes events by run, and
