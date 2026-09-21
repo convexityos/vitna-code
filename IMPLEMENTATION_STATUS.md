@@ -61,6 +61,7 @@
 | Disposable Agent Workspaces | `crates/git-workspaces/src/workspace.rs` | Isolated worktree/branch creation, base commit detection, and safe cleanup tested | Verified |
 | Git Broker & Preimage Validation | `crates/git-broker/src/broker.rs` | Preimage/postimage tracking, concurrent edit conflict detection, and 3-way merge | Verified |
 | Advanced Repository Tools | `crates/tools/` (`search_code.rs`, `git_status.rs`, `apply_patch.rs`) | Fast code search, repository status, and structured patch application tested | Verified |
+| Hardened Host-Side Git Invocation | `crates/git-workspaces/src/host_git.rs` | Sole constructor for host git. Repository-controlled execution keys (`core.fsmonitor`, hooks, filter drivers, pager, external diff) neutralized; each protection pinned behaviourally or structurally in `host_git_hardening.rs`; `no_bare_git_invocations.rs` forbids a bare `Command::new("git")` anywhere in `crates/` or `apps/` | Verified |
 | Provider Streaming Tests | `crates/providers/tests/provider_streaming_test.rs` | Golden stream replay and SSE tool call reconstruction tested | Verified |
 | Git Broker Multi-File Tests | `crates/git-broker/tests/git_broker_test.rs` | Multi-file changeset creation, preimage validation, and primary checkout merge | Verified |
 | Phase 2 Gate Report | `docs/PHASE_2_GATE_REPORT.md` | Formal audit certifying Phase 2 deliverables and authorizing Phase 3 progression | Verified |
@@ -84,7 +85,7 @@
 |---|---|---|---|
 | Fake Provider & Streaming Replay | `crates/providers/src/fake.rs`, `fixtures/providers/` | Deterministic replay of 4 golden streams (turn, tool-call, rate-limit, mid-stream-drop) | Verified |
 | Runner Fault Injection Harness | `crates/vitna-runner/src/fake.rs` | Simulation of 4 crash modes (before start, mid-run, unack, timeout) with action journal | Verified |
-| Hostile Repository Corpus | `fixtures/hostile-repos/` | 4 threat vectors covered (path traversal, git hook injection, prompt injection, terminal escapes) | Verified |
+| Hostile Repository Corpus | `fixtures/hostile-repos/` | Git hook and config injection: three vectors (`core.fsmonitor`, `post-index-change`, `filter.*.clean`) confirmed to execute under plain git and blocked under `host_git::command`, in `crates/git-workspaces/tests/host_git_hardening.rs`. Path traversal: `crates/tools/src/path_safety.rs`, `test_traversal_rejection`. Prompt injection and terminal escapes: fixture text only, with no enforcement code and no test. | Partial |
 | Platform Sandbox Enforcement | `crates/vitna-sandbox/src/lib.rs` | Linux bwrap, macOS seatbelt, and Windows AppContainer generator proof tests in `sandbox_proof_tests.rs` | Verified |
 | Cryptographic Policy Fixtures | `crates/policy/src/lib.rs`, `fixtures/policies/` | Valid, tampered, and expired signed policy fixtures verified in `crates/receipts/tests/signing_fixtures_test.rs` | Verified |
 | Phase 0C Gate Report | `docs/PHASE_0C_GATE_REPORT.md` | Formal gate report certifying platform proof and authorizing Phase 0 exit | Verified |
