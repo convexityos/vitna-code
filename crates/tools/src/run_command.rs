@@ -2,7 +2,6 @@ use crate::path_safety::resolve_workspace_path;
 use crate::{Tool, ToolContext, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use vitna_runner::CommandRequest;
 
 pub struct RunCommandTool;
@@ -38,14 +37,6 @@ impl Tool for RunCommandTool {
             is_mutating: true,
             requires_approval: true,
         }
-    }
-
-    fn compute_action_digest(&self, args: &serde_json::Value) -> String {
-        let cmd = args.get("command").and_then(|c| c.as_str()).unwrap_or_default();
-        let wd = args.get("working_directory").and_then(|w| w.as_str()).unwrap_or(".");
-        let canonical = format!("run_command:{}:{}", cmd, wd);
-        let hash = Sha256::digest(canonical.as_bytes());
-        hex::encode(hash)
     }
 
     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolResult, String> {

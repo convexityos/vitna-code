@@ -2,7 +2,6 @@ use crate::workspace_fs::Workspace;
 use crate::{Tool, ToolContext, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
 pub struct WriteFileTool;
 
@@ -82,14 +81,6 @@ impl Tool for WriteFileTool {
             is_mutating: true,
             requires_approval: true,
         }
-    }
-
-    fn compute_action_digest(&self, args: &serde_json::Value) -> String {
-        let path = args.get("path").and_then(|p| p.as_str()).unwrap_or_default();
-        let content = args.get("content").and_then(|c| c.as_str()).unwrap_or_default();
-        let canonical = format!("write_file:{}:{}", path, content);
-        let hash = Sha256::digest(canonical.as_bytes());
-        hex::encode(hash)
     }
 
     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolResult, String> {
