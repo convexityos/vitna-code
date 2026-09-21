@@ -1,5 +1,7 @@
 //! Vitna Agent Protocol definitions, wire framing, and envelope serialization.
 
+pub mod type_url;
+
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
 
