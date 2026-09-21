@@ -1,5 +1,15 @@
 # Phase 2 Gate Report: Competitive Solo-Agent Alpha
 
+> **Correction, 2026-09-20.** This report is kept as a dated record of what was
+> believed on 2026-09-16, and has deliberately not been rewritten. It was
+> written in a tree where the Rust workspace did not compile: all five
+> `Build & Test` legs failed at manifest load in 6 to 24 seconds, so no test in
+> this repository had ever run. The workspace first compiled on 2026-09-18 (#4)
+> and CI first concluded `success` on 2026-09-20 (#10). Read every "PASSED" and
+> every "verified" below in that light. The corrected status is in the audit
+> note at the top of `IMPLEMENTATION_STATUS.md`.
+
+
 - Status: PASSED
 - Date: 2026-09-16
 - Working product: Vitna Code (vitna)
