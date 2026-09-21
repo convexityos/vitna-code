@@ -192,17 +192,29 @@ async fn stream_events(
         store.subscribe()
     };
 
-    // KNOWN DEFECT, latent until SubmitTurn is served: correct for a session
-    // with one run, wrong for a second. The protocol and every client treat
-    // `sequence` as monotonic per SESSION (one resume_after_sequence, one
-    // lastSequence), but the engine numbers each RUN from 1. So once a
-    // session's first run has sent 1..N, its second run's 1..N compare at or
-    // below `last_sent` and are dropped here, and the client would drop them
-    // too as replays if they arrived. Its N+1 then lands contiguous, so
-    // neither side can see the loss. Reproduced by the window-port session's
-    // trace and a scratch test. Unreachable today, since nothing over the wire
-    // can start a run, and it must be fixed before anything can: the fix is
-    // to number events per session, not to patch this comparison.
+    // KNOWN DEFECTS, both latent until SubmitTurn is served, since nothing
+    // over the wire can start a run yet. Both must be fixed before anything
+    // can, and one change fixes both: register a run with its session when it
+    // STARTS, and number events per session rather than per run.
+    //
+    // 1. A run driven through `DaemonServer::run_task` streams nothing live,
+    //    not even a session's first. The live loop below forwards only events
+    //    whose run is the session's `latest_run_id`, and `run_task` sets that
+    //    only after the run has FINISHED. So during a first run it is still
+    //    None, and during any later run it still names the previous one. Found
+    //    by reading `run_task`, not yet reproduced. This file's tests never
+    //    saw it because their fixture sets `latest_run_id` before appending,
+    //    which production never does.
+    //
+    // 2. A session's second run would lose its opening events. The protocol
+    //    and every client treat `sequence` as monotonic per SESSION (one
+    //    resume_after_sequence, one lastSequence), but the engine numbers each
+    //    RUN from 1. So once a first run has sent 1..N, the second run's 1..N
+    //    compare at or below `last_sent` and are dropped here, and the client
+    //    would drop them too as replays if they arrived. Its N+1 then lands
+    //    contiguous, so neither side can see the loss. Found by the
+    //    window-port session's trace and reproduced with a scratch test.
+    //    Patching this comparison would not fix it.
     let mut last_sent = resume_after;
 
     // The run this session is on. The store indexes events by run, and
