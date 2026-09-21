@@ -351,6 +351,80 @@ async fn an_event_appended_after_subscribing_arrives_live() {
     assert_eq!(live.type_url, type_url::event::DIAGNOSTIC);
 }
 
+/// An event this protocol does not declare is still streamed, in sequence.
+///
+/// The obvious improvement here is a filter that sends only declared events,
+/// and it would hang every client. A run numbers ALL its events from one
+/// counter, declared and not, so dropping one leaves a hole. The desktop
+/// client admits undecodable events through the same sequencing as decoded
+/// ones (`admit()` in `apps/vitna-desktop/src/run/reducer.ts`), so a hole reads
+/// as a gap: it resubscribes after the last sequence it holds, the daemon
+/// drops the same event again, and the stream never advances. Forever, and
+/// with nothing on screen to say why.
+///
+/// So an undeclared name is the client's to handle, and it does: it lands as a
+/// visible "unknown" item with the sequence advanced. Keeping names declared
+/// is the engine's job, not the transport's.
+#[tokio::test]
+async fn an_undeclared_event_is_streamed_rather_than_leaving_a_hole() {
+    let fx = start("undeclared").await;
+
+    {
+        let store = fx.daemon.store.lock().expect("lock store");
+        let mut prev = GENESIS_HASH.to_string();
+        let names = [
+            type_url::event::DIAGNOSTIC,
+            // One of the names the engine records today that no .proto declares.
+            "vitna.v1.TurnStarted",
+            type_url::event::DIAGNOSTIC,
+        ];
+        for (i, name) in names.iter().enumerate() {
+            let sequence = vitna_protocol::FIRST_EVENT_SEQUENCE + i as u64;
+            let event = EventRecord::new(
+                format!("ev-{}-{sequence}", fx.run_id),
+                &fx.run_id,
+                sequence,
+                *name,
+                1_000 + sequence,
+                b"{}".to_vec(),
+                &prev,
+            );
+            prev = event.event_hash.clone();
+            store.append_event(&event).expect("append");
+        }
+    }
+
+    let mut stream = connect(&fx.endpoint).await;
+    assert!(handshake(&mut stream).await.accepted);
+    send(
+        &mut stream,
+        type_url::command::SUBSCRIBE_EVENTS,
+        &fx.session_id,
+        &SubscribeEvents {
+            session_id: fx.session_id.clone(),
+            resume_after_sequence: 0,
+        },
+    )
+    .await;
+
+    let got: Vec<(u64, String)> = {
+        let mut v = Vec::new();
+        for _ in 0..3 {
+            let e = recv(&mut stream).await;
+            v.push((e.sequence, e.type_url));
+        }
+        v
+    };
+
+    assert_eq!(
+        got.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+        vec![1, 2, 3],
+        "the stream must stay contiguous; a filtered event is a hole the client \
+         reads as a gap and resubscribes into forever"
+    );
+    assert_eq!(got[1].1, "vitna.v1.TurnStarted");
+}
+
 #[tokio::test]
 async fn an_undeclared_command_is_refused_by_name() {
     let fx = start("unknown").await;
