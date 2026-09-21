@@ -72,7 +72,10 @@ impl OrchestrationEngine {
             tool_registry: ToolRegistry::standard(),
             context_assembler: ContextAssembler::new(),
             signing_key,
-            sequence_counter: 0,
+            // Not 0. A subscriber resuming "after 0" would never be sent an
+            // event numbered 0, which is every run's first. See
+            // vitna_protocol::FIRST_EVENT_SEQUENCE.
+            sequence_counter: vitna_protocol::FIRST_EVENT_SEQUENCE,
             last_event_hash: GENESIS_HASH.to_string(),
             recorded_event_hashes: Vec::new(),
             changeset_modifications: Vec::new(),
