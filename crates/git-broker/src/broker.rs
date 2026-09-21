@@ -90,9 +90,23 @@ impl GitBroker {
                 continue;
             }
 
-            if path.is_dir() {
+            // The entry's own type: a link is never followed. Materialization
+            // keeps links that stay inside the checkout, `loop -> .` among
+            // them, and a link the agent made could point anywhere; following
+            // either would loop this scan or put files from outside the
+            // workspace into the changeset. Links are left out of it.
+            let file_type = entry.file_type().map_err(|e| e.to_string())?;
+            if file_type.is_symlink() {
+                tracing::warn!(
+                    "Not scanning link '{}' in the agent workspace; changesets carry regular files only",
+                    path.display()
+                );
+                continue;
+            }
+
+            if file_type.is_dir() {
                 Self::scan_directory(base_agent, base_primary, &path, changes, all_diffs)?;
-            } else if path.is_file() {
+            } else if file_type.is_file() {
                 let rel = path
                     .strip_prefix(base_agent)
                     .map_err(|e| e.to_string())?
