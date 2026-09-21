@@ -9,6 +9,22 @@ pub const PROTOCOL_VERSION_MAJOR: u32 = 1;
 pub const PROTOCOL_VERSION_MINOR: u32 = 0;
 pub const MAX_FRAME_SIZE_BYTES: u32 = 16 * 1024 * 1024; // 16 MB
 
+/// The sequence number the first event of a run carries.
+///
+/// It is 1 rather than 0, and the reason is `SubscribeEvents`. Its
+/// `resume_after_sequence` is a proto3 scalar, so an unset field and a literal
+/// zero are the same value on the wire, and a first subscription therefore
+/// cannot say "from the beginning" except by sending 0. "Resume AFTER 0" has
+/// to mean "everything", which it does only while no event is numbered 0.
+///
+/// Numbering from 0 makes the run's opening event unreachable, and does it
+/// silently: a subscriber's contiguity check needs a previous event to measure
+/// against, so the one event it can never notice missing is the first.
+///
+/// `apps/vitna-desktop/src/client/client.ts` states the same reading from the
+/// client side and opens every subscription with 0.
+pub const FIRST_EVENT_SEQUENCE: u64 = 1;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolEnvelope {
     pub protocol_version_major: u32,
