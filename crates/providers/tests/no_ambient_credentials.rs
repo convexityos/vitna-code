@@ -127,9 +127,11 @@ fn no_production_path_reads_a_credential_from_the_environment() {
                 matches!(err, CredentialError::StoreFailed { .. }),
                 "an unavailable store should fail as StoreFailed, not {err:?}"
             );
+            // The repository's convention, so `grep skipped:` finds the part
+            // that did not run; the assertions above it did run.
             eprintln!(
-                "note: {err}. Checked that this is an error rather than an environment \
-                 fallback; the keychain round trip cannot run on this machine."
+                "skipped: the keychain round trip, because {err}. The store's absence \
+                 was checked to be an error rather than an environment fallback."
             );
             return;
         }
