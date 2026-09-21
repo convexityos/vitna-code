@@ -1,7 +1,6 @@
 use crate::client::McpClient;
 use crate::protocol::McpToolDescriptor;
 use async_trait::async_trait;
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use vitna_tools::{Tool, ToolContext, ToolDefinition, ToolResult};
@@ -49,11 +48,23 @@ impl Tool for McpToolBridge {
         }
     }
 
+    /// An MCP tool's identity includes the server that serves it, so this
+    /// overrides the default, which knows only the tool's name. Two servers can
+    /// expose a tool of the same name, and approving one must not approve the
+    /// other.
+    ///
+    /// The server travels as its own field. It was once spliced into the name
+    /// with an unescaped `:`, so server `a:b` exposing `c` and server `a`
+    /// exposing `b:c` were one action, and both names come from the server,
+    /// which this tool's own definition calls untrusted. The `mcp_server` key
+    /// also keeps an MCP tool from ever sharing a digest with a built-in tool
+    /// of the same name, since the built-in identity has no such key.
     fn compute_action_digest(&self, args: &serde_json::Value) -> String {
-        let canonical = serde_json::to_string(args).unwrap_or_default();
-        let payload = format!("mcp:{}:{}:{}", self.server_name, self.descriptor.name, canonical);
-        let hash = Sha256::digest(payload.as_bytes());
-        hex::encode(hash)
+        vitna_tools::canonical_digest(&serde_json::json!({
+            "mcp_server": self.server_name,
+            "tool": self.descriptor.name,
+            "args": args,
+        }))
     }
 
     async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ToolResult, String> {

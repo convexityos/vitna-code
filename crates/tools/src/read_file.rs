@@ -2,7 +2,6 @@ use crate::workspace_fs::{read_up_to, sha256_hex, Resolved, Workspace, MAX_FILE_
 use crate::{Tool, ToolContext, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
 /// The most bytes of numbered file content one call returns.
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
@@ -85,12 +84,6 @@ impl Tool for ReadFileTool {
             is_mutating: false,
             requires_approval: false,
         }
-    }
-
-    fn compute_action_digest(&self, args: &serde_json::Value) -> String {
-        let canonical = serde_json::to_string(args).unwrap_or_default();
-        let hash = Sha256::digest(canonical.as_bytes());
-        hex::encode(hash)
     }
 
     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolResult, String> {

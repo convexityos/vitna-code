@@ -85,11 +85,103 @@ impl ToolContext {
     }
 }
 
+/// The identity of an action: which tool, given exactly which arguments.
+///
+/// An approval is bound to this value, so what an operator approves is every
+/// action that produces it. Two properties follow, and each was once broken:
+///
+/// - **The tool is part of the action.** Five tools hashed their arguments
+///   alone, so reading a path and listing it were one action to approve.
+/// - **Every argument is part of the action, in an encoding with one reading.**
+///   Three tools joined a hand-picked list of fields with an unescaped `:`.
+///   The join made `c` written to `a:b` and `b:c` written to `a` the same
+///   action, and the hand-picked list left out `run_command`'s `timeout_ms`,
+///   so approving a command with one time limit approved it with any. Hashing
+///   the whole argument object removes the list, and with it the field that
+///   gets forgotten.
+///
+/// The encoding is JSON with object keys sorted at every depth, done here
+/// rather than left to `serde_json`'s map type: its order depends on whether
+/// any crate in the build enables `preserve_order`, and Cargo unifies features
+/// across the workspace, so a dependency added for an unrelated reason would
+/// silently re-key every approval.
+///
+/// What this does NOT bind, and CONTRIBUTING's rule says it should: the
+/// resolved executable, the canonical working directory, environment names,
+/// mounts and runner limits. Those are decided in the runner, not carried in a
+/// tool's arguments, so binding them is a change to where the digest is
+/// computed rather than to how.
+pub fn action_digest(tool_name: &str, args: &serde_json::Value) -> String {
+    canonical_digest(&serde_json::json!({ "tool": tool_name, "args": args }))
+}
+
+/// SHA-256 of a structured identity, canonically encoded.
+///
+/// For a tool whose identity is more than its name. An MCP tool is one: two
+/// servers can expose a tool of the same name, so the server belongs in the
+/// identity too. Pass it as a FIELD of `identity`, never spliced into the name
+/// with a separator, because splicing is the flaw [`action_digest`] exists to
+/// remove: server `a:b` exposing `c` and server `a` exposing `b:c` would be one
+/// action again.
+pub fn canonical_digest(identity: &serde_json::Value) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut canonical = String::new();
+    write_canonical(identity, &mut canonical);
+    hex::encode(Sha256::digest(canonical.as_bytes()))
+}
+
+/// Writes `value` as JSON with object keys sorted at every depth.
+///
+/// Scalars go through `serde_json`, which escapes strings, so a quote, colon
+/// or brace inside a value can never be read back as structure. That escaping
+/// is the whole fix for the separator collisions.
+fn write_canonical(value: &serde_json::Value, out: &mut String) {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (i, key) in keys.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::Value::String(key.clone()).to_string());
+                out.push(':');
+                write_canonical(&map[key], out);
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical(item, out);
+            }
+            out.push(']');
+        }
+        scalar => out.push_str(&scalar.to_string()),
+    }
+}
+
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn definition(&self) -> ToolDefinition;
-    fn compute_action_digest(&self, args: &serde_json::Value) -> String;
+
+    /// The digest an approval of this call is bound to.
+    ///
+    /// Provided, and meant to stay that way. Every tool once wrote its own,
+    /// which is how three schemes with three different flaws came to coexist.
+    /// A tool that overrides this narrows what an operator is shown relative
+    /// to what runs, so an override needs a reason written next to it.
+    fn compute_action_digest(&self, args: &serde_json::Value) -> String {
+        action_digest(self.name(), args)
+    }
+
     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolResult, String>;
 }
 
