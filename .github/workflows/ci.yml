@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   check-rules:
-    name: Repository Hygiene & Em-Dash Scan
+    name: Repository Hygiene (em-dashes, runner labels)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +24,12 @@ jobs:
             exit 1
           fi
           echo "Em-dash check passed."
+      # A runner label that matches no runner does not fail. It queues, and
+      # GitHub cancels it 24 hours later, so the run concludes "cancelled"
+      # with every step green. This job gates matrix-build, so a bad label
+      # is caught before any leg can hang on it.
+      - name: Validate runner labels
+        run: node scripts/check-runner-labels.mjs
 
   desktop:
     name: Desktop frontend (typecheck, test, build)
@@ -72,7 +78,7 @@ jobs:
             triple: x86_64-pc-windows-msvc
           - os: windows
             arch: aarch64
-            runner: windows-11-arm64
+            runner: windows-11-arm
             triple: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
