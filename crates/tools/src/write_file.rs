@@ -1,27 +1,22 @@
-use crate::path_safety::resolve_workspace_path;
+use crate::workspace_fs::Workspace;
 use crate::{Tool, ToolContext, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::fs;
 
 pub struct WriteFileTool;
 
 impl WriteFileTool {
     /// Generates a unified diff comparing old_content with new_content.
+    ///
+    /// Each line keeps its exact terminator, so a change of line endings
+    /// alone still shows up, and a last line without a newline carries the
+    /// `\ No newline at end of file` marker that diff and git use.
     pub fn generate_unified_diff(path: &str, old_content: &str, new_content: &str) -> String {
         let mut diff = format!("--- a/{}\n+++ b/{}\n", path, path);
 
-        let old_lines: Vec<&str> = if old_content.is_empty() {
-            Vec::new()
-        } else {
-            old_content.lines().collect()
-        };
-        let new_lines: Vec<&str> = if new_content.is_empty() {
-            Vec::new()
-        } else {
-            new_content.lines().collect()
-        };
+        let old_lines = split_lines(old_content);
+        let new_lines = split_lines(new_content);
 
         diff.push_str(&format!(
             "@@ -1,{} +1,{} @@\n",
@@ -30,14 +25,29 @@ impl WriteFileTool {
         ));
 
         // Simple line diff representation
-        for line in &old_lines {
-            diff.push_str(&format!("-{}\n", line));
-        }
-        for line in &new_lines {
-            diff.push_str(&format!("+{}\n", line));
-        }
+        push_lines(&mut diff, '-', &old_lines);
+        push_lines(&mut diff, '+', &new_lines);
 
         diff
+    }
+}
+
+/// Lines with their terminators (`\n` or `\r\n`) still attached.
+fn split_lines(content: &str) -> Vec<&str> {
+    if content.is_empty() {
+        Vec::new()
+    } else {
+        content.split_inclusive('\n').collect()
+    }
+}
+
+fn push_lines(diff: &mut String, sign: char, lines: &[&str]) {
+    for line in lines {
+        diff.push(sign);
+        diff.push_str(line);
+        if !line.ends_with('\n') {
+            diff.push_str("\n\\ No newline at end of file\n");
+        }
     }
 }
 
@@ -93,32 +103,19 @@ impl Tool for WriteFileTool {
             .and_then(|c| c.as_str())
             .ok_or_else(|| "Missing required 'content' parameter".to_string())?;
 
-        let resolved_path = resolve_workspace_path(&ctx.workspace_root, path_str)?;
-
-        let (old_content, preimage_hash) = if resolved_path.exists() {
-            let raw = fs::read(&resolved_path)
-                .map_err(|e| format!("Failed to read existing file {}: {}", path_str, e))?;
-            let hash = hex::encode(Sha256::digest(&raw));
-            (String::from_utf8_lossy(&raw).to_string(), hash)
-        } else {
-            (
-                String::new(),
-                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            )
-        };
-
-        let postimage_hash = hex::encode(Sha256::digest(new_content.as_bytes()));
+        // Resolved on the real filesystem: a link out of the workspace, a
+        // FIFO or a directory at the path is refused before anything is read.
+        let workspace = Workspace::new(&ctx.workspace_root)?;
+        let pending = workspace.prepare_write(path_str)?;
+        let preimage_hash = pending.preimage_hash.clone();
+        let old_content = String::from_utf8_lossy(&pending.preimage).into_owned();
         let diff = Self::generate_unified_diff(path_str, &old_content, new_content);
 
-        // Ensure parent directory exists
-        if let Some(parent) = resolved_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create parent directory for {}: {}", path_str, e))?;
-        }
-
-        // Write content
-        fs::write(&resolved_path, new_content)
-            .map_err(|e| format!("Failed to write file {}: {}", path_str, e))?;
+        // The postimage is the hash of what reading the file back returned,
+        // never of `new_content`: a short write, an error the filesystem
+        // reports only at close, or anything rewriting the file first would
+        // otherwise be attested as done. A mismatch fails the write.
+        let postimage_hash = workspace.commit_write(pending, new_content.as_bytes())?;
 
         let output = format!(
             "Successfully wrote {} bytes to {}\nPreimage: {}\nPostimage: {}\nDiff:\n{}",
@@ -140,5 +137,59 @@ impl Tool for WriteFileTool {
             exit_code: None,
             ..Default::default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{file_link, Scratch};
+    use crate::workspace_fs::{sha256_hex, ABSENT_PREIMAGE_HASH};
+    use std::fs;
+
+    async fn write(s: &Scratch, path: &str, content: &str) -> Result<ToolResult, String> {
+        WriteFileTool
+            .execute(json!({ "path": path, "content": content }), &s.ctx())
+            .await
+    }
+
+    #[tokio::test]
+    async fn test_postimage_is_the_hash_of_the_bytes_on_disk() {
+        let s = Scratch::new("write_postimage");
+        let content = "line one\r\nline two\nno newline";
+        let res = write(&s, "src/lib.rs", content).await.expect("write");
+        let on_disk = fs::read(s.ws().join("src/lib.rs")).unwrap();
+        assert_eq!(on_disk, content.as_bytes(), "bytes must land exactly");
+        assert_eq!(res.postimage_hash, Some(sha256_hex(&on_disk)));
+        assert_eq!(res.preimage_hash.as_deref(), Some(ABSENT_PREIMAGE_HASH));
+
+        let res = write(&s, "src/lib.rs", "replaced\n").await.expect("rewrite");
+        assert_eq!(res.preimage_hash, Some(sha256_hex(&on_disk)));
+        assert_eq!(res.postimage_hash, Some(sha256_hex(b"replaced\n")));
+    }
+
+    #[tokio::test]
+    async fn test_write_through_a_link_out_of_the_workspace_is_denied() {
+        let s = Scratch::new("write_link_out");
+        let target = s.outside().join("secret.txt");
+        if !file_link(&target, &s.ws().join("notes.txt")) {
+            eprintln!("skipped: this machine cannot create symbolic links");
+            return;
+        }
+        let err = write(&s, "notes.txt", "pwned\n").await.unwrap_err();
+        assert!(err.contains("Access denied"), "{}", err);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "TOP SECRET\n");
+    }
+
+    #[test]
+    fn test_diff_keeps_line_endings() {
+        let diff = WriteFileTool::generate_unified_diff("f", "a\nb\n", "a\r\nb\r\n");
+        assert!(diff.contains("-a\n-b\n+a\r\n+b\r\n"), "{:?}", diff);
+
+        let diff = WriteFileTool::generate_unified_diff("f", "a\n", "a");
+        assert!(diff.ends_with("+a\n\\ No newline at end of file\n"), "{:?}", diff);
+
+        let diff = WriteFileTool::generate_unified_diff("f", "", "x\n");
+        assert!(diff.contains("@@ -1,0 +1,1 @@\n+x\n"), "{:?}", diff);
     }
 }

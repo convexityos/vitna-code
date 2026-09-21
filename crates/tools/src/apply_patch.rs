@@ -1,9 +1,8 @@
-use crate::path_safety::resolve_workspace_path;
+use crate::workspace_fs::Workspace;
 use crate::{Tool, ToolContext, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::fs;
 
 pub struct ApplyPatchTool;
 
@@ -59,19 +58,12 @@ impl Tool for ApplyPatchTool {
             .and_then(|c| c.as_str())
             .ok_or_else(|| "Missing required 'content' parameter".to_string())?;
 
-        let resolved_path = resolve_workspace_path(&ctx.workspace_root, path_str)?;
-
-        let (old_content, current_preimage) = if resolved_path.exists() {
-            let raw = fs::read(&resolved_path)
-                .map_err(|e| format!("Failed to read existing file: {}", e))?;
-            let hash = hex::encode(Sha256::digest(&raw));
-            (String::from_utf8_lossy(&raw).to_string(), hash)
-        } else {
-            (
-                String::new(),
-                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            )
-        };
+        // Same containment as write_file. The preimage is read through the
+        // verified handle that the write will use, and nothing on disk
+        // changes until the preimage check below has passed.
+        let workspace = Workspace::new(&ctx.workspace_root)?;
+        let pending = workspace.prepare_write(path_str)?;
+        let current_preimage = pending.preimage_hash.clone();
 
         // Preimage validation: abort if file changed under the agent
         if let Some(expected) = args.get("expected_preimage_hash").and_then(|e| e.as_str()) {
@@ -83,15 +75,11 @@ impl Tool for ApplyPatchTool {
             }
         }
 
-        let postimage_hash = hex::encode(Sha256::digest(new_content.as_bytes()));
+        let old_content = String::from_utf8_lossy(&pending.preimage).into_owned();
         let diff = crate::write_file::WriteFileTool::generate_unified_diff(path_str, &old_content, new_content);
 
-        if let Some(parent) = resolved_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-
-        fs::write(&resolved_path, new_content)
-            .map_err(|e| format!("Failed to write patched file: {}", e))?;
+        // Hashed from the bytes read back after the write, as in write_file.
+        let postimage_hash = workspace.commit_write(pending, new_content.as_bytes())?;
 
         let output = format!(
             "Patch applied cleanly to {}\nPreimage:  {}\nPostimage: {}\n",
@@ -109,5 +97,79 @@ impl Tool for ApplyPatchTool {
             exit_code: None,
             ..Default::default()
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{dir_link, Scratch};
+    use crate::workspace_fs::sha256_hex;
+    use std::fs;
+
+    async fn patch(s: &Scratch, args: serde_json::Value) -> Result<ToolResult, String> {
+        ApplyPatchTool.execute(args, &s.ctx()).await
+    }
+
+    #[tokio::test]
+    async fn test_patch_preserves_crlf_and_hashes_the_bytes_on_disk() {
+        let s = Scratch::new("patch_crlf");
+        fs::write(s.ws().join("a.txt"), "one\r\ntwo\r\n").unwrap();
+        let before = sha256_hex(b"one\r\ntwo\r\n");
+
+        let res = patch(
+            &s,
+            json!({ "path": "a.txt", "content": "one\r\n2\r\n", "expected_preimage_hash": before }),
+        )
+        .await
+        .expect("patch");
+        let on_disk = fs::read(s.ws().join("a.txt")).unwrap();
+        assert_eq!(on_disk, b"one\r\n2\r\n");
+        assert_eq!(res.preimage_hash, Some(before));
+        assert_eq!(res.postimage_hash, Some(sha256_hex(&on_disk)));
+    }
+
+    #[tokio::test]
+    async fn test_conflicting_preimage_changes_nothing() {
+        let s = Scratch::new("patch_conflict");
+        fs::write(s.ws().join("a.txt"), "current\n").unwrap();
+        let err = patch(
+            &s,
+            json!({ "path": "a.txt", "content": "new\n", "expected_preimage_hash": "0".repeat(64) }),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("Patch conflict"), "{}", err);
+        assert_eq!(fs::read_to_string(s.ws().join("a.txt")).unwrap(), "current\n");
+
+        // A conflicting patch to a new file leaves no file and no directories.
+        let err = patch(
+            &s,
+            json!({ "path": "sub/b.txt", "content": "x", "expected_preimage_hash": sha256_hex(b"y") }),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("Patch conflict"), "{}", err);
+        assert!(!s.ws().join("sub").exists());
+    }
+
+    #[tokio::test]
+    async fn test_patch_into_a_directory_link_out_of_the_workspace_is_denied() {
+        let s = Scratch::new("patch_dir_link_out");
+        let outside = s.outside();
+        if !dir_link(&outside, &s.ws().join("home")) {
+            eprintln!("skipped: this machine cannot create directory links");
+            return;
+        }
+        let err = patch(&s, json!({ "path": "home/secret.txt", "content": "pwned\n" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Access denied"), "{}", err);
+        let err = patch(&s, json!({ "path": "home/new.txt", "content": "pwned\n" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Access denied"), "{}", err);
+        assert_eq!(fs::read_to_string(outside.join("secret.txt")).unwrap(), "TOP SECRET\n");
+        assert!(!outside.join("new.txt").exists());
     }
 }
