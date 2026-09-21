@@ -1,5 +1,7 @@
 //! Vitna Agent Protocol definitions, wire framing, and envelope serialization.
 
+pub mod endpoint;
+pub mod messages;
 pub mod type_url;
 
 use serde::{Deserialize, Serialize};
@@ -60,16 +62,55 @@ impl ProtocolEnvelope {
         }
     }
 
+    /// Builds an envelope around a declared payload, serialized the way the
+    /// wire carries it.
+    ///
+    /// `type_url` should come from [`type_url`] rather than being spelled at
+    /// the call site, so a name that no `.proto` declares cannot be sent.
+    pub fn carrying<T: Serialize>(
+        type_url: impl Into<String>,
+        session_id: impl Into<String>,
+        run_id: impl Into<String>,
+        sequence: u64,
+        idempotency_key: impl Into<String>,
+        payload: &T,
+    ) -> Result<Self, io::Error> {
+        let bytes = serde_json::to_vec(payload)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        Ok(Self::new(
+            type_url,
+            session_id,
+            run_id,
+            sequence,
+            idempotency_key,
+            bytes,
+        ))
+    }
+
+    /// Reads the payload as `T`.
+    ///
+    /// A payload that does not decode is an error rather than a default. The
+    /// proto3 defaulting this crate honours covers an absent FIELD, which
+    /// `messages` handles with `#[serde(default)]`; it does not cover a
+    /// payload that is not the message it claims to be.
+    pub fn payload_as<T: serde::de::DeserializeOwned>(&self) -> Result<T, String> {
+        serde_json::from_slice(&self.payload)
+            .map_err(|e| format!("payload is not a valid {}: {e}", self.type_url))
+    }
+
     /// Encodes the envelope with a 4-byte big-endian length prefix.
     pub fn encode_frame(&self) -> Result<Vec<u8>, io::Error> {
-        let serialized = serde_json::to_vec(self)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let serialized =
+            serde_json::to_vec(self).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let len = serialized.len() as u32;
 
         if len > MAX_FRAME_SIZE_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("Frame length {} exceeds maximum limit {}", len, MAX_FRAME_SIZE_BYTES),
+                format!(
+                    "Frame length {} exceeds maximum limit {}",
+                    len, MAX_FRAME_SIZE_BYTES
+                ),
             ));
         }
 
@@ -88,7 +129,10 @@ impl ProtocolEnvelope {
         if frame_len > MAX_FRAME_SIZE_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Incoming frame size {} exceeds limit {}", frame_len, MAX_FRAME_SIZE_BYTES),
+                format!(
+                    "Incoming frame size {} exceeds limit {}",
+                    frame_len, MAX_FRAME_SIZE_BYTES
+                ),
             ));
         }
 
@@ -133,7 +177,8 @@ mod tests {
         huge_frame.extend_from_slice(&invalid_len.to_be_bytes());
 
         let mut cursor = std::io::Cursor::new(huge_frame);
-        let err = ProtocolEnvelope::decode_frame(&mut cursor).expect_err("must fail on oversized frame");
+        let err =
+            ProtocolEnvelope::decode_frame(&mut cursor).expect_err("must fail on oversized frame");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 }
