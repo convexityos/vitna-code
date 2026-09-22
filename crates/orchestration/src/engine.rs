@@ -73,8 +73,10 @@ impl OrchestrationEngine {
             context_assembler: ContextAssembler::new(),
             signing_key,
             // Not 0. A subscriber resuming "after 0" would never be sent an
-            // event numbered 0, which is every run's first. See
-            // vitna_protocol::FIRST_EVENT_SEQUENCE.
+            // event numbered 0, which is a session's first. See
+            // vitna_protocol::FIRST_EVENT_SEQUENCE. A run that is not a
+            // session's first continues from where the last one stopped,
+            // through `continuing_at`.
             sequence_counter: vitna_protocol::FIRST_EVENT_SEQUENCE,
             last_event_hash: GENESIS_HASH.to_string(),
             recorded_event_hashes: Vec::new(),
@@ -84,6 +86,25 @@ impl OrchestrationEngine {
             evidence_items: Vec::new(),
             history: Vec::new(),
         }
+    }
+
+    /// Numbers this run's events from `next_sequence` instead of from the
+    /// start, so a session's second run continues its first.
+    ///
+    /// The protocol numbers events per SESSION: `SubscribeEvents` carries one
+    /// `resume_after_sequence` for the whole session, and a client keeps one
+    /// cursor. Numbering every run from 1 made a second run's opening events
+    /// indistinguishable from replays of the first run's, so they were dropped,
+    /// and its next event then landed exactly contiguous, which hid the loss
+    /// from both ends.
+    ///
+    /// The hash chain is untouched: it still starts from `GENESIS_HASH` for
+    /// every run, since a receipt attests to one run. Only the numbering spans
+    /// the session. A value below `FIRST_EVENT_SEQUENCE` is raised to it, for
+    /// the reason that constant gives.
+    pub fn continuing_at(mut self, next_sequence: u64) -> Self {
+        self.sequence_counter = next_sequence.max(vitna_protocol::FIRST_EVENT_SEQUENCE);
+        self
     }
 
     /// Records an event to the append-only event store with monotonic sequence and hash chaining.

@@ -166,16 +166,62 @@ fn negotiate(request: &HandshakeRequest) -> HandshakeResponse {
     }
 }
 
+/// Every stored event of the session's runs with a sequence after `after`, in
+/// sequence order, or `None` if the session is gone.
+///
+/// Walks EVERY run in the session. Replaying only the latest run was how a
+/// late subscriber was handed half a session.
+fn session_events_after(
+    daemon: &DaemonServer,
+    session_id: &str,
+    after: u64,
+) -> Option<Vec<vitna_store::EventRecord>> {
+    let runs = daemon.get_session(session_id)?.runs;
+    let store = daemon.store.lock().ok()?;
+    let mut events = Vec::new();
+    for run in &runs {
+        events.extend(store.events_after(run, after).unwrap_or_default());
+    }
+    // Runs number contiguously across the session, so this is already in
+    // order when runs are sequential; the sort keeps it so if they ever are not.
+    events.sort_by_key(|e| e.sequence);
+    Some(events)
+}
+
+/// Sends one stored event as it was recorded. `false` once the connection is
+/// gone, which ends the subscription.
+async fn forward(out: &Outbound, session_id: &str, event: &vitna_store::EventRecord) -> bool {
+    let envelope = ProtocolEnvelope::new(
+        event.type_url.clone(),
+        session_id.to_string(),
+        event.run_id.clone(),
+        event.sequence,
+        String::new(),
+        event.encrypted_payload.clone(),
+    );
+    out.send(envelope).await.is_ok()
+}
+
 /// Streams a session's events to one subscriber until the connection drops.
+///
+/// A session's events are numbered contiguously across all of its runs, so
+/// one cursor, `last_sent`, follows the whole session. That is the contract the
+/// protocol states (one `resume_after_sequence` per session) and every client
+/// keeps (one cursor per session). When the engine numbered each run from 1
+/// instead, a second run's opening events compared at or below the cursor and
+/// were dropped, and the client would have discarded them as replays anyway.
 ///
 /// Ordering is the whole job. The live feed is taken BEFORE the stored replay
 /// is read, so an event appended in between is held in the channel rather than
 /// falling between the two. That makes overlap possible instead of loss, and
-/// overlap is handled by tracking the last sequence actually sent and dropping
-/// anything at or below it.
+/// overlap is removed by skipping anything at or below `last_sent`.
 ///
-/// `Lagged` is not a loss either: the broadcast reports how far behind a
-/// subscriber fell, and the answer is to read the range again from the store,
+/// Membership is decided per event, against the session's run list as it is
+/// at that moment. A run joins its session before it records anything (see
+/// `DaemonServer::register_run`), so its events are recognised as they arrive.
+///
+/// `Lagged` is not a loss either: the broadcast reports how far a subscriber
+/// fell behind, and the answer is to read that range again from the store,
 /// which is the durable copy. The channel is an optimization over polling and
 /// never the record.
 async fn stream_events(
@@ -192,135 +238,62 @@ async fn stream_events(
         store.subscribe()
     };
 
-    // KNOWN DEFECTS, both latent until SubmitTurn is served, since nothing
-    // over the wire can start a run yet. Both must be fixed before anything
-    // can, and one change fixes both: register a run with its session when it
-    // STARTS, and number events per session rather than per run.
-    //
-    // 1. A run driven through `DaemonServer::run_task` streams nothing live,
-    //    not even a session's first. The live loop below forwards only events
-    //    whose run is the session's `latest_run_id`, and `run_task` sets that
-    //    only after the run has FINISHED. So during a first run it is still
-    //    None, and during any later run it still names the previous one. Found
-    //    by reading `run_task`, not yet reproduced. This file's tests never
-    //    saw it because their fixture sets `latest_run_id` before appending,
-    //    which production never does.
-    //
-    // 2. A session's second run would lose its opening events. The protocol
-    //    and every client treat `sequence` as monotonic per SESSION (one
-    //    resume_after_sequence, one lastSequence), but the engine numbers each
-    //    RUN from 1. So once a first run has sent 1..N, the second run's 1..N
-    //    compare at or below `last_sent` and are dropped here, and the client
-    //    would drop them too as replays if they arrived. Its N+1 then lands
-    //    contiguous, so neither side can see the loss. Found by the
-    //    window-port session's trace and reproduced with a scratch test.
-    //    Patching this comparison would not fix it.
+    if daemon.get_session(&session_id).is_none() {
+        let _ = out
+            .send(error_for(
+                &ProtocolEnvelope::new(
+                    type_url::command::SUBSCRIBE_EVENTS,
+                    session_id.clone(),
+                    String::new(),
+                    CONTROL_SEQUENCE,
+                    String::new(),
+                    Vec::new(),
+                ),
+                ErrorCode::UnknownCommand,
+                format!("no session {session_id}"),
+            ))
+            .await;
+        return;
+    }
+
     let mut last_sent = resume_after;
 
-    // The run this session is on. The store indexes events by run, and
-    // nothing populates the agent_runs table that would map a session to all
-    // of its runs, so a subscription follows the session's current run only.
-    // An earlier run's events are on disk and are not replayed here.
-    let run_id = match daemon.get_session(&session_id) {
-        Some(info) => info.latest_run_id,
-        None => {
-            let _ = out
-                .send(error_for(
-                    &ProtocolEnvelope::new(
-                        type_url::command::SUBSCRIBE_EVENTS,
-                        session_id.clone(),
-                        String::new(),
-                        CONTROL_SEQUENCE,
-                        String::new(),
-                        Vec::new(),
-                    ),
-                    ErrorCode::UnknownCommand,
-                    format!("no session {session_id}"),
-                ))
-                .await;
+    let Some(replay) = session_events_after(&daemon, &session_id, last_sent) else {
+        return;
+    };
+    for event in replay {
+        if event.sequence <= last_sent {
+            continue;
+        }
+        if !forward(&out, &session_id, &event).await {
             return;
         }
-    };
-
-    if let Some(run_id) = run_id.as_deref() {
-        let replay = {
-            let store = match daemon.store.lock() {
-                Ok(s) => s,
-                Err(_) => return,
-            };
-            store.events_after(run_id, resume_after).unwrap_or_default()
-        };
-        for event in replay {
-            if event.sequence <= last_sent {
-                continue;
-            }
-            let envelope = ProtocolEnvelope::new(
-                event.type_url.clone(),
-                session_id.clone(),
-                event.run_id.clone(),
-                event.sequence,
-                String::new(),
-                event.encrypted_payload.clone(),
-            );
-            if out.send(envelope).await.is_err() {
-                return;
-            }
-            last_sent = event.sequence;
-        }
+        last_sent = event.sequence;
     }
 
     loop {
         match live.recv().await {
             Ok(event) => {
-                // The session's run can change under a subscription, so the
-                // membership test is per event rather than captured once.
                 let belongs = daemon
                     .get_session(&session_id)
-                    .and_then(|s| s.latest_run_id)
-                    .is_some_and(|r| r == event.run_id);
+                    .is_some_and(|s| s.runs.contains(&event.run_id));
                 if !belongs || event.sequence <= last_sent {
                     continue;
                 }
-                let envelope = ProtocolEnvelope::new(
-                    event.type_url.clone(),
-                    session_id.clone(),
-                    event.run_id.clone(),
-                    event.sequence,
-                    String::new(),
-                    event.encrypted_payload.clone(),
-                );
-                if out.send(envelope).await.is_err() {
+                if !forward(&out, &session_id, &event).await {
                     return;
                 }
                 last_sent = event.sequence;
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                // Fell behind the channel. The store still has everything, so
-                // read forward from the last sequence actually sent.
-                let current = daemon
-                    .get_session(&session_id)
-                    .and_then(|s| s.latest_run_id);
-                let Some(run_id) = current else { continue };
-                let missed = {
-                    let store = match daemon.store.lock() {
-                        Ok(s) => s,
-                        Err(_) => return,
-                    };
-                    store.events_after(&run_id, last_sent).unwrap_or_default()
+                let Some(missed) = session_events_after(&daemon, &session_id, last_sent) else {
+                    return;
                 };
                 for event in missed {
                     if event.sequence <= last_sent {
                         continue;
                     }
-                    let envelope = ProtocolEnvelope::new(
-                        event.type_url.clone(),
-                        session_id.clone(),
-                        event.run_id.clone(),
-                        event.sequence,
-                        String::new(),
-                        event.encrypted_payload.clone(),
-                    );
-                    if out.send(envelope).await.is_err() {
+                    if !forward(&out, &session_id, &event).await {
                         return;
                     }
                     last_sent = event.sequence;

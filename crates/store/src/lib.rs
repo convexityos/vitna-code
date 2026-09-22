@@ -221,6 +221,19 @@ impl EventStore {
         Ok(())
     }
 
+    /// The highest sequence recorded for a run, or `None` if it has none.
+    ///
+    /// Asked of the store rather than remembered by the caller, so a session's
+    /// next run continues from what was actually recorded: a run that crashed
+    /// part-way leaves the count where it really stopped.
+    pub fn last_sequence(&self, run_id: &str) -> SqliteResult<Option<u64>> {
+        self.conn.query_row(
+            "SELECT MAX(sequence) FROM events WHERE run_id = ?1",
+            params![run_id],
+            |row| row.get::<_, Option<u64>>(0),
+        )
+    }
+
     /// Events strictly AFTER `after_sequence`, in order.
     ///
     /// This is what `SubscribeEvents.resume_after_sequence` means: the client
