@@ -4,13 +4,20 @@ pub mod anthropic;
 pub mod credentials;
 pub mod fake;
 pub mod keyring;
+#[cfg(any(test, feature = "test-support"))]
+pub mod memory;
 pub mod openai;
 
 pub use anthropic::AnthropicProvider;
 use async_trait::async_trait;
-pub use credentials::{CredentialResolver, ProviderCredentials};
+pub use credentials::{
+    ApiKey, CredentialError, CredentialResolver, CredentialSource, CredentialStore, InvalidApiKey,
+    ProviderCredentials, ProviderId,
+};
 pub use fake::{FakeProvider, FakeProviderConfig, ReplayEvent, StreamItem};
-pub use keyring::KeyringStore;
+pub use keyring::{KeyringStore, KEYCHAIN_SERVICE};
+#[cfg(any(test, feature = "test-support"))]
+pub use memory::MemoryCredentialStore;
 pub use openai::OpenAIProvider;
 use serde::{Deserialize, Serialize};
 
