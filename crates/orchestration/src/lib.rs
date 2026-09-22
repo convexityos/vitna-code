@@ -1,5 +1,6 @@
 //! Turn execution loop, agent state machine, approval gating, and receipt emission.
 
+pub mod audit;
 pub mod dag;
 pub mod engine;
 

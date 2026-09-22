@@ -209,7 +209,7 @@ impl DaemonServer {
 
         // Record initial user task prompt in event store
         engine.record_event(
-            "vitna.v1.TurnStarted",
+            vitna_orchestration::audit::TURN_STARTED,
             &serde_json::json!({
                 "prompt": prompt,
                 "session_id": session_id,
