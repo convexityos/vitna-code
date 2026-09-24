@@ -117,14 +117,10 @@ impl App {
                         None => "not a receipt".to_string(),
                     };
                     let (icon, tone) = crate::run_list::status(&row);
-                    // The word the list gives the row: a failed check,
+                    // The word the ledger gives the row: a failed check,
                     // the signature's included, outranks what the receipt
-                    // claims about itself.
-                    let state = if row.failed_checks.is_empty() {
-                        (row.state.0.to_string(), row.state.2)
-                    } else {
-                        ("Check failed".to_string(), theme::RUST)
-                    };
+                    // claims about itself, and only trouble takes a colour.
+                    let state = row.standing();
                     let item = Item {
                         section: "Runs",
                         icon: Some(icon),
@@ -152,17 +148,20 @@ impl App {
             let mut n = 0;
             for s in &self.sessions {
                 let first = self.prompts.as_ref().and_then(|p| p.for_session(&s.session_id));
+                let opened = std::time::UNIX_EPOCH + std::time::Duration::from_millis(s.created_at_ms);
+                // Never the id, which the query still matches on.
                 let title = match (first, &self.prompts) {
                     (Some(t), _) => crate::prompts::title(&t.prompt),
                     (None, Some(_)) => "New session".to_string(),
-                    (None, None) => s.session_id.clone(),
+                    (None, None) => crate::runs::age(Some(opened))
+                        .map(|a| format!("Session opened {a}"))
+                        .unwrap_or_else(|| "A session".to_string()),
                 };
                 let turns = match self.prompts.as_ref().map(|p| p.turns_in(&s.session_id)) {
                     Some(1) => "1 turn".to_string(),
                     Some(k) => format!("{k} turns"),
                     None => "-".to_string(),
                 };
-                let opened = std::time::UNIX_EPOCH + std::time::Duration::from_millis(s.created_at_ms);
                 let item = Item {
                     section: "Sessions",
                     icon: Some(icons::bubble),
@@ -200,7 +199,7 @@ impl App {
     /// listed disabled with the reason, never offered and then ignored.
     fn actions(&self, ctx: &egui::Context) -> Vec<Item> {
         let linked = self.link.is_open();
-        let key = |sc: &egui::KeyboardShortcut| ctx.format_shortcut(sc);
+        let key = |sc: &egui::KeyboardShortcut| crate::menu::keys(ctx, sc);
         let act = |icon: Icon, title: &str, shortcut: String, keys: &str, target: Action| Item {
             section: "Actions",
             icon: Some(icon),
@@ -218,7 +217,7 @@ impl App {
             ..act(icons::plus, "New session", String::new(), "create start open", Action::NewSession)
         }];
         if self.open_run.is_some() {
-            out.push(act(icons::chevron_left, "Back to recent runs", String::new(), "home start list", Action::StartScreen));
+            out.push(act(icons::chevron_left, "Back to the runs", String::new(), "home start list", Action::StartScreen));
         }
         out.extend([
             act(icons::sliders, "Settings", key(&crate::menu::SC_SETTINGS), "preferences general about", Action::Settings(SettingsPage::General)),
@@ -450,15 +449,10 @@ impl App {
     }
 }
 
-/// A section's name over its rows.
+/// A section's name over its rows, in words rather than capitals.
 fn header(ui: &mut egui::Ui, title: &str) {
     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::hover());
-    let g = ui.painter().layout_job(theme::eyebrow(ui, title));
-    ui.painter().galley(
-        egui::pos2(r.left() + 22.0, r.center().y - g.size().y / 2.0 + 2.0),
-        g,
-        theme::FAINTER,
-    );
+    theme::label(ui.painter(), egui::pos2(r.left() + 22.0, r.center().y + 2.0), Align2::LEFT_CENTER, title);
 }
 
 /// One result. Returns true when it was clicked.

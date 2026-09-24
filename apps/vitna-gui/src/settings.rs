@@ -180,7 +180,7 @@ impl App {
         card(ui, |ui| {
             let open = self.sidebar_open;
             let mut flip = false;
-            let desc = format!("{} toggles it.", ctx.format_shortcut(&SC_SIDEBAR));
+            let desc = format!("{} toggles it.", crate::menu::keys(&ctx, &SC_SIDEBAR));
             setting_row(ui, "Sidebar", &desc, |ui| {
                 if toggle(ui, open).clicked() {
                     flip = true;
@@ -193,9 +193,9 @@ impl App {
             let z = ctx.zoom_factor();
             let desc = format!(
                 "{} and {} to zoom, {} to reset.",
-                ctx.format_shortcut(&SC_ZOOM_IN),
-                ctx.format_shortcut(&SC_ZOOM_OUT),
-                ctx.format_shortcut(&SC_ZOOM_RESET)
+                crate::menu::keys(&ctx, &SC_ZOOM_IN),
+                crate::menu::keys(&ctx, &SC_ZOOM_OUT),
+                crate::menu::keys(&ctx, &SC_ZOOM_RESET)
             );
             setting_row(ui, "Zoom", &desc, |ui| {
                 ui.label(RichText::new(format!("{:.0}%", z * 100.0)).font(theme::mono(theme::FS_META)).color(theme::INK));
@@ -358,7 +358,7 @@ impl App {
 
 fn page_shortcuts(ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
-    let f = |sc: &egui::KeyboardShortcut| ctx.format_shortcut(sc);
+    let f = |sc: &egui::KeyboardShortcut| crate::menu::keys(&ctx, sc);
     section(ui, "Window");
     card(ui, |ui| {
         let rows = [

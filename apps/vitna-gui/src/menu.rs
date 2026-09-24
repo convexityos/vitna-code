@@ -26,8 +26,21 @@ pub const SC_COPY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, 
 pub const SC_PASTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::V);
 pub const SC_SELECT_ALL: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::A);
 
-/// The strip's height: what the sidebar's content starts below.
-pub const STRIP_H: f32 = 40.0;
+/// The strip's width: the menu and the sidebar toggle, 28 points each.
+pub const STRIP_W: f32 = 58.0;
+
+/// A shortcut as the window prints it: the modifiers by name and then the
+/// key's own character where it has one, "Ctrl+," rather than egui's
+/// "Ctrl+Comma", which reads as a word to type.
+pub(crate) fn keys(ctx: &egui::Context, sc: &KeyboardShortcut) -> String {
+    let text = ctx.format_shortcut(sc);
+    let (name, symbol) = (sc.logical_key.name(), sc.logical_key.symbol_or_name());
+    match text.strip_suffix(name) {
+        Some(head) if name != symbol => format!("{head}{symbol}"),
+        _ => text,
+    }
+}
+
 pub const REPO_URL: &str = "https://github.com/convexityos/vitna-code";
 
 impl App {
@@ -47,6 +60,17 @@ impl App {
         }
         if ctx.input_mut(|i| i.consume_shortcut(&SC_CLOSE)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        // Escape goes back from a run to the ledger, as the terminal client's
+        // does, unless something floating has it first: a menu, search or
+        // settings each close on their own Escape.
+        if self.open_run.is_some()
+            && self.search.is_none()
+            && self.settings.is_none()
+            && !ctx.any_popup_open()
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            self.open_run = None;
         }
     }
 
@@ -79,10 +103,12 @@ impl App {
         ctx.input_mut(|i| i.events.push(event));
     }
 
-    /// Three buttons in the top-left corner: the menu, the sidebar toggle and
-    /// search.
-    pub(crate) fn strip(&mut self, ui: &mut egui::Ui, full: Rect) {
-        let rect = Rect::from_min_size(full.min + Vec2::new(8.0, 6.0), Vec2::new(94.0, 28.0));
+    /// Two buttons, the menu and the sidebar toggle, laid rightward from `at`
+    /// (its left edge, at the row's centre). With the sidebar hidden, search
+    /// has no row to live in, so the strip carries it as a third.
+    pub(crate) fn strip(&mut self, ui: &mut egui::Ui, at: egui::Pos2) {
+        let w = if self.sidebar_open { STRIP_W } else { STRIP_W + 30.0 };
+        let rect = Rect::from_min_size(egui::pos2(at.x, at.y - 14.0), Vec2::new(w, 28.0));
         let mut ui = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(rect)
@@ -98,9 +124,11 @@ impl App {
         if toggle.clicked() {
             self.sidebar_open = !self.sidebar_open;
         }
-        let hint = format!("Search ({})", ui.ctx().format_shortcut(&SC_SEARCH));
-        if icon_button(&mut ui, icons::search, &hint).clicked() {
-            self.search = Some(crate::search::Search::new(String::new()));
+        if !self.sidebar_open {
+            let hint = format!("Search ({})", keys(ui.ctx(), &SC_SEARCH));
+            if icon_button(&mut ui, icons::search, &hint).clicked() {
+                self.search = Some(crate::search::Search::new(String::new()));
+            }
         }
         self.menu(&burger);
     }
@@ -134,11 +162,11 @@ impl App {
         ui.add_enabled(false, egui::Button::new("Open folder..."))
             .on_disabled_hover_text("Opening another folder is the daemon's to do, and it is not running.");
         ui.separator();
-        if ui.add(item("Settings", ctx.format_shortcut(&SC_SETTINGS))).clicked() {
+        if ui.add(item("Settings", keys(ctx, &SC_SETTINGS))).clicked() {
             self.settings = Some(SettingsPage::General);
         }
         ui.separator();
-        if ui.add(item("Close window", ctx.format_shortcut(&SC_CLOSE))).clicked() {
+        if ui.add(item("Close window", keys(ctx, &SC_CLOSE))).clicked() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
@@ -159,7 +187,7 @@ impl App {
                 ui.separator();
             }
             for (label, sc, action) in group.iter() {
-                if ui.add(item(label, ctx.format_shortcut(sc))).clicked() {
+                if ui.add(item(label, keys(ctx, sc))).clicked() {
                     self.pending_edit = Some(*action);
                     ctx.memory_mut(|m| m.request_focus(composer_id()));
                 }
@@ -170,18 +198,18 @@ impl App {
     fn view_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.set_min_width(200.0);
         let label = if self.sidebar_open { "Hide sidebar" } else { "Show sidebar" };
-        if ui.add(item(label, ctx.format_shortcut(&SC_SIDEBAR))).clicked() {
+        if ui.add(item(label, keys(ctx, &SC_SIDEBAR))).clicked() {
             self.sidebar_open = !self.sidebar_open;
         }
         ui.separator();
         let z = ctx.zoom_factor();
-        if ui.add(item("Zoom in", ctx.format_shortcut(&SC_ZOOM_IN))).clicked() {
+        if ui.add(item("Zoom in", keys(ctx, &SC_ZOOM_IN))).clicked() {
             ctx.set_zoom_factor((z * 1.1).min(2.0));
         }
-        if ui.add(item("Zoom out", ctx.format_shortcut(&SC_ZOOM_OUT))).clicked() {
+        if ui.add(item("Zoom out", keys(ctx, &SC_ZOOM_OUT))).clicked() {
             ctx.set_zoom_factor((z / 1.1).max(0.5));
         }
-        if ui.add(item("Reset zoom", ctx.format_shortcut(&SC_ZOOM_RESET))).clicked() {
+        if ui.add(item("Reset zoom", keys(ctx, &SC_ZOOM_RESET))).clicked() {
             ctx.set_zoom_factor(1.0);
         }
     }
@@ -217,4 +245,20 @@ fn icon_button(
     }
     icon(ui.painter(), r.center(), theme::FAINT);
     resp.on_hover_text(hint)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A key with a character of its own is printed as that character, and
+    /// one without keeps its name.
+    #[test]
+    fn a_shortcut_prints_the_key_itself() {
+        let ctx = egui::Context::default();
+        let settings = keys(&ctx, &SC_SETTINGS);
+        assert!(settings.ends_with(','), "{settings}");
+        assert!(!settings.contains("Comma"), "{settings}");
+        assert!(keys(&ctx, &SC_SEARCH).ends_with('K'));
+    }
 }

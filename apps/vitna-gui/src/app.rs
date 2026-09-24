@@ -1,9 +1,12 @@
 //! The window.
 //!
 //! Built to sit beside Claude Code, Codex and OpenCode and hold its own: a wide
-//! sidebar that lists work by name, a calm centre that says what it is looking
-//! at and stops, and a composer with enough presence to be the thing you reach
-//! for. Vitna's palette carries the brand, neutral grounds with one periwinkle.
+//! sidebar that lists work by name, sitting on the window's floor, and a panel
+//! standing on that floor with the work in it, a trail at its head saying
+//! where you are, a calm centre that says what it is looking at and stops,
+//! and a composer with enough presence to be the thing you reach for. The
+//! frame is the owner's new design for Callsider and Convexity (2026-09-22);
+//! Vitna's palette carries the brand, neutral grounds with one periwinkle.
 //!
 //! What this surface may claim is still bounded by what it can reach. The
 //! daemon owns sessions and runs; this window owns the workspace facts it reads
@@ -41,26 +44,6 @@ impl Mode {
 pub enum Placement {
     Local,
     Worktree,
-}
-
-/// The inspector's tabs. Three, because three is what the receipt can answer
-/// for on its own. Cursor's fourth and fifth (Terminal, Secrets) have nothing
-/// behind them here, and an events tab needs the daemon to expose the chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tab {
-    Receipt,
-    Changes,
-    Evidence,
-}
-
-impl Tab {
-    pub fn label(self) -> &'static str {
-        match self {
-            Tab::Receipt => "Receipt",
-            Tab::Changes => "Changes",
-            Tab::Evidence => "Evidence",
-        }
-    }
 }
 
 /// The pages of the settings modal.
@@ -132,7 +115,6 @@ pub struct App {
     /// Which run the centre is showing, as an index into the ledger. None is
     /// the start state.
     pub(crate) open_run: Option<usize>,
-    pub(crate) tab: Tab,
     pub(crate) catalog: Option<Catalog>,
     pub(crate) choices: Vec<Choice>,
     /// Index into `choices`. A preference, handed to the daemon with the turn;
@@ -157,6 +139,8 @@ pub struct App {
     /// stage hands it that much; measured rather than guessed, since the
     /// field's own margins and the row spacing are egui's to decide.
     pub(crate) composer_h: f32,
+    /// The panel's grain, made once from a fixed seed.
+    pub(crate) grain: egui::TextureHandle,
 }
 
 impl App {
@@ -194,7 +178,6 @@ impl App {
             open_run: std::env::var("VITNA_GUI_OPEN_RUN")
                 .ok()
                 .map(|v| v.trim().parse::<usize>().unwrap_or(0)),
-            tab: Tab::Receipt,
             catalog,
             choices,
             model,
@@ -212,9 +195,12 @@ impl App {
             search: std::env::var("VITNA_GUI_OPEN_SEARCH").ok().map(|v| {
                 crate::search::Search::new(if v == "1" { String::new() } else { v })
             }),
-            sidebar_open: true,
+            // VITNA_GUI_HIDE_SIDEBAR=1 starts with the rail hidden, so a
+            // capture can show the panel's own head with the strip in it.
+            sidebar_open: std::env::var_os("VITNA_GUI_HIDE_SIDEBAR").is_none(),
             pending_edit: None,
             composer_h: 132.0,
+            grain: theme::grain_texture(&cc.egui_ctx),
         }
     }
 
@@ -304,22 +290,12 @@ impl App {
             }
         }
     }
-
-    /// "1 of 2 providers ready", from the environment, not from a guess.
-    pub(crate) fn providers_ready(&self) -> (usize, usize) {
-        match &self.catalog {
-            Some(c) => (
-                c.providers.iter().filter(|p| Catalog::provider_ready(p)).count(),
-                c.providers.len(),
-            ),
-            None => (0, 0),
-        }
-    }
 }
 
 impl eframe::App for App {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        let c = theme::CANVAS;
+        // The desk, which is what shows round the panel and under the rail.
+        let c = theme::RAIL;
         [
             c.r() as f32 / 255.0,
             c.g() as f32 / 255.0,
@@ -350,42 +326,87 @@ impl eframe::App for App {
         let full = ui.max_rect();
         let side_w = if self.sidebar_open { theme::SIDEBAR_W } else { 0.0 };
         let sidebar = Rect::from_min_size(full.min, Vec2::new(side_w, full.height()));
-        let main = Rect::from_min_max(egui::pos2(sidebar.right(), full.top()), full.max);
+        // The panel stands on the desk, inset from the window's edges. Beside
+        // the rail it starts where the rail ends; with the rail hidden, the
+        // desk shows down its left edge too.
+        let panel = Rect::from_min_max(
+            egui::pos2(full.left() + side_w.max(theme::PANEL_INSET), full.top() + theme::PANEL_INSET),
+            egui::pos2(full.right() - theme::PANEL_INSET, full.bottom() - theme::PANEL_INSET),
+        );
 
         if self.sidebar_open {
             self.sidebar(ui, sidebar);
         }
+        theme::panel(ui.painter(), panel);
+        theme::grain(ui.painter(), panel.shrink(1.0), self.grain.id());
+
+        let bar = Rect::from_min_size(panel.min, Vec2::new(panel.width(), theme::BAR_H));
+        let body = Rect::from_min_max(egui::pos2(panel.left() + 1.0, bar.bottom()), panel.max - Vec2::splat(1.0));
+        self.panel_bar(ui, bar);
 
         match self.open_run {
             // A run is open: Cursor's split, the run in the centre and the
-            // inspector down the right. The composer stays, because a follow
+            // receipt down the right. The composer stays, because a follow
             // up is another turn on the same session rather than a new place.
             Some(_) => {
-                let w = crate::inspector::WIDTH.min(main.width() * 0.42);
-                let centre =
-                    Rect::from_min_max(main.min, egui::pos2(main.right() - w, main.bottom()));
-                let panel =
-                    Rect::from_min_max(egui::pos2(centre.right(), main.top()), main.max);
+                let w = crate::inspector::WIDTH.min(body.width() * 0.42);
+                let centre = Rect::from_min_max(body.min, egui::pos2(body.right() - w, body.bottom()));
+                let side = Rect::from_min_max(egui::pos2(centre.right(), body.top()), body.max);
 
                 let composer_h = self.composer_h;
-                let body = Rect::from_min_max(
+                let reading = Rect::from_min_max(
                     centre.min,
-                    egui::pos2(centre.right(), centre.bottom() - composer_h),
+                    egui::pos2(centre.right(), centre.bottom() - composer_h - crate::stage::CLEAR),
                 );
                 let composer_rect = Rect::from_min_max(
-                    egui::pos2(centre.left(), body.bottom()),
+                    egui::pos2(centre.left(), centre.bottom() - composer_h),
                     centre.max,
                 );
 
-                self.run_view(ui, crate::stage::column(body));
+                self.run_view(ui, crate::stage::column(reading));
                 self.composer(ui, composer_rect);
-                self.inspector(ui, panel);
+                self.inspector(ui, side);
             }
-            None => self.stage(ui, main),
+            None => self.stage(ui, body),
         }
-        // The strip goes last so its menu sits over everything else.
-        self.strip(ui, full);
+        // The strip goes last so its menu sits over everything else: at the
+        // end of the rail's lockup row, or at the head of the panel's bar
+        // when the rail is hidden.
+        let strip_at = if self.sidebar_open {
+            egui::pos2(sidebar.right() - 12.0 - crate::menu::STRIP_W, bar.center().y)
+        } else {
+            egui::pos2(bar.left() + 10.0, bar.center().y)
+        };
+        self.strip(ui, strip_at);
         self.settings_modal(ui);
         self.search_palette(ui);
+    }
+}
+
+impl App {
+    /// The panel's bar: the trail from the ledger to what is open, every step
+    /// but the last a way back, over a hairline.
+    fn panel_bar(&mut self, ui: &mut egui::Ui, bar: Rect) {
+        ui.painter().hline(
+            (bar.left() + 1.0)..=(bar.right() - 1.0),
+            bar.bottom(),
+            egui::Stroke::new(1.0, theme::HAIR_2),
+        );
+        // Clear of the strip, which sits at the bar's head (three buttons,
+        // search among them) while the rail is hidden.
+        let left = if self.sidebar_open {
+            bar.left() + 20.0
+        } else {
+            bar.left() + 10.0 + crate::menu::STRIP_W + 30.0 + 14.0
+        };
+        let mut trail = vec!["Runs".to_string()];
+        if self.open_run.is_some() {
+            if let Some(t) = self.open_run_title() {
+                trail.push(t);
+            }
+        }
+        if crate::parts::crumbs(ui, bar, left, &trail) == Some(0) {
+            self.open_run = None;
+        }
     }
 }

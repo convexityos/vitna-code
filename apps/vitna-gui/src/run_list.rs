@@ -1,25 +1,32 @@
-//! Recent runs: the content of the start screen's centre.
+//! The runs in this folder: the start screen's ledger.
 //!
-//! After Cursor's agent home, one row per run: a status icon, the title, and
-//! one quiet line of facts under it. Everything in a row is read off the receipt on disk except the
-//! title, which is the run's prompt when the daemon's log has one and the run
-//! id when it does not. A file in the receipts directory that will not parse
-//! gets a row of its own, where its timestamp puts it, rather than vanishing.
+//! One row per receipt on a column grid the head and every row share, ruled
+//! rather than carded, the way the owner's new design lays a feed: the run and
+//! what became of it, the model that served it, the chain of checks this
+//! window ran on it, and when it was written. Everything in a row is read off
+//! the receipt on disk, except the title when the daemon's log holds the
+//! prompt. Without one, a run is named by what it changed, which the receipt
+//! does carry, and never by its id: `run-1789700058624` is the receipt's
+//! vocabulary rather than a reader's, and it waits on the hover and in the
+//! inspector. A file in the receipts directory that will not parse keeps a
+//! row of its own, where its timestamp puts it, rather than vanishing.
 
 use std::time::SystemTime;
 
-use eframe::egui::{self, Color32, CornerRadius, Sense, Vec2};
+use eframe::egui::{self, Align2, Color32, Sense, Stroke, Vec2};
 
 use crate::app::App;
+use crate::checks::{self, Chain};
 use crate::link::Link;
+use crate::parts;
 use crate::runs;
 use crate::theme;
 
-const ROW_H: f32 = 52.0;
+const ROW_H: f32 = 54.0;
 
-/// A completion state in words: a short one for the card, the full phrase for
-/// the hover, and a tone. The phrases are `apps/vitna-desktop`'s, so the two
-/// surfaces cannot name one state two ways.
+/// A completion state in words: a short one for the row, the full phrase for
+/// the head of a run, and a tone. The phrases are `apps/vitna-desktop`'s, so
+/// the surfaces cannot name one state two ways.
 pub(crate) fn completion(state: &str) -> (&'static str, String, Color32) {
     match state {
         "completed_with_evidence" => ("Completed", "Completed, with evidence".into(), theme::OK),
@@ -39,6 +46,29 @@ pub(crate) fn completion(state: &str) -> (&'static str, String, Color32) {
     }
 }
 
+/// How a completion state finishes a sentence about a run.
+fn outcome(state: &str) -> String {
+    match state {
+        "completed_with_evidence" => "completed with evidence".into(),
+        "completed_with_unknowns" => "completed with unknowns stated".into(),
+        "blocked" => "was blocked".into(),
+        "failed" => "failed".into(),
+        "cancelled" => "was cancelled".into(),
+        "needs_reconciliation" => "needs reconciliation".into(),
+        "stopped_at_round_limit" => "stopped at the round limit".into(),
+        other => format!("ended in a state this window does not know, {other}"),
+    }
+}
+
+/// A run named by what it changed: the receipt's own changeset, stated.
+pub(crate) fn changed_title(paths: &[&str]) -> String {
+    match paths {
+        [] => "Changed no files".to_string(),
+        [one] => format!("Changed {one}"),
+        [first, rest @ ..] => format!("Changed {first} and {} more", rest.len()),
+    }
+}
+
 /// Everything one row paints, copied off the ledger so that painting holds
 /// no borrow on it. Search reads the same rows.
 pub(crate) struct Row {
@@ -47,8 +77,6 @@ pub(crate) struct Row {
     /// The run id, or the file's name when it is not a receipt.
     pub id: String,
     pub title: String,
-    /// True when the title is the prompt, not a stand-in for one.
-    pub titled: bool,
     pub title_hint: String,
     /// Files the run changed; None for a file that is not a receipt.
     pub files: Option<usize>,
@@ -62,14 +90,33 @@ pub(crate) struct Row {
     pub model: String,
     pub age: Option<String>,
     pub age_long: Option<String>,
-    pub failed_checks: Vec<String>,
+    /// The three checks this window ran, and their answers.
+    pub chain: Chain,
     pub written: Option<SystemTime>,
+}
+
+impl Row {
+    pub(crate) fn failed(&self) -> bool {
+        checks::any_failed(&self.chain)
+    }
+
+    /// The words for how the run stands: a failed check, the signature's
+    /// included, outranks whatever the receipt claims about itself.
+    pub(crate) fn standing(&self) -> (String, Color32) {
+        if self.run.is_none() {
+            ("Not a receipt".to_string(), theme::RUST)
+        } else if self.failed() {
+            ("A check failed".to_string(), theme::RUST)
+        } else {
+            (self.state.0.to_string(), theme::FAINT)
+        }
+    }
 }
 
 /// The icon a row's standing is drawn with, and its tone. A failed check
 /// and a file that is not a receipt outrank whatever the receipt claims.
 pub(crate) fn status(row: &Row) -> (fn(&egui::Painter, egui::Pos2, Color32), Color32) {
-    if row.run.is_none() || !row.failed_checks.is_empty() {
+    if row.run.is_none() || row.failed() {
         return (crate::icons::alert, theme::RUST);
     }
     match row.state_key.as_str() {
@@ -92,11 +139,14 @@ impl App {
         let prompts = self.prompts.as_ref();
         let choices = &self.choices;
         let waiting = match (&self.link, &self.prompts_trouble) {
-            (_, Some(e)) => format!("The daemon did not list its prompts: {e}"),
-            (Link::Open { .. }, None) => "Waiting for the daemon to list its prompts.".to_string(),
-            _ => "Prompts come from the daemon's event log, and it is not connected.".to_string(),
+            (_, Some(e)) => format!("The daemon did not list its prompts ({e}), so it is named by what it changed."),
+            (Link::Open { .. }, None) => {
+                "The daemon has not listed its prompts yet, so it is named by what it changed.".to_string()
+            }
+            _ => "Prompts come from the daemon's event log, and no daemon is connected, so it is named by what it changed."
+                .to_string(),
         };
-        let (key, _) = crate::run_view::device_key(&self.link);
+        let (key, no_key_because) = crate::run_view::device_key(&self.link);
         let ledger = match self.runs.poll() {
             runs::Loading::Done(l) => l,
             runs::Loading::Reading => return None,
@@ -105,37 +155,33 @@ impl App {
         let mut rows = Vec::new();
         for (i, run) in ledger.runs.iter().enumerate() {
             let id = &run.receipt.run_id;
-            let (title, titled, title_hint) = match prompts {
+            let paths: Vec<&str> = run.receipt.changeset.files_modified.iter().map(|f| f.path.as_str()).collect();
+            let (title, why) = match prompts {
                 Some(p) => match (p.for_run(id), p.unreadable(id)) {
                     (Some(t), _) => (
                         crate::prompts::title(&t.prompt),
-                        true,
                         format!(
                             "{}\n\nThe prompt, from the daemon's event log. The receipt does not carry one.",
                             theme::clip(&t.prompt, 280)
                         ),
                     ),
                     (None, Some(why)) => (
-                        id.clone(),
-                        false,
-                        format!("The daemon could not read this run's prompt back: {why}"),
+                        changed_title(&paths),
+                        format!("The daemon could not read this run's prompt back ({why}), so it is named by what it changed."),
                     ),
                     (None, None) => (
-                        id.clone(),
-                        false,
-                        "The daemon's event log has no turn for this run, so it goes by its id."
-                            .to_string(),
+                        changed_title(&paths),
+                        "The daemon's event log has no turn for this run, so it is named by what it changed.".to_string(),
                     ),
                 },
-                None => (id.clone(), false, waiting.clone()),
+                None => (changed_title(&paths), waiting.clone()),
             };
             rows.push(Row {
                 run: Some(i),
                 id: id.clone(),
                 title,
-                titled,
-                title_hint,
-                files: Some(run.receipt.changeset.files_modified.len()),
+                title_hint: format!("{why}\n\n{id}, in session {}", run.receipt.session_id),
+                files: Some(paths.len()),
                 state: completion(&run.receipt.completion_state),
                 state_key: run.receipt.completion_state.clone(),
                 provider: run.receipt.model_selection.provider.clone(),
@@ -150,19 +196,7 @@ impl App {
                 },
                 age: runs::short_age(run.written),
                 age_long: runs::age(run.written),
-                // The signature is a check too, once the daemon has published
-                // its key, and a row that fails it does not wear a tick.
-                failed_checks: {
-                    let mut failed = run.report.errors.clone();
-                    match run.signature(key.as_deref()) {
-                        runs::Signature::Mismatch => failed.push(
-                            "the signature does not match the key the connected daemon signs with".to_string(),
-                        ),
-                        runs::Signature::Absent => failed.push("the receipt carries no signature".to_string()),
-                        runs::Signature::Verified | runs::Signature::Unchecked => {}
-                    }
-                    failed
-                },
+                chain: checks::for_run(run, key.as_deref(), no_key_because),
                 written: run.written,
             });
         }
@@ -176,7 +210,6 @@ impl App {
                 run: None,
                 id: name.clone(),
                 title: name,
-                titled: false,
                 title_hint: u.path.display().to_string(),
                 files: None,
                 state: ("Unreadable", u.reason.clone(), theme::RUST),
@@ -186,7 +219,7 @@ impl App {
                 model: String::new(),
                 age: runs::short_age(u.written),
                 age_long: runs::age(u.written),
-                failed_checks: Vec::new(),
+                chain: checks::for_unreadable(&u.reason),
                 written: u.written,
             });
         }
@@ -200,51 +233,101 @@ impl App {
     }
 }
 
+/// The start screen's headline: one sentence a reader came for, rather than
+/// a greeting. The ladder puts a failed check first, because a receipt that
+/// does not hold is the most important thing in the directory, and otherwise
+/// says what the newest run did and how it ended. None when there is nothing
+/// to say it about.
+pub(crate) fn headline(rows: &[Row]) -> Option<String> {
+    let first = rows.first()?;
+    let failing = rows.iter().filter(|r| r.failed()).count();
+    let n = rows.len();
+    if failing > 0 {
+        return Some(match (failing, n) {
+            (1, 1) => "The receipt here failed a check.".to_string(),
+            (1, _) => format!("One of the {n} receipts here failed a check."),
+            (f, _) if f == n => format!("All {n} receipts here failed a check."),
+            (f, _) => format!("{f} of the {n} receipts here failed a check."),
+        });
+    }
+    let changed = match first.files {
+        Some(0) | None => "changed no files".to_string(),
+        Some(1) => "changed one file".to_string(),
+        Some(k) => format!("changed {k} files"),
+    };
+    let when = first.age_long.as_ref().map(|a| format!(", {a}")).unwrap_or_default();
+    Some(format!("The last run here {changed} and {}{when}.", outcome(&first.state_key)))
+}
+
+/// The line under the headline that says where the ledger came from and who
+/// checked it, the way the Vitna record prints its provenance under a title.
+pub(crate) fn provenance(rows: &[Row], key: Option<&str>) -> Vec<(String, Color32)> {
+    let n = rows.len();
+    let mut out = vec![
+        (
+            format!("{n} receipt{} in .vitna/receipts", if n == 1 { "" } else { "s" }),
+            theme::FAINT,
+        ),
+        ("checked by this window, not the daemon".to_string(), theme::FAINTER),
+    ];
+    out.push(match key {
+        Some(k) => (format!("signatures checked against {}", theme::digest(k)), theme::FAINTER),
+        None => ("signatures wait on the daemon's key".to_string(), theme::FAINTER),
+    });
+    out
+}
+
+/// Where each column starts, off the ledger's width. The model column is the
+/// first to go when the window narrows, since the row's own hover still
+/// names it.
+struct Cols {
+    title: f32,
+    title_right: f32,
+    model: Option<f32>,
+    checks: f32,
+    age_right: f32,
+}
+
+impl Cols {
+    fn for_rect(left: f32, right: f32) -> Self {
+        let age_right = right - 14.0;
+        let checks = age_right - 52.0 - 28.0 - 56.0;
+        let model = (right - left >= 600.0).then_some(checks - 28.0 - 160.0);
+        Cols {
+            title: left + 40.0,
+            title_right: model.unwrap_or(checks) - 24.0,
+            model,
+            checks,
+            age_right,
+        }
+    }
+}
+
 impl App {
-    /// The list, under the start screen's heading. Clicking a run opens it.
+    /// The ledger, under the start screen's headline. Clicking a run opens it.
     pub(crate) fn run_list(&mut self, ui: &mut egui::Ui) {
         let Some(list) = self.run_rows() else {
             return;
         };
-
         if list.rows.is_empty() && list.trouble.is_none() {
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "No runs here yet. A turn's receipt lands in .vitna/receipts and is listed here.",
-                    )
-                    .font(theme::prose(theme::FS_UI))
-                    .color(theme::FAINTER),
-                );
-            });
             return;
         }
 
-        // The heading: what this is, how many, and where they are read from.
-        let (h, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::hover());
-        let eyebrow = ui.painter().layout_job(theme::eyebrow(ui, "Recent runs"));
-        let ew = eyebrow.size().x;
-        ui.painter().galley(
-            egui::pos2(h.left() + 6.0, h.center().y - eyebrow.size().y / 2.0),
-            eyebrow,
-            theme::FAINTER,
-        );
-        ui.painter().text(
-            egui::pos2(h.left() + 6.0 + ew + 8.0, h.center().y),
-            egui::Align2::LEFT_CENTER,
-            list.rows.len().to_string(),
-            theme::sans(theme::FS_MICRO),
-            theme::FAINTER,
-        );
-        ui.painter().text(
-            egui::pos2(h.right() - 6.0, h.center().y),
-            egui::Align2::RIGHT_CENTER,
-            ".vitna/receipts",
-            theme::sans(theme::FS_MICRO),
-            theme::FAINTER,
-        );
+        // The head: each column named once, over a rule that runs the width.
+        let (h, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::hover());
+        let cols = Cols::for_rect(h.left(), h.right());
+        let y = h.center().y;
+        let p = ui.painter();
+        theme::label(p, egui::pos2(cols.title, y), Align2::LEFT_CENTER, "Run");
+        if let Some(m) = cols.model {
+            theme::label(p, egui::pos2(m, y), Align2::LEFT_CENTER, "Model");
+        }
+        theme::label(p, egui::pos2(cols.checks, y), Align2::LEFT_CENTER, "Checks");
+        theme::label(p, egui::pos2(cols.age_right, y), Align2::RIGHT_CENTER, "Written");
+        parts::rule(ui, theme::HAIR);
 
         if let Some(t) = &list.trouble {
+            ui.add_space(8.0);
             ui.label(
                 egui::RichText::new(format!("The receipts could not be listed: {t}"))
                     .font(theme::prose(theme::FS_UI))
@@ -257,10 +340,11 @@ impl App {
             .id_salt("run_list")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 2.0;
-                for row in &list.rows {
-                    if let Some(i) = paint_row(ui, row) {
-                        open = Some(i);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let n = list.rows.len();
+                for (i, row) in list.rows.iter().enumerate() {
+                    if let Some(k) = paint_row(ui, row, i + 1 < n) {
+                        open = Some(k);
                     }
                 }
             });
@@ -272,78 +356,72 @@ impl App {
 
 /// One row. Returns the run's index when it was clicked.
 ///
-/// A status icon on the title's line, the title, the age at the right, and
-/// one quiet line under it: how the run ended, what served it, what it
-/// changed. No card and no tinted pill: the state is an icon with its word
-/// beside it, which is all a list needs to say it.
-fn paint_row(ui: &mut egui::Ui, row: &Row) -> Option<usize> {
+/// The status icon and the title on the first line, with the model, the chain
+/// and the age level with it in their columns; under the title, one quiet
+/// line of how the run stands and what it touched. No card and no tinted
+/// pill: the ground under the pointer says which row it is on, and a
+/// hairline between rows is all the ledger needs to be read as one.
+fn paint_row(ui: &mut egui::Ui, row: &Row, ruled: bool) -> Option<usize> {
     let sense = if row.run.is_some() { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), sense);
     let ui: &egui::Ui = ui;
-    let p = ui.painter().clone();
     let hot = resp.hovered() && row.run.is_some();
-    let t = theme::hover(ui, resp.id, hot);
-    if t > 0.0 {
-        p.rect_filled(rect, CornerRadius::same(10), theme::FACE.gamma_multiply(t));
+    parts::hover_ground(ui, rect.shrink2(Vec2::new(0.0, 2.0)), resp.id, hot);
+    if ruled {
+        ui.painter()
+            .hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, theme::HAIR_2));
     }
-
+    let p = ui.painter().clone();
+    let cols = Cols::for_rect(rect.left(), rect.right());
     let title_y = rect.center().y - 9.0;
     let meta_y = rect.center().y + 10.0;
+
     let (icon, tone) = status(row);
-    icon(&p, egui::pos2(rect.left() + 20.0, title_y), tone);
+    icon(&p, egui::pos2(rect.left() + 18.0, title_y), tone);
 
-    // The age, on the title's line at the right.
-    let x = rect.left() + 40.0;
-    let mut title_right = rect.right() - 14.0;
-    if let Some(a) = &row.age {
-        let g = theme::line(ui, a, theme::sans(theme::FS_META), theme::FAINTER, 60.0);
-        let w = g.size().x;
-        p.galley(egui::pos2(title_right - w, title_y - g.size().y / 2.0), g, theme::FAINTER);
-        title_right -= w + 16.0;
-    }
-    // The hover ground says which row the pointer is on; the ink says only
-    // whether the row has a prompt to show or falls back to its id.
-    let ink = if row.titled { theme::INK } else { theme::FAINT };
-    let tg = theme::line(ui, &row.title, theme::sans(theme::FS_TITLE), ink, (title_right - x).max(0.0));
-    p.galley(egui::pos2(x, title_y - tg.size().y / 2.0), tg, ink);
+    let tg = theme::line(ui, &row.title, theme::sans(theme::FS_TITLE), theme::INK, (cols.title_right - cols.title).max(0.0));
+    let title_rect = egui::Rect::from_min_size(egui::pos2(cols.title, title_y - tg.size().y / 2.0), tg.size());
+    p.galley(title_rect.min, tg, theme::INK);
 
-    // One quiet line, laid left to right.
-    let mut cx = x;
-    let mut put = |text: &str, tone: Color32| {
-        let g = theme::line(ui, text, theme::sans(theme::FS_META), tone, (rect.right() - 14.0 - cx).max(0.0));
-        let w = g.size().x;
-        p.galley(egui::pos2(cx, meta_y - g.size().y / 2.0), g, tone);
-        cx += w + 14.0;
+    let (standing, standing_tone) = row.standing();
+    let files = match row.files {
+        Some(0) => "no files".to_string(),
+        Some(1) => "1 file".to_string(),
+        Some(n) => format!("{n} files"),
+        None => String::new(),
     };
-    let (word, full, _) = &row.state;
-    if row.run.is_none() {
-        put(full, theme::FAINT);
-    } else {
-        if row.failed_checks.is_empty() {
-            put(word, theme::FAINT);
-        } else {
-            put("Check failed", theme::RUST);
-        }
-        put(&row.model, theme::FAINT);
-        let files = match row.files {
-            Some(0) => "No files".to_string(),
-            Some(1) => "1 file".to_string(),
-            Some(n) => format!("{n} files"),
-            None => String::new(),
-        };
-        put(&files, theme::FAINTER);
+    let detail = if row.run.is_none() { row.state.1.clone() } else { files };
+    parts::facts(
+        ui,
+        egui::pos2(cols.title, meta_y),
+        &[(standing, standing_tone), (detail, theme::FAINTER)],
+        cols.title_right - cols.title,
+    );
+
+    if let Some(m) = cols.model {
+        let g = theme::line(ui, &row.model, theme::sans(theme::FS_UI), theme::FAINT, cols.checks - m - 28.0);
+        p.galley(egui::pos2(m, title_y - g.size().y / 2.0), g, theme::FAINT);
     }
+
+    let rail_at = egui::pos2(cols.checks + 4.0, title_y);
+    checks::rail(&p, rail_at, &row.chain);
+
+    if let Some(a) = &row.age {
+        p.text(egui::pos2(cols.age_right, title_y), Align2::RIGHT_CENTER, a, theme::sans(theme::FS_META), theme::FAINTER);
+    }
+
+    // The chain says each of its links in words on its own hover; the rest
+    // of the row says where its title came from and what it records.
+    let rail_hover = ui.interact(checks::rail_rect(rail_at), resp.id.with("chain"), Sense::hover());
+    rail_hover.on_hover_text(checks::hint(&row.chain));
 
     let mut hint = row.title_hint.clone();
-    hint.push_str(&format!("\n\n{full}"));
+    hint.push_str(&format!("\n\n{}", row.state.1));
     if row.run.is_some() {
         hint.push_str(&format!("\n{} via {}, as the receipt records it", row.sku, row.provider));
     }
     if let Some(a) = &row.age_long {
         hint.push_str(&format!("\nWritten {a}"));
-    }
-    for e in &row.failed_checks {
-        hint.push_str(&format!("\nCheck failed: {e}"));
     }
     let resp = resp.on_hover_text(hint);
     if hot {
@@ -353,5 +431,68 @@ fn paint_row(ui: &mut egui::Ui, row: &Row) -> Option<usize> {
         row.run
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_is_named_by_what_it_changed() {
+        assert_eq!(changed_title(&[]), "Changed no files");
+        assert_eq!(changed_title(&["src/main.rs"]), "Changed src/main.rs");
+        assert_eq!(changed_title(&["a.md", "b.md", "c.md"]), "Changed a.md and 2 more");
+    }
+
+    fn row(state: &str, files: usize, age: &str, chain: Chain) -> Row {
+        Row {
+            run: Some(0),
+            id: "run-1789700058624".into(),
+            title: changed_title(&[]),
+            title_hint: String::new(),
+            files: Some(files),
+            state: completion(state),
+            state_key: state.into(),
+            provider: "anthropic".into(),
+            sku: "m".into(),
+            model: "m".into(),
+            age: Some("5d".into()),
+            age_long: Some(age.into()),
+            chain,
+            written: None,
+        }
+    }
+
+    fn held() -> Chain {
+        checks::for_unreadable("x").map(|mut s| {
+            s.node = checks::Node::Held;
+            s
+        })
+    }
+
+    /// The headline is a sentence about the work, never a greeting and never
+    /// an id, and a failed check outranks the newest run.
+    #[test]
+    fn the_headline_leads_with_a_failed_check_and_otherwise_the_last_run() {
+        let ok = row("stopped_at_round_limit", 0, "5 days ago", held());
+        assert_eq!(
+            headline(&[ok]).as_deref(),
+            Some("The last run here changed no files and stopped at the round limit, 5 days ago.")
+        );
+        let two = row("completed_with_evidence", 2, "1 hour ago", held());
+        assert_eq!(
+            headline(&[two]).as_deref(),
+            Some("The last run here changed 2 files and completed with evidence, 1 hour ago.")
+        );
+        let bad = row("completed_with_evidence", 1, "now", checks::for_unreadable("x"));
+        let fine = row("completed_with_evidence", 1, "now", held());
+        assert_eq!(
+            headline(&[fine, bad]).as_deref(),
+            Some("One of the 2 receipts here failed a check.")
+        );
+        assert_eq!(headline(&[]), None);
+        let h = headline(&[row("failed", 3, "now", held())]).unwrap();
+        assert!(!h.contains("run-"), "{h}");
     }
 }
