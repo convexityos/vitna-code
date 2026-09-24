@@ -18,12 +18,35 @@ impl App {
         let inner = Rect::from_min_max(col.min, egui::pos2(col.right(), rect.bottom()));
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
         ui.set_clip_rect(rect);
-        // The three rows sit at the gaps stated here, not at egui's default
+        // The rows sit at the gaps stated here, not at egui's default
         // spacing added on top of them.
         ui.spacing_mut().item_spacing.y = 0.0;
 
+        // Why Send cannot send, said beside it rather than over the page.
+        if let crate::link::Link::Absent { .. } = &self.link {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let (d, _) = ui.allocate_exact_size(Vec2::new(8.0, 20.0), egui::Sense::hover());
+                ui.painter().circle_filled(d.center(), 3.0, theme::RUST);
+                ui.label(
+                    RichText::new("The daemon is not running, so there is nothing to send to yet.")
+                        .font(theme::prose(theme::FS_UI))
+                        .color(theme::FAINT),
+                );
+                let again = ui.add(
+                    egui::Button::new(RichText::new("Check again").font(theme::sans(theme::FS_UI)).color(theme::PERI_2))
+                        .fill(Color32::TRANSPARENT)
+                        .frame(false),
+                );
+                if again.clicked() {
+                    self.reprobe();
+                }
+            });
+            ui.add_space(10.0);
+        }
+
         self.repo_bar(&mut ui);
-        ui.add_space(8.0);
+        ui.add_space(6.0);
 
         // Four conditions, and each one has its own hover text below, because
         // a disabled control that will not say why is the thing this window

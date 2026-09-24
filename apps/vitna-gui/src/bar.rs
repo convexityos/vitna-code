@@ -1,12 +1,17 @@
-//! The bar over the composer's field: the repository, stated as facts.
+//! The line over the composer's field: where the turn will run, stated as
+//! facts.
 //!
-//! After Claude Code's pull-request bar, which names the repository, the
-//! branch, the change and its checks in one line above where you type. Every
-//! fact here is one git gives without a network: the repository and branch,
-//! the commit HEAD is at, the uncommitted change in lines, whether the branch
-//! merges cleanly into the one it is based on as of the last fetch, and when
-//! a file in this folder last changed. A pull request number and CI state are
-//! GitHub's to say, and this window does not ask GitHub, so neither appears.
+//! It was a bordered bar of chips and two tinted pills over a bordered field,
+//! two boxes stacked, and the pills were the tell the owner named first. It
+//! is a line of words now, the way the terminal client and Claude Code both
+//! write it: the repository on its branch at the left, and at the right the
+//! uncommitted change, whether the branch merges into the one it is based on,
+//! when a file here last changed, and the worktree switch. Colour is spent
+//! only where it is a state: the plus and minus of the change, the merge's
+//! mark, and a conflict. Every fact here is one git gives without a network,
+//! and each says where it came from on its hover. A pull request number and
+//! CI state are GitHub's to say, and this window does not ask GitHub, so
+//! neither appears.
 
 use eframe::egui::{self, Color32, CornerRadius, Rect, Sense, Stroke, Vec2};
 
@@ -16,60 +21,67 @@ use crate::repo::{Loading, Merge, RepoFacts};
 use crate::theme;
 use crate::workspace::Head;
 
-const BAR_H: f32 = 30.0;
-const GAP: f32 = 14.0;
-type Icon = fn(&egui::Painter, egui::Pos2, Color32);
+const LINE_H: f32 = 24.0;
+const GAP: f32 = 16.0;
 
-/// One fact in the bar, painted at `x` from the left, with its source on hover.
-/// Returns where the next one may start.
+/// A Lucide icon's drawing function, and the tone it is drawn in.
+type Mark = (fn(&egui::Painter, egui::Pos2, Color32), Color32);
+
+/// Text laid at `x`, cut to `max_w`, with its source on hover. Returns the
+/// rect it took.
 #[allow(clippy::too_many_arguments)]
-fn fact(ui: &egui::Ui, id: &str, x: f32, cy: f32, icon: Option<Icon>, text: &str, tone: Color32, max_w: f32, hint: &str) -> f32 {
-    let icon_w = if icon.is_some() { 20.0 } else { 0.0 };
-    let g = theme::line(ui, text, theme::sans(theme::FS_UI), tone, (max_w - icon_w).max(0.0));
-    let w = icon_w + g.size().x;
-    if let Some(draw) = icon {
-        draw(ui.painter(), egui::pos2(x + 7.0, cy), theme::FAINT);
+fn text(ui: &egui::Ui, id: &str, x: f32, cy: f32, s: &str, tone: Color32, max_w: f32, hint: &str) -> Rect {
+    let g = theme::line(ui, s, theme::sans(theme::FS_UI), tone, max_w.max(0.0));
+    let r = Rect::from_min_size(egui::pos2(x, cy - g.size().y / 2.0), g.size());
+    ui.painter().galley(r.min, g, tone);
+    if !hint.is_empty() {
+        ui.interact(r.expand2(Vec2::new(3.0, 4.0)), ui.id().with(("bar", id)), Sense::hover())
+            .on_hover_text(hint);
     }
-    ui.painter().galley(egui::pos2(x + icon_w, cy - g.size().y / 2.0), g, tone);
-    let r = Rect::from_min_size(egui::pos2(x - 4.0, cy - BAR_H / 2.0 + 3.0), Vec2::new(w + 8.0, BAR_H - 6.0));
-    ui.interact(r, ui.id().with(("bar", id)), Sense::hover()).on_hover_text(hint);
-    x + w + GAP
+    r
 }
 
-/// The same, laid leftward from `right`. Returns the new right edge.
-#[allow(clippy::too_many_arguments)]
-fn fact_right(ui: &egui::Ui, id: &str, right: f32, cy: f32, icon: Option<Icon>, text: &str, tone: Color32, hint: &str) -> f32 {
-    let icon_w = if icon.is_some() { 20.0 } else { 0.0 };
-    let w = icon_w + theme::line(ui, text, theme::sans(theme::FS_UI), tone, 400.0).size().x;
-    fact(ui, id, right - w, cy, icon, text, tone, w + 1.0, hint);
-    right - w - GAP
+/// A fact for the line's right side: an optional leading mark, runs of text
+/// each in its tone, and where it came from on the hover. Measured before it
+/// is laid, so the line can drop the least of them when it runs short.
+struct Fact {
+    id: &'static str,
+    icon: Option<Mark>,
+    parts: Vec<(String, Color32)>,
+    hint: String,
 }
 
-/// A pill with a tinted ground: the change and the merge, the two facts a
-/// person acts on.
-#[allow(clippy::too_many_arguments)]
-fn pill_right(ui: &egui::Ui, id: &str, right: f32, cy: f32, mark: Option<(Icon, Color32)>, parts: &[(String, Color32)], ground: Color32, hint: &str) -> f32 {
-    let galleys: Vec<_> = parts
-        .iter()
-        .map(|(t, c)| theme::line(ui, t, theme::sans(theme::FS_META), *c, 300.0))
-        .collect();
-    let mark_w = if mark.is_some() { 18.0 } else { 0.0 };
-    let inner: f32 = mark_w
-        + galleys.iter().map(|g| g.size().x).sum::<f32>()
-        + 6.0 * (galleys.len().saturating_sub(1)) as f32;
-    let r = Rect::from_min_max(egui::pos2(right - inner - 16.0, cy - 11.0), egui::pos2(right, cy + 11.0));
-    ui.painter().rect_filled(r, CornerRadius::same(11), ground);
-    if let Some((icon, tone)) = mark {
-        icon(ui.painter(), egui::pos2(r.left() + 15.0, cy), tone);
+impl Fact {
+    fn galleys(&self, ui: &egui::Ui) -> Vec<std::sync::Arc<egui::Galley>> {
+        self.parts
+            .iter()
+            .map(|(t, c)| theme::line(ui, t, theme::sans(theme::FS_UI), *c, 300.0))
+            .collect()
     }
-    let mut x = r.left() + 8.0 + mark_w;
-    for (g, (_, c)) in galleys.into_iter().zip(parts) {
-        let w = g.size().x;
-        ui.painter().galley(egui::pos2(x, cy - g.size().y / 2.0), g, *c);
-        x += w + 6.0;
+
+    fn width(&self, ui: &egui::Ui) -> f32 {
+        let g = self.galleys(ui);
+        (if self.icon.is_some() { 20.0 } else { 0.0 })
+            + g.iter().map(|g| g.size().x).sum::<f32>()
+            + 6.0 * g.len().saturating_sub(1) as f32
     }
-    ui.interact(r, ui.id().with(("bar", id)), Sense::hover()).on_hover_text(hint);
-    r.left() - GAP + 4.0
+
+    /// Lays the fact leftward from `right`. Returns the new right edge.
+    fn lay(&self, ui: &egui::Ui, right: f32, cy: f32) -> f32 {
+        let left = right - self.width(ui);
+        if let Some((draw, tone)) = self.icon {
+            draw(ui.painter(), egui::pos2(left + 7.0, cy), tone);
+        }
+        let mut x = left + if self.icon.is_some() { 20.0 } else { 0.0 };
+        for (g, (_, c)) in self.galleys(ui).into_iter().zip(&self.parts) {
+            let gw = g.size().x;
+            ui.painter().galley(egui::pos2(x, cy - g.size().y / 2.0), g, *c);
+            x += gw + 6.0;
+        }
+        let r = Rect::from_min_max(egui::pos2(left - 3.0, cy - LINE_H / 2.0), egui::pos2(right + 3.0, cy + LINE_H / 2.0));
+        ui.interact(r, ui.id().with(("bar", self.id)), Sense::hover()).on_hover_text(&self.hint);
+        left - GAP
+    }
 }
 
 fn ago_long(t: Option<std::time::SystemTime>) -> String {
@@ -86,21 +98,13 @@ impl App {
             Loading::Done(f) => Some((**f).clone()),
             Loading::Reading => None,
         };
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), BAR_H), Sense::hover());
-        ui.painter().rect_filled(rect, CornerRadius::same(9), theme::GROUND);
-        ui.painter().rect_stroke(rect, CornerRadius::same(9), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), LINE_H), Sense::hover());
         let cy = rect.center().y;
 
-        // Right to left: the placement, the time, the merge, the change.
-        let mut right = self.worktree_toggle(ui, rect.right() - 8.0, cy);
-        right = timing(ui, facts.as_ref(), right, cy);
-        right = merge(ui, facts.as_ref(), right, cy);
-        right = changes(ui, facts.as_ref(), right, cy);
-
-        // Left to right in what is left: repository, branch, commit, and any
-        // trouble git reported. The commit goes before the branch is cut.
-        let limit = right;
-        let mut x = rect.left() + 12.0;
+        // The repository, "on" and some of the branch are what the line is
+        // for, so they are measured first and the facts at the right give way
+        // to them, the least of them first: when a file last changed, then
+        // the merge, then the change itself. The worktree switch always stays.
         let folder = self.workspace.name.clone();
         let (repo, repo_hint) = match facts.as_ref().and_then(|f| f.repo_name.clone()) {
             Some(name) => {
@@ -113,12 +117,55 @@ impl App {
             }
             None => (folder.clone(), format!("The folder {folder}. No origin remote names a repository here.")),
         };
-        x = fact(ui, "repo", x, cy, Some(icons::folder), &repo, theme::INK, (limit - x).min(180.0), &repo_hint);
+        let repo_w = theme::line(ui, &repo, theme::sans(theme::FS_UI), theme::INK, 220.0).size().x;
+        let head_text = self.workspace.head.as_ref().map(|h| h.label());
+        let head_w = head_text
+            .as_ref()
+            .map(|h| theme::line(ui, h, theme::sans(theme::FS_UI), theme::FAINT, 2000.0).size().x)
+            .unwrap_or(140.0);
+        let left_min = 2.0 + repo_w + 30.0 + head_w.min(150.0) + GAP;
 
-        let (head, tone) = match &self.workspace.head {
-            Some(Head::Branch(b)) => (b.clone(), theme::INK),
-            Some(h) => (h.label(), theme::RUST),
-            None => ("no repository".to_string(), theme::FAINT),
+        let mut right = self.worktree_toggle(ui, rect.right() - 2.0, cy);
+        let mut shown: Vec<Fact> = [changes(facts.as_ref()), merge(facts.as_ref()), timing(facts.as_ref())]
+            .into_iter()
+            .flatten()
+            .collect();
+        let room = right - rect.left();
+        while !shown.is_empty()
+            && shown.iter().map(|f| f.width(ui) + GAP).sum::<f32>() > room - left_min
+        {
+            shown.pop();
+        }
+        // Laid right to left in the order they read: the change, the merge,
+        // the time, then the switch at the end.
+        for f in shown.iter().rev() {
+            right = f.lay(ui, right, cy);
+        }
+
+        // Left to right in what is left: the repository, "on", the branch,
+        // and the commit, which goes before the branch is cut.
+        let limit = right;
+        let mut x = rect.left() + 2.0;
+        let r = text(ui, "repo", x, cy, &repo, theme::INK, (limit - x).min(220.0), &repo_hint);
+        x = r.right();
+
+        let (head, tone) = match (&self.workspace.head, head_text) {
+            (Some(Head::Branch(b)), _) => (b.clone(), theme::FAINT),
+            (Some(_), Some(label)) => (label, theme::RUST),
+            _ => {
+                // Not a repository: there is no branch to be "on".
+                text(
+                    ui,
+                    "norepo",
+                    x + 12.0,
+                    cy,
+                    "not a git repository",
+                    theme::FAINTER,
+                    limit - x - 12.0,
+                    "No .git here, so there is no branch, commit or change to state.",
+                );
+                return;
+            }
         };
         let mut branch_hint = "The branch this window is on. Checking out another is the daemon's to do.".to_string();
         if let Some(f) = &facts {
@@ -128,22 +175,31 @@ impl App {
                 (None, _, _) => branch_hint.push_str("\nNo upstream is set for it."),
             }
         }
+        if limit - x < 60.0 {
+            return;
+        }
+        let on = text(ui, "on", x + 6.0, cy, "on", theme::FAINTER, 40.0, "");
+        x = on.right() + 6.0;
+
         let commit = facts.as_ref().and_then(|f| f.head.clone());
         let commit_w = commit
             .as_ref()
-            .map(|c| 20.0 + theme::line(ui, c, theme::sans(theme::FS_UI), theme::FAINT, 300.0).size().x + GAP)
+            .map(|c| theme::line(ui, c, theme::sans(theme::FS_UI), theme::FAINTER, 300.0).size().x + GAP)
             .unwrap_or(0.0);
-        let branch_full = 20.0 + theme::line(ui, &head, theme::sans(theme::FS_UI), tone, 2000.0).size().x;
+        let branch_full = theme::line(ui, &head, theme::sans(theme::FS_UI), tone, 2000.0).size().x;
         let room = limit - x;
         let (branch_w, show_commit) = if branch_full + GAP + commit_w <= room {
             (branch_full, commit.is_some())
         } else if room - commit_w >= 100.0 {
-            (room - commit_w, commit.is_some())
+            (room - commit_w - GAP, commit.is_some())
         } else {
             (room.min(branch_full), false)
         };
-        if branch_w >= 40.0 {
-            x = fact(ui, "branch", x, cy, Some(icons::branch), &head, tone, branch_w + 1.0, &branch_hint);
+        // A branch is shown whole or cut to at least 40 points, and "main" is
+        // shorter than that, so the floor is the smaller of the two.
+        if branch_w >= branch_full.min(40.0) {
+            let b = text(ui, "branch", x, cy, &head, tone, branch_w + 1.0, &branch_hint);
+            x = b.right() + GAP;
         }
         if let (true, Some(c), Some(f)) = (show_commit, &commit, &facts) {
             let mut hint = format!("HEAD is {c}");
@@ -154,12 +210,13 @@ impl App {
                 hint.push_str(&format!("\ngit describe: {d}"));
             }
             hint.push_str(&format!("\nCommitted {}.", ago_long(f.committed)));
-            x = fact(ui, "commit", x, cy, Some(icons::commit), c, theme::FAINT, commit_w, &hint);
+            let cr = text(ui, "commit", x, cy, c, theme::FAINTER, commit_w, &hint);
+            x = cr.right() + GAP;
         }
         if let Some(t) = facts.as_ref().and_then(|f| f.trouble.clone()) {
             if limit - x > 70.0 {
                 ui.painter().circle_filled(egui::pos2(x + 3.0, cy), 3.0, theme::RUST);
-                fact(ui, "trouble", x + 11.0, cy, None, "git error", theme::RUST, limit - x - 11.0, &t);
+                text(ui, "trouble", x + 11.0, cy, "git error", theme::RUST, limit - x - 11.0, &t);
             }
         }
     }
@@ -168,16 +225,17 @@ impl App {
     /// states the preference.
     fn worktree_toggle(&mut self, ui: &egui::Ui, right: f32, cy: f32) -> f32 {
         let on = self.placement == Placement::Worktree;
-        let galley = theme::line(ui, "worktree", theme::sans(theme::FS_UI), theme::INK, 200.0);
+        let galley = theme::line(ui, "worktree", theme::sans(theme::FS_UI), theme::FAINT, 200.0);
         let rect = Rect::from_min_max(
             egui::pos2(right - galley.size().x - 26.0, cy - 11.0),
             egui::pos2(right, cy + 11.0),
         );
         let resp = ui.interact(rect, ui.id().with("bar-worktree"), Sense::click());
-        if resp.hovered() {
-            ui.painter().rect_filled(rect, CornerRadius::same(6), theme::FACE);
+        let t = theme::hover(ui, resp.id, resp.hovered());
+        if t > 0.0 {
+            ui.painter().rect_filled(rect.expand2(Vec2::new(4.0, 0.0)), CornerRadius::same(6), theme::FACE.gamma_multiply(t));
         }
-        let b = Rect::from_center_size(egui::pos2(rect.left() + 11.0, cy), Vec2::splat(12.0));
+        let b = Rect::from_center_size(egui::pos2(rect.left() + 7.0, cy), Vec2::splat(12.0));
         if on {
             ui.painter().rect_filled(b, CornerRadius::same(3), theme::PERI);
             let st = Stroke::new(1.6, theme::CANVAS);
@@ -187,7 +245,7 @@ impl App {
         } else {
             ui.painter().rect_stroke(b, CornerRadius::same(3), Stroke::new(1.2, theme::FAINT), egui::StrokeKind::Inside);
         }
-        ui.painter().galley(egui::pos2(rect.left() + 22.0, cy - galley.size().y / 2.0), galley, theme::INK);
+        ui.painter().galley(egui::pos2(rect.left() + 20.0, cy - galley.size().y / 2.0), galley, theme::FAINT);
         if resp.clicked() {
             self.placement = if on { Placement::Local } else { Placement::Worktree };
         }
@@ -196,15 +254,13 @@ impl App {
         } else {
             "The turn runs on this checkout, in place."
         });
-        rect.left() - GAP
+        rect.left() - GAP - 4.0
     }
 }
 
 /// When a file here last changed, off the probe's bounded walk.
-fn timing(ui: &egui::Ui, facts: Option<&RepoFacts>, right: f32, cy: f32) -> f32 {
-    let Some(f) = facts else {
-        return right;
-    };
+fn timing(facts: Option<&RepoFacts>) -> Option<Fact> {
+    let f = facts?;
     let (text, hint) = match f.touched {
         Some(t) => {
             let mut h = format!("A file in this folder last changed {}.", ago_long(Some(t)));
@@ -218,29 +274,25 @@ fn timing(ui: &egui::Ui, facts: Option<&RepoFacts>, right: f32, cy: f32) -> f32 
         }
         None => ("-".to_string(), "No file here has a change time this window could read.".to_string()),
     };
-    fact_right(ui, "time", right, cy, Some(icons::clock), &text, theme::FAINT, &hint)
+    Some(Fact { id: "time", icon: Some((icons::clock, theme::FAINTER)), parts: vec![(text, theme::FAINTER)], hint })
 }
 
 /// Whether the branch merges into its base, as of the last fetch.
-fn merge(ui: &egui::Ui, facts: Option<&RepoFacts>, right: f32, cy: f32) -> f32 {
-    let Some(f) = facts else {
-        return right;
-    };
+fn merge(facts: Option<&RepoFacts>) -> Option<Fact> {
+    let f = facts?;
     // No base branch to merge into is not a verdict, so nothing is shown.
-    let Some(base) = &f.base else {
-        return right;
-    };
+    let base = f.base.as_ref()?;
     let short = short_base(base);
-    let (text, tone) = match (&f.merge, f.base_behind) {
-        (Some(Merge::Clean), _) => (format!("merges into {short}"), theme::OK),
+    let (words, mark, ink) = match (&f.merge, f.base_behind) {
+        (Some(Merge::Clean), _) => (format!("merges into {short}"), theme::OK, theme::FAINT),
         (Some(Merge::Conflicts(files)), _) => {
             let n = files.len().max(1);
-            (format!("{n} conflict{} with {short}", if n == 1 { "" } else { "s" }), theme::RUST)
+            (format!("{n} conflict{} with {short}", if n == 1 { "" } else { "s" }), theme::RUST, theme::RUST)
         }
-        (Some(Merge::UpToDate), Some(b)) if b > 0 => (format!("{b} behind {short}"), theme::FAINT),
-        (Some(Merge::UpToDate), _) => (format!("even with {short}"), theme::FAINT),
-        (Some(Merge::NotRun(_)), _) => (format!("merge into {short} not checked"), theme::FAINTER),
-        (None, _) => (format!("merge into {short} unknown"), theme::FAINTER),
+        (Some(Merge::UpToDate), Some(b)) if b > 0 => (format!("{b} behind {short}"), theme::FAINTER, theme::FAINT),
+        (Some(Merge::UpToDate), _) => (format!("even with {short}"), theme::FAINTER, theme::FAINT),
+        (Some(Merge::NotRun(_)), _) => (format!("merge into {short} not checked"), theme::FAINTER, theme::FAINTER),
+        (None, _) => (format!("merge into {short} unknown"), theme::FAINTER, theme::FAINTER),
     };
     let mut hint = match &f.merge {
         Some(Merge::NotRun(why)) => format!("Not checked against {base}. {why}"),
@@ -261,17 +313,20 @@ fn merge(ui: &egui::Ui, facts: Option<&RepoFacts>, right: f32, cy: f32) -> f32 {
         None => hint.push_str("\ngit could not answer the merge check."),
         _ => {}
     }
-    pill_right(ui, "merge", right, cy, Some((icons::merge, tone)), &[(text, tone)], tone.gamma_multiply(0.14), &hint)
+    Some(Fact { id: "merge", icon: Some((icons::merge, mark)), parts: vec![(words, ink)], hint })
 }
 
 /// The uncommitted change, in lines against HEAD, and the untracked files.
-fn changes(ui: &egui::Ui, facts: Option<&RepoFacts>, right: f32, cy: f32) -> f32 {
+fn changes(facts: Option<&RepoFacts>) -> Option<Fact> {
     let Some(f) = facts else {
-        return fact_right(ui, "changes", right, cy, None, "reading git", theme::FAINTER, "git is being asked about this folder.");
+        return Some(Fact {
+            id: "changes",
+            icon: None,
+            parts: vec![("reading git".to_string(), theme::FAINTER)],
+            hint: "git is being asked about this folder.".to_string(),
+        });
     };
-    let (Some(a), Some(r)) = (f.added, f.removed) else {
-        return right;
-    };
+    let (a, r) = (f.added?, f.removed?);
     let u = f.untracked.unwrap_or(0);
     let mut parts: Vec<(String, Color32)> = Vec::new();
     if a > 0 || r > 0 {
@@ -282,7 +337,7 @@ fn changes(ui: &egui::Ui, facts: Option<&RepoFacts>, right: f32, cy: f32) -> f32
         parts.push((format!("{u} new"), theme::FAINT));
     }
     if parts.is_empty() {
-        parts.push(("no changes".to_string(), theme::FAINT));
+        parts.push(("no changes".to_string(), theme::FAINTER));
     }
     let hint = format!(
         "Uncommitted, against HEAD: {a} lines added and {r} removed ({} files modified, {} staged).\n{u} untracked file{}, whose lines git does not count until they are added.",
@@ -290,5 +345,5 @@ fn changes(ui: &egui::Ui, facts: Option<&RepoFacts>, right: f32, cy: f32) -> f32
         f.staged.unwrap_or(0),
         if u == 1 { "" } else { "s" },
     );
-    pill_right(ui, "changes", right, cy, None, &parts, theme::FACE, &hint)
+    Some(Fact { id: "changes", icon: None, parts, hint })
 }

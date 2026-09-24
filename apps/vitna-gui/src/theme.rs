@@ -12,19 +12,25 @@
 //!            stand; rust for a state somebody has to act on; green as one dot.
 //!   Rule     colour carries state and never decoration, and the word is
 //!            always printed beside it.
+//!   Frame    the sidebar sits on the desk, and the working side is a panel
+//!            standing on it: inset from the window's edges, one hairline,
+//!            and the one shadow a working surface casts. Borrowed from the
+//!            owner's new design for Callsider and Convexity (2026-09-22),
+//!            whose rail and panel are this shape.
 //!
 //! No glass, no glow, no gradient.
 
-use eframe::egui::{self, Color32, FontFamily, FontId, TextStyle};
+use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Rect, Stroke, TextStyle};
 
 // Neutral, with a whisper of cool: every ground keeps its blue channel a few
 // points over its red, no more, so the periwinkle is the only blue thing on
-// screen. The sidebar and the title bar sit on the floor (RAIL), and the main
-// area one small step up from it (CANVAS), so the side you work in is the
-// lit one; a visibly lighter hairline still draws the edge between them.
-// GROUND, for the inspector, the popups and the repository bar, keeps the
-// same step over CANVAS that it used to keep over the floor, so what sits on
-// the main area still reads as raised. The composer field is a lit well with
+// screen. The sidebar and the title bar sit on the floor (RAIL, the desk), and
+// the working side is a panel one small step up from it (CANVAS) with the
+// desk showing round its edges, so the side you work in is the lit one and
+// its own hairline is the only edge between them. The inspector is a column
+// of that panel rather than a second ground. GROUND, for the popups and the
+// modals, keeps the same step over CANVAS that it used to keep over the
+// floor, so what floats over the panel still reads as raised. The composer field is a lit well with
 // the brightest line of all, so the thing you type into is the thing you
 // see; the controls (buttons, chips, the chosen session) carry the brightest
 // FILLS, a step over the field, so each one reads as a thing to press rather
@@ -87,6 +93,96 @@ pub fn hover(ui: &egui::Ui, id: egui::Id, hovered: bool) -> f32 {
 /// Widget radii: the field and the button.
 pub const R: f32 = 16.0;
 pub const R_XS: f32 = 8.0;
+
+/// How far the panel stands in from the window's edges, where the desk shows.
+pub const PANEL_INSET: f32 = 8.0;
+/// The panel's corners: under the field's 16, over a row's 8, so the three
+/// read as one family at three sizes rather than as three shapes.
+pub const R_PANEL: u8 = 12;
+/// The panel's bar, which says where you are as a trail of the pages above
+/// this one, and the height the sidebar's lockup shares so the two read as
+/// one line across the window.
+pub const BAR_H: f32 = 44.0;
+
+/// Paints the working panel: its one shadow, its ground and its hairline.
+///
+/// The shadow is the new design's, `0 30px 60px -40px`: it falls well below
+/// the panel and is pulled in on every side, so it deepens the desk under the
+/// panel's foot without ringing it. egui's shadow has no negative spread, so
+/// it is cast from the panel's rect pulled in by that much, which is the same
+/// shape. Nothing else on a working surface casts one.
+pub fn panel(p: &egui::Painter, rect: Rect) {
+    let shadow = egui::epaint::Shadow {
+        offset: [0, 30],
+        blur: 60,
+        spread: 0,
+        color: Color32::from_black_alpha(200),
+    };
+    p.add(shadow.as_shape(rect.shrink(40.0), CornerRadius::same(R_PANEL)));
+    p.rect(
+        rect,
+        CornerRadius::same(R_PANEL),
+        CANVAS,
+        Stroke::new(1.0, HAIR_2),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// The grain's tile, in texels. Drawn one texel to one screen pixel, so it
+/// never scales into blotches.
+const GRAIN_N: usize = 128;
+
+/// Vitna's grain: a tile of fine white noise laid over the panel, the native
+/// counterpart of the `feTurbulence` tile vitna.ai lays over each of its
+/// surfaces, for the reason its guardrails give: "a smooth surface is what
+/// reads as generated". It is kept faint enough that it is felt rather than
+/// seen, never more than a twentieth of white on any texel, and it comes from
+/// a fixed seed, so every window and every capture draws the same one.
+pub fn grain_texture(ctx: &egui::Context) -> egui::TextureHandle {
+    let mut state: u32 = 0x9e37_79b9;
+    let pixels = (0..GRAIN_N * GRAIN_N)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let alpha = ((state >> 24) * 12 / 255) as u8;
+            Color32::from_white_alpha(alpha)
+        })
+        .collect();
+    ctx.load_texture(
+        "vitna-grain",
+        egui::ColorImage::new([GRAIN_N, GRAIN_N], pixels),
+        egui::TextureOptions {
+            magnification: egui::TextureFilter::Nearest,
+            minification: egui::TextureFilter::Nearest,
+            wrap_mode: egui::TextureWrapMode::Repeat,
+            mipmap_mode: None,
+        },
+    )
+}
+
+/// Lays the grain over `rect`, inside the panel's corners.
+pub fn grain(p: &egui::Painter, rect: Rect, texture: egui::TextureId) {
+    let ppp = p.ctx().pixels_per_point();
+    let n = GRAIN_N as f32;
+    let uv = Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(rect.width() * ppp / n, rect.height() * ppp / n));
+    p.add(
+        egui::epaint::RectShape::filled(rect, CornerRadius::same(R_PANEL), Color32::WHITE).with_texture(texture, uv),
+    );
+}
+
+/// A hash as the Vitna record prints one short: the first eight characters and
+/// the last four, so two digests that share a prefix still read as two. The
+/// whole of it waits on the hover, the inspector and the copy.
+pub fn digest(hash: &str) -> String {
+    let n = hash.chars().count();
+    if n <= 14 {
+        return hash.to_string();
+    }
+    let head: String = hash.chars().take(8).collect();
+    let tail: String = hash.chars().skip(n - 4).collect();
+    format!("{head}\u{2026}{tail}")
+}
 
 /// The type scale: seven sizes, and nothing between them. Fourteen had
 /// accumulated as literals, six of them between 11 and 13.5, which reads as
@@ -257,10 +353,11 @@ pub fn install(ctx: &egui::Context) {
         };
         v.window_corner_radius = (R as u8).into();
 
-        // A thin, floating scrollbar. The default draws a pale strip down the
-        // middle of the console, which reads as a seam in the layout.
-        style.spacing.scroll = egui::style::ScrollStyle::thin();
-        style.spacing.scroll.floating = true;
+        // A thin scrollbar that is there only while the pointer is over what
+        // it scrolls. The default draws a pale strip down the middle of the
+        // console, and even a thin one at rest drew a full-height line beside
+        // the run and the receipt, which reads as a seam in the layout.
+        style.spacing.scroll = egui::style::ScrollStyle::floating();
         style.spacing.scroll.bar_width = 5.0;
 
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
@@ -301,25 +398,16 @@ pub fn clip(text: &str, max_chars: usize) -> String {
 /// destinations rather than to one plus a list of sessions.
 pub const SIDEBAR_W: f32 = 244.0;
 
-/// An eyebrow: sans, small, uppercase, wide tracking, tertiary.
+/// A group's name over its rows, or a column's over its cells: words set as
+/// words, one size under the rows, in the quietest ink.
 ///
-/// Sans and not mono on purpose. Convexity moved these labels off the mono role
-/// because when everything is mono nothing scans, and mono is the value's
-/// voice, never the label's.
-pub fn eyebrow(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        &text.to_uppercase(),
-        0.0,
-        egui::TextFormat {
-            font_id: sans(FS_MICRO),
-            extra_letter_spacing: 1.1,
-            color: FAINTER,
-            ..Default::default()
-        },
-    );
-    let _ = ui;
-    job
+/// These were uppercase with wide tracking. That label is the one every
+/// generated dashboard wears, and the owner's new design (2026-09-22) and
+/// Vitna's own guardrails ("Uppercase labels used as decoration") both
+/// refuse it, so a group is named in sentence case, the way a person would
+/// write it.
+pub fn label(p: &egui::Painter, at: egui::Pos2, align: egui::Align2, text: &str) -> Rect {
+    p.text(at, align, text, sans(FS_META), FAINTER)
 }
 
 
@@ -338,6 +426,21 @@ mod ink_tests {
         assert_eq!(tint(FAINT), tint(INK), "FAINT does not carry INK's tint; re-step it with INK");
         assert_eq!(tint(FAINTER), tint(INK), "FAINTER does not carry INK's tint; re-step it with INK");
         assert!(INK.g() > FAINT.g() && FAINT.g() > FAINTER.g(), "the inks no longer step down");
+    }
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use super::digest;
+
+    /// Eight and four, so two digests that share a prefix still read as two;
+    /// anything short enough to print whole is printed whole.
+    #[test]
+    fn a_digest_keeps_its_head_and_its_tail() {
+        let h = "0c86bbcdf76d4e44a9059a687a41fcd1ea01197c7fc5413ada1453a9a2139b0e";
+        assert_eq!(digest(h), "0c86bbcd\u{2026}9b0e");
+        assert_eq!(digest("e3f660422b08"), "e3f660422b08");
+        assert_eq!(digest(""), "");
     }
 }
 

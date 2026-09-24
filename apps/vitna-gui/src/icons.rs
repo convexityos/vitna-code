@@ -29,8 +29,6 @@ macro_rules! icons {
 
 icons! {
     folder, FOLDER => "folder";
-    branch, BRANCH => "git-branch";
-    commit, COMMIT => "git-commit-horizontal";
     merge, MERGE => "git-merge";
     bubble, BUBBLE => "message-square";
     clock, CLOCK => "clock";

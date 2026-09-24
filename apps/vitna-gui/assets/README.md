@@ -93,8 +93,6 @@ stroked white.
 | `clock.svg` | `a5dea15fc6fbad0c836640f949b5db1ce5223be13993b7b463759fd411760a50` |
 | `corner-down-left.svg` | `e973688fa3246d8bcffec85376d5b69fc7a622a08faf159c901877b2e04bf591` |
 | `folder.svg` | `e0d4fefcca6cb86d5cebe9563e03149da88df1a2d76e5b9f8bc0bf2927721dad` |
-| `git-branch.svg` | `7f48b94b77f59263d60890b1526c566b0521aad87881342dfdefae0429525f65` |
-| `git-commit-horizontal.svg` | `26dd2c7a40bfc529ee7ab31bd75631eefa075d4d5ae808d54fffe9b9e9e12ec8` |
 | `git-merge.svg` | `722c8b9b19ce60137a6275f494867d3bceb8c949e75088028ddb74b7795a0d6b` |
 | `keyboard.svg` | `e950413303a54b21decb9efe13e936e8a462425c97116c678e7fa0c3c4af199b` |
 | `layout-grid.svg` | `f626b2a2abfd6b2985a002fbc338d799b2c21e86133c073b82b4d98a16be13d3` |
