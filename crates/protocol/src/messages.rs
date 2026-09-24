@@ -124,6 +124,90 @@ pub struct SubscribeEvents {
     pub resume_after_sequence: u64,
 }
 
+/// `events.proto`: a tool call is about to run and needs a decision.
+///
+/// `approval_id` is what an `ApproveAction` or `RejectAction` names to answer
+/// this, and `action_digest` is what it is answering ABOUT: a daemon must
+/// check both, because the digest is the identity of the action and the id
+/// alone would let a stale answer land on a different one.
+///
+/// Several fields are recorded only when the daemon actually knows them, and
+/// are empty otherwise, which proto3 cannot distinguish from unset and which
+/// is the honest reading either way: not recorded. `executable_identity`,
+/// `environment_names` and `bound_mounts` are decided in the runner, which
+/// does not report them here yet.
+///
+/// Note what the declaration does NOT carry: the tool's arguments. An operator
+/// cannot be shown "write this content to that file" from these fields, so
+/// `description` is the only place that can say what the action is, and it is
+/// written for a person to read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalRequested {
+    #[serde(default)]
+    pub approval_id: String,
+    #[serde(default)]
+    pub tool_call_id: String,
+    #[serde(default)]
+    pub action_digest: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub executable_identity: String,
+    #[serde(default)]
+    pub canonical_cwd: String,
+    #[serde(default)]
+    pub environment_names: Vec<String>,
+    #[serde(default)]
+    pub bound_mounts: Vec<String>,
+    #[serde(default)]
+    pub timeout_ms: u64,
+}
+
+/// `events.proto`: a tool call has started.
+///
+/// This is the event that proves an approval took effect. The desktop client
+/// marks an approval approved only when this arrives for its `tool_call_id`,
+/// and raises an alarm if a tool it REJECTED starts anyway, so the id here has
+/// to be the same one the `ApprovalRequested` carried. "Granted" is a claim;
+/// a tool starting is a fact.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolStarted {
+    #[serde(default)]
+    pub tool_call_id: String,
+    #[serde(default)]
+    pub started_at_ms: u64,
+}
+
+/// `events.proto`: a tool call has finished.
+///
+/// `status` is one of "completed", "failed" or "cancelled", as the declaration
+/// says. `exit_code` belongs to a process, so a tool that runs none reports 0
+/// on success and 1 on failure rather than inventing a signal it never saw.
+/// The stdout and stderr digests are the runner's to report and are empty
+/// until it does; empty means not recorded, never "empty output".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolFinished {
+    #[serde(default)]
+    pub tool_call_id: String,
+    #[serde(default)]
+    pub exit_code: i32,
+    #[serde(default)]
+    pub stdout_digest: String,
+    #[serde(default)]
+    pub stderr_digest: String,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub status: String,
+}
+
+/// The `status` values `ToolFinished` may carry, as `events.proto` lists them.
+pub mod tool_status {
+    pub const COMPLETED: &str = "completed";
+    pub const FAILED: &str = "failed";
+    pub const CANCELLED: &str = "cancelled";
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

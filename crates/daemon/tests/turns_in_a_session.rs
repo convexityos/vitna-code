@@ -295,3 +295,153 @@ async fn resuming_mid_session_sends_exactly_what_follows() {
         held + 1
     );
 }
+
+/// Collects frames until the stream goes quiet.
+async fn collect_frames<R: AsyncRead + Unpin>(stream: &mut R) -> Vec<ProtocolEnvelope> {
+    let mut got = Vec::new();
+    while let Some(frame) = next_frame(stream, Duration::from_secs(3)).await {
+        got.push(frame);
+    }
+    got
+}
+
+/// A turn that edits a file, so it asks for an approval on the way.
+async fn editing_turn(fx: &Fixture) {
+    fx.daemon
+        .run_task(&fx.session_id, "write a file", true, None, false)
+        .await
+        .expect("an editing turn completes");
+}
+
+/// Every event a turn puts on the wire is one a client can place: either a
+/// message `events.proto` declares, or an audit name under `vitna.audit.v1.`
+/// that the client shows as unknown and counts past.
+///
+/// Before this, the engine recorded `vitna.v1.ToolStarted` and friends, which
+/// are neither: the declared prefix is `type.vitna.ai/vitna.protocol.v1.`, so
+/// a client rejected every event as an unknown type.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_event_a_turn_emits_is_declared_or_audit() {
+    let fx = start("names").await;
+    let mut stream = subscribe(&fx, 0).await;
+    editing_turn(&fx).await;
+
+    let frames = collect_frames(&mut stream).await;
+    assert!(!frames.is_empty(), "the turn produced no events");
+
+    for frame in &frames {
+        let declared = vitna_protocol::type_url::EVENTS.contains(&frame.type_url.as_str());
+        let audit = frame
+            .type_url
+            .starts_with(vitna_orchestration::audit::PREFIX);
+        assert!(
+            declared || audit,
+            "{} is neither declared nor audit, so a client cannot place it",
+            frame.type_url
+        );
+    }
+
+    assert!(
+        frames
+            .iter()
+            .any(|f| f.type_url == vitna_protocol::type_url::event::APPROVAL_REQUESTED),
+        "an editing turn must ask for an approval"
+    );
+}
+
+/// The approval, the start and the finish name the same tool call.
+///
+/// This link is the whole mechanism behind the one safety property a client of
+/// this daemon has: it marks an approval approved only when `ToolStarted`
+/// arrives for that `tool_call_id`, and raises an alarm if a tool it rejected
+/// starts anyway. With the ids empty or unrelated, both checks quietly stop
+/// working while every screen still looks right.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_approval_names_the_tool_call_that_starts_and_finishes() {
+    let fx = start("linkage").await;
+    let mut stream = subscribe(&fx, 0).await;
+    editing_turn(&fx).await;
+
+    let frames = collect_frames(&mut stream).await;
+    let decode = |url: &str| -> Vec<serde_json::Value> {
+        frames
+            .iter()
+            .filter(|f| f.type_url == url)
+            .map(|f| serde_json::from_slice(&f.payload).expect("a declared payload decodes"))
+            .collect()
+    };
+
+    let approvals = decode(vitna_protocol::type_url::event::APPROVAL_REQUESTED);
+    let started = decode(vitna_protocol::type_url::event::TOOL_STARTED);
+    let finished = decode(vitna_protocol::type_url::event::TOOL_FINISHED);
+
+    let approval = approvals.first().expect("one approval");
+    let gated = approval["tool_call_id"]
+        .as_str()
+        .expect("approval names a tool call");
+    assert!(!gated.is_empty(), "an empty tool_call_id links nothing");
+    assert!(
+        !approval["approval_id"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "an answer has nothing to name without an approval_id"
+    );
+    assert!(
+        !approval["action_digest"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "an approval must say WHAT it is approving, not only which request"
+    );
+    assert!(
+        !approval["description"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "description is the only field that can tell an operator what the action is"
+    );
+
+    assert!(
+        started.iter().any(|e| e["tool_call_id"] == gated),
+        "the approved tool call must be the one that starts; started: {started:?}"
+    );
+    assert!(
+        finished.iter().any(|e| e["tool_call_id"] == gated),
+        "and the one that finishes"
+    );
+    let done = finished
+        .iter()
+        .find(|e| e["tool_call_id"] == gated)
+        .expect("the gated call finished");
+    assert_eq!(done["status"], "completed");
+}
+
+/// The four internal events keep their own prefix, so nobody "repairs" them
+/// onto the declared one, which would put an undeclared name on the wire for a
+/// client to decode as a declared message with every field empty.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_engines_own_events_stay_out_of_the_declared_namespace() {
+    let fx = start("audit").await;
+    let mut stream = subscribe(&fx, 0).await;
+    editing_turn(&fx).await;
+
+    let frames = collect_frames(&mut stream).await;
+    let audit: Vec<&str> = frames
+        .iter()
+        .map(|f| f.type_url.as_str())
+        .filter(|u| u.starts_with(vitna_orchestration::audit::PREFIX))
+        .collect();
+
+    for name in [
+        vitna_orchestration::audit::TURN_STARTED,
+        vitna_orchestration::audit::APPROVAL_GRANTED,
+        vitna_orchestration::audit::RECEIPT_GENERATED,
+    ] {
+        assert!(audit.contains(&name), "{name} is missing from the turn");
+        assert!(
+            !vitna_protocol::type_url::is_declared(name),
+            "{name} must not be a declared name"
+        );
+    }
+}
