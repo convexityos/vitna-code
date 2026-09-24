@@ -5,10 +5,10 @@
 //! picker offers exactly what the repository says is sellable on the day it was
 //! built, and a model that appears here is one somebody reviewed into the file.
 //!
-//! Readiness is the one live fact: a provider is "ready" when the environment
-//! variable it authenticates with is set in this process. That is a check, not
-//! a promise that the key works, and the label says "key present" for that
-//! reason.
+//! It carries no readiness. Whether a key is stored for a provider is the
+//! credential store's to answer and the daemon's to report (`keys.rs`), and
+//! the environment is no source of keys at all (CONTRIBUTING rule 4). The
+//! file's own `env` names, which models.dev publishes, are not read.
 
 use serde::Deserialize;
 
@@ -23,8 +23,6 @@ pub struct Catalog {
 pub struct Provider {
     pub id: String,
     pub name: String,
-    #[serde(default)]
-    pub env: Vec<String>,
     pub models: Vec<Model>,
 }
 
@@ -68,12 +66,6 @@ impl Catalog {
         serde_json::from_str(CATALOG).map_err(|e| format!("catalog did not parse: {e}"))
     }
 
-    /// Whether the provider's credential is present in this process's
-    /// environment. Presence only; the key is never read past `is_ok`.
-    pub fn provider_ready(p: &Provider) -> bool {
-        p.env.iter().any(|name| std::env::var(name).is_ok())
-    }
-
     /// Models that can drive an agent: tool calling is required, since a model
     /// that cannot call a tool cannot edit a file.
     pub fn choices(&self) -> Vec<Choice> {
@@ -97,23 +89,12 @@ impl Catalog {
         out
     }
 
-    /// The default preference: the newest reasoning model of the first ready
-    /// provider, else the first choice at all. Newest by catalog order, which
-    /// models.dev keeps chronological within a provider.
+    /// The default preference: the first choice in catalog order. It used to
+    /// follow whichever provider's key variable was set in this process, which
+    /// made the default depend on the environment; with no key read from
+    /// there, it is the choice every window without one already showed.
     pub fn default_choice(&self, choices: &[Choice]) -> Option<usize> {
-        let ready: Vec<&str> = self
-            .providers
-            .iter()
-            .filter(|p| Self::provider_ready(p))
-            .map(|p| p.id.as_str())
-            .collect();
-        choices
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, c)| c.reasoning && ready.contains(&c.provider_id.as_str()))
-            .map(|(i, _)| i)
-            .or_else(|| (!choices.is_empty()).then_some(0))
+        (!choices.is_empty()).then_some(0)
     }
 }
 

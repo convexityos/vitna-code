@@ -17,6 +17,7 @@ mod composer;
 mod daemon;
 mod icons;
 mod inspector;
+mod keys;
 mod link;
 mod menu;
 mod parts;

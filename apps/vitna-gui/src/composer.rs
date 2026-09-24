@@ -310,10 +310,17 @@ impl App {
         ui.add_space(4.0);
         let (rule, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), egui::Sense::hover());
         ui.painter().hline(rule.x_range(), rule.center().y, Stroke::new(1.0, theme::HAIR_2));
+        // It looked like a row and did nothing when clicked. It opens the
+        // models in Settings now, beside where each provider's key is kept.
         let manage = ui.allocate_response(Vec2::new(ui.available_width(), 30.0), egui::Sense::click());
+        if manage.hovered() {
+            ui.painter().rect_filled(manage.rect, CornerRadius::same(6), Color32::from_white_alpha(10));
+        }
         icons::sliders(ui.painter(), egui::pos2(manage.rect.left() + 16.0, manage.rect.center().y), theme::FAINT);
         ui.painter().text(egui::pos2(manage.rect.left() + 32.0, manage.rect.center().y), egui::Align2::LEFT_CENTER, "Manage models", theme::sans(theme::FS_UI), theme::FAINT);
-        manage.on_hover_text("Providers and their keys are the daemon's to manage, and it is not running.");
+        if manage.on_hover_text("The catalog, and where each provider's key is kept, in Settings.").clicked() {
+            self.settings = Some(crate::app::SettingsPage::Models);
+        }
 
         if let Some((i, r)) = hovered {
             if let Some(c) = choices.get(i) {
