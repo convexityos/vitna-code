@@ -10,9 +10,15 @@ crossterm.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tracing.workspace = true
+# The declared wire, for the handshake that tells this terminal whether a
+# daemon is there to send to.
 vitna-protocol.workspace = true
-vitna-daemon.workspace = true
+# The one hardened way to ask git anything about the folder: the branch in the
+# bar over the composer.
+vitna-git-workspaces.workspace = true
+# The offline verifier, so a receipt on disk is read and checked by the same
+# code `vitna verify` runs, rather than by a second parser in this crate.
+vitna-receipt-verify.workspace = true
 
 [[bin]]
 name = "vitna-tui"
