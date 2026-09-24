@@ -54,10 +54,16 @@ enum Commands {
     Verify { receipt_file: String },
     /// Check local environment and daemon health
     Doctor,
-    /// Start local daemon server
+    /// Start the local daemon: the same daemon, endpoint and journal as vitna-coded
     Serve {
-        #[arg(long, default_value = ".vitna/store.db")]
-        db: PathBuf,
+        /// Where to listen. Defaults to the endpoint every client probes.
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// The event store. Defaults to `.vitna/daemon.db` under the home
+        /// directory. `--db`, the flag's name before it matched vitna-coded's,
+        /// still works.
+        #[arg(long, alias = "db")]
+        store: Option<PathBuf>,
     },
 }
 
@@ -97,12 +103,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Sessions) => {
             run_list_sessions()?;
         }
-        Some(Commands::Serve { db }) => {
-            println!("Starting Vitna local daemon on {}", db.display());
-            let _daemon = DaemonServer::open_default(&db)?;
-            println!("Vitna daemon listening on local session channel. Press Ctrl+C to exit.");
-            tokio::signal::ctrl_c().await?;
-            println!("Daemon shut down cleanly.");
+        Some(Commands::Serve { endpoint, store }) => {
+            if let Err(e) = serve(endpoint, store).await {
+                // One line naming what failed, as vitna-coded prints it. A
+                // daemon that dies quietly looks, from a client, like one that
+                // was never started.
+                eprintln!("vitna serve: {e}");
+                std::process::exit(1);
+            }
         }
         Some(Commands::Receipt { sub }) => match sub {
             ReceiptCommands::Show { run_id } => {
@@ -121,6 +129,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Starts the daemon in the foreground, through the same code as vitna-coded.
+///
+/// This opened a store beside the current folder, printed "Vitna daemon
+/// listening on local session channel" and bound nothing, so every client that
+/// probed the declared endpoint found no daemon. The release scripts ship
+/// `vitna` and not `vitna-coded`, so for an installed copy this is the door.
+async fn serve(endpoint: Option<String>, store: Option<PathBuf>) -> Result<(), String> {
+    vitna_daemon::launch::logging();
+    let launch = vitna_daemon::launch::Launch::resolve(endpoint, store)?;
+    let announce = launch.endpoint.clone();
+    vitna_daemon::launch::run(&launch, move || {
+        // Printed once the endpoint is bound, so it is true when it is read.
+        println!("Vitna daemon listening on {announce}. Press Ctrl+C to exit.");
+    })
+    .await
 }
 
 async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {

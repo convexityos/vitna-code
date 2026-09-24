@@ -36,7 +36,9 @@ pub fn draw(app: &App, frame: &mut Frame, area: Rect) {
         Link::Absent { .. } => (
             Some(theme::tone(theme::RUST)),
             "The daemon is not running, so there is nothing to send to yet.".into(),
-            Some("Start vitna-coded, then press ctrl+r to look again.".into()),
+            // `vitna serve`, not `vitna-coded`: the release scripts ship
+            // `vitna`, and the two start the same daemon.
+            Some("Start it with vitna serve, then press ctrl+r to look again.".into()),
         ),
         Link::Trouble { what } => (
             Some(theme::tone(theme::RUST)),
