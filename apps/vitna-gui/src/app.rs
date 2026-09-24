@@ -22,18 +22,62 @@ use crate::runs;
 use crate::theme;
 use crate::workspace::Workspace;
 
+/// What a turn may change. It is the one approval this daemon can be told
+/// (`auto_approve`): either every `write_file`, `apply_patch` and
+/// `run_command` the model asks for is approved without asking anyone, or
+/// every one is refused. The daemon cannot stop a run and ask about a single
+/// action, so there is nothing between the two yet.
+///
+/// "Build" used to be the default and sent the first of those, so a window
+/// approved every change on its operator's behalf without ever saying so.
+/// The lessons this repository keeps are plain that an approval comes only
+/// from the operator, and that nothing grants more than was shown
+/// (CLAUDE-CODE-RELEASES-LESSONS sections 3 and 4). So the window starts in
+/// Plan, and the blanket approval is a mode the operator has to choose, named
+/// for exactly what it grants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    Build,
+    /// Reads and proposes. Every change it asks to make is refused.
     Plan,
+    /// Every change approved without asking, for as long as it is chosen.
+    BuildWithoutAsking,
 }
+
+/// Where a window starts: approving nothing on anyone's behalf.
+pub const DEFAULT_MODE: Mode = Mode::Plan;
 
 impl Mode {
     pub fn label(self) -> &'static str {
         match self {
-            Mode::Build => "Build",
             Mode::Plan => "Plan",
+            Mode::BuildWithoutAsking => "Build without asking",
         }
+    }
+
+    /// The mode in one short line, for its menu.
+    pub fn brief(self) -> &'static str {
+        match self {
+            Mode::Plan => "Reads and proposes. Changes are refused.",
+            Mode::BuildWithoutAsking => "Every change runs without asking you.",
+        }
+    }
+
+    /// The mode in a sentence, for its hover and for Settings.
+    pub fn says(self) -> &'static str {
+        match self {
+            Mode::Plan => {
+                "Reads and proposes. Every file write, patch and command the model asks for is refused, and it is told so."
+            }
+            Mode::BuildWithoutAsking => {
+                "Every file write, patch and command the model asks for runs without asking you, until you switch back to Plan."
+            }
+        }
+    }
+
+    /// The approval sent with a turn: true only when the operator has chosen
+    /// the mode that says so.
+    pub fn auto_approve(self) -> bool {
+        matches!(self, Mode::BuildWithoutAsking)
     }
 }
 
@@ -125,6 +169,10 @@ pub struct App {
     pub(crate) model_query: String,
     /// Set from VITNA_GUI_OPEN_MODEL_MENU at startup; consumed on the first frame.
     pub(crate) open_model_menu_once: bool,
+    /// Set from VITNA_GUI_OPEN_MODE_MENU at startup; consumed on the first
+    /// frame. It opens the menu and chooses nothing: no hook starts a window
+    /// approving changes.
+    pub(crate) open_mode_menu_once: bool,
     /// Set from VITNA_GUI_OPEN_MENU at startup; consumed on the first frame.
     pub(crate) open_menu_once: bool,
     pub(crate) mode: Mode,
@@ -184,8 +232,9 @@ impl App {
             draft: String::new(),
             model_query: String::new(),
             open_model_menu_once: std::env::var_os("VITNA_GUI_OPEN_MODEL_MENU").is_some(),
+            open_mode_menu_once: std::env::var_os("VITNA_GUI_OPEN_MODE_MENU").is_some(),
             open_menu_once: std::env::var_os("VITNA_GUI_OPEN_MENU").is_some(),
-            mode: Mode::Build,
+            mode: DEFAULT_MODE,
             placement: Placement::Worktree,
             settings: std::env::var("VITNA_GUI_OPEN_SETTINGS")
                 .ok()
@@ -407,6 +456,50 @@ impl App {
         }
         if crate::parts::crumbs(ui, bar, left, &trail) == Some(0) {
             self.open_run = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::{Mode, DEFAULT_MODE};
+
+    /// Nothing is approved on anyone's behalf unless they chose the mode that
+    /// says so, and that mode's name says it in words, not only in its colour.
+    #[test]
+    fn a_turn_approves_nothing_unless_the_operator_chose_to() {
+        assert_eq!(DEFAULT_MODE, Mode::Plan);
+        assert!(!DEFAULT_MODE.auto_approve());
+        assert!(Mode::BuildWithoutAsking.auto_approve());
+        assert!(Mode::BuildWithoutAsking.label().contains("without asking"));
+    }
+
+    /// The approval a turn carries is read off the mode and nowhere else, so
+    /// no other rule can approve for the operator. The old line set it by
+    /// matching a mode by hand, and a literal `true` would be worse; either
+    /// fails here. The field's name is built in pieces so this test does not
+    /// match itself.
+    #[test]
+    fn the_approval_sent_is_the_one_the_mode_states() {
+        let field = format!("{}:", "auto_approve");
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sets = Vec::new();
+        for entry in std::fs::read_dir(&src).expect("src") {
+            let path = entry.expect("entry").path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            if !name.ends_with(".rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read");
+            for (i, line) in text.lines().enumerate() {
+                if line.contains(&field) {
+                    sets.push((format!("{name}:{}", i + 1), line.trim().to_string()));
+                }
+            }
+        }
+        assert!(!sets.is_empty(), "no turn sets an approval at all");
+        for (at, line) in &sets {
+            assert!(line.contains("self.mode.auto_approve()"), "{at} sets the approval another way: {line}");
         }
     }
 }

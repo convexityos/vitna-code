@@ -145,8 +145,10 @@ impl App {
                     "Open a session first, so the run has somewhere to belong."
                 } else if self.draft.trim().is_empty() {
                     "Enter sends once there is something to send."
+                } else if self.mode.auto_approve() {
+                    "Send (Enter). Every change the model asks for will run without asking you."
                 } else {
-                    "Send (Enter)"
+                    "Send (Enter). In Plan, every change the model asks for is refused."
                 };
                 let sent = send.clicked();
                 send.on_hover_text(hint);
@@ -169,27 +171,30 @@ impl App {
         }
     }
 
-    /// The mode, as a plain word that opens a two-row menu.
+    /// The mode in its own words, opening a menu of what a turn may change.
+    /// "Build without asking" is drawn in rust while it is chosen: it is a
+    /// standing approval of every change, which is a state to keep in view,
+    /// and its name says so, so the colour is never the only sign of it.
     fn mode_picker(&mut self, ui: &mut egui::Ui) {
-        let galley = ui.painter().layout_no_wrap(self.mode.label().to_string(), theme::sans(theme::FS_UI), theme::INK);
+        let tone = if self.mode.auto_approve() { theme::RUST } else { theme::INK };
+        let galley = ui.painter().layout_no_wrap(self.mode.label().to_string(), theme::sans(theme::FS_UI), tone);
         let (rect, response) = ui.allocate_exact_size(Vec2::new(galley.size().x + 20.0, 24.0), egui::Sense::click());
         if response.hovered() {
             ui.painter().rect_filled(rect, CornerRadius::same(7), theme::FACE);
         }
-        ui.painter().galley(egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, theme::INK);
-        let response = response.on_hover_text("Build edits files. Plan proposes and stops.");
+        ui.painter().galley(egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0), galley, tone);
+        let response = response.on_hover_text(self.mode.says());
 
+        let force_open = std::mem::take(&mut self.open_mode_menu_once);
         egui::Popup::menu(&response)
+            .open_memory(if force_open { Some(egui::SetOpenCommand::Bool(true)) } else { None })
             .align(egui::RectAlign::TOP_START)
             .gap(8.0)
-            .width(240.0)
+            .width(300.0)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
             .show(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                for (m, what) in [
-                    (Mode::Build, "Edits files and runs commands."),
-                    (Mode::Plan, "Proposes, then stops for you."),
-                ] {
+                for m in [Mode::Plan, Mode::BuildWithoutAsking] {
                     let row = ui.allocate_response(Vec2::new(ui.available_width(), 40.0), egui::Sense::click());
                     let r = row.rect;
                     if row.hovered() {
@@ -197,14 +202,24 @@ impl App {
                     }
                     let on = self.mode == m;
                     ui.painter().text(egui::pos2(r.left() + 10.0, r.top() + 13.0), egui::Align2::LEFT_CENTER, m.label(), theme::sans(theme::FS_UI), if on { theme::PERI_2 } else { theme::INK });
-                    ui.painter().text(egui::pos2(r.left() + 10.0, r.top() + 28.0), egui::Align2::LEFT_CENTER, what, theme::sans(theme::FS_MICRO), theme::FAINTER);
+                    ui.painter().text(egui::pos2(r.left() + 10.0, r.top() + 28.0), egui::Align2::LEFT_CENTER, m.brief(), theme::sans(theme::FS_MICRO), theme::FAINTER);
                     if on {
                         icons::check(ui.painter(), egui::pos2(r.right() - 14.0, r.center().y), theme::PERI_2);
                     }
-                    if row.clicked() {
+                    if row.on_hover_text(m.says()).clicked() {
                         self.mode = m;
                     }
                 }
+                // The mode that belongs between the two, shown as missing
+                // rather than left out: one that stops at each change and asks.
+                // This daemon cannot, so it is offered disabled, with the why.
+                let row = ui.allocate_response(Vec2::new(ui.available_width(), 40.0), egui::Sense::hover());
+                let r = row.rect;
+                ui.painter().text(egui::pos2(r.left() + 10.0, r.top() + 13.0), egui::Align2::LEFT_CENTER, "Build, asking first", theme::sans(theme::FS_UI), theme::FAINTER);
+                ui.painter().text(egui::pos2(r.left() + 10.0, r.top() + 28.0), egui::Align2::LEFT_CENTER, "Needs a daemon that can stop and ask.", theme::sans(theme::FS_MICRO), theme::FAINTER);
+                row.on_hover_text(
+                    "Asking before each change needs the daemon to pause a run and put that change to you. This daemon cannot yet: it can only approve every change or refuse every one.",
+                );
             });
     }
 
@@ -401,8 +416,11 @@ impl crate::app::App {
     ///
     /// The model is a preference, and the receipt reports what actually ran,
     /// which is why the sku travels as a request field rather than as a claim.
-    /// `auto_approve` follows the mode: Build acts, Plan only looks, and the
-    /// daemon's approval gate is what enforces that rather than this window.
+    /// `auto_approve` is the one approval this daemon can be told, and it is
+    /// true only when the operator has chosen Build without asking: the window
+    /// never approves a change on anyone's behalf by default. The daemon
+    /// records the flag in the turn's `TurnStarted` event, so the log says the
+    /// turn's changes were approved in advance rather than one by one.
     pub(crate) fn submit(&mut self) {
         let Some(session_id) = self.active_session.clone() else {
             return;
@@ -427,7 +445,7 @@ impl crate::app::App {
                     prompt,
                     provider,
                     model_sku,
-                    auto_approve: matches!(self.mode, crate::app::Mode::Build),
+                    auto_approve: self.mode.auto_approve(),
                     verification_command: None,
                 },
             )));
