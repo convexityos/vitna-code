@@ -16,11 +16,13 @@
 //! key on every start, so a receipt signed by one run of this binary cannot be
 //! checked against the key of the next. Keeping one key, owner-only, is a
 //! separate change.
-
-use std::sync::Arc;
+//!
+//! Where it listens and keeps its journal, and how it starts, live in
+//! `vitna_daemon::launch`, which `vitna serve` starts through as well, so the
+//! two doors to this daemon cannot disagree.
 
 use clap::Parser;
-use vitna_daemon::{ipc, DaemonServer};
+use vitna_daemon::launch::{self, Launch};
 
 #[derive(Parser, Debug)]
 #[command(name = "vitna-coded", about = "The Vitna Code local daemon")]
@@ -36,23 +38,9 @@ struct Args {
     store: Option<std::path::PathBuf>,
 }
 
-fn default_store() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| "neither HOME nor USERPROFILE is set, so --store must be given".to_string())?;
-    Ok(std::path::PathBuf::from(home)
-        .join(".vitna")
-        .join("daemon.db"))
-}
-
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    launch::logging();
 
     if let Err(e) = run().await {
         // One line naming what failed. A daemon that dies silently is
@@ -64,26 +52,14 @@ async fn main() {
 
 async fn run() -> Result<(), String> {
     let args = Args::parse();
+    let launch = Launch::resolve(args.endpoint, args.store)?;
 
-    let endpoint = match args.endpoint {
-        Some(e) => e,
-        None => vitna_protocol::endpoint::preferred()?,
-    };
-    let store_path = match args.store {
-        Some(p) => p,
-        None => default_store()?,
-    };
-
-    let server = Arc::new(DaemonServer::open_default(&store_path)?);
-    tracing::info!(store = %store_path.display(), "vitna-coded starting");
-
-    let announce = endpoint.clone();
-    ipc::serve(server, &endpoint, move || {
+    let announce = launch.endpoint.clone();
+    launch::run(&launch, move || {
         tracing::info!(endpoint = %announce, "listening");
         // On stdout as well as in the log, because it is the line a script or
         // a test waits for before connecting.
         println!("vitna-coded listening on {announce}");
     })
     .await
-    .map_err(|e| format!("listening on {endpoint} failed: {e}"))
 }
