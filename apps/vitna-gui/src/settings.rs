@@ -2,14 +2,14 @@
 //!
 //! Every page states something this window can actually know or set: the
 //! defaults it sends with a turn, the shortcuts that are bound, the daemon it
-//! looked for, the providers whose key is in its environment, the catalog.
-//! Nothing here stores a key or promises persistence the daemon does not yet
-//! give, and the notes at the foot of each page say so.
+//! looked for, where each provider's key is kept, the catalog. Nothing here
+//! reads, stores or checks a key, or promises persistence the daemon does not
+//! yet give, and the notes at the foot of each page say so.
 
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 
 use crate::app::{App, Mode, Placement, SettingsPage};
-use crate::catalog::{Catalog, Choice};
+use crate::catalog::Choice;
 use crate::composer::provider_badge;
 use crate::icons;
 use crate::link::Link;
@@ -81,16 +81,23 @@ impl App {
                 self.settings = Some(p);
             }
         }
+        // Providers sat under Daemon while the daemon was said to keep the
+        // keys. The operating system's store keeps them now, so providers go
+        // with the models they serve.
         ui.add_space(12.0);
-        nav_group(&mut ui, "Daemon");
+        nav_group(&mut ui, "Models");
         for (p, icon, label) in [
-            (SettingsPage::Daemon, icons::server as Icon, "Daemon"),
             (SettingsPage::Providers, icons::grid as Icon, "Providers"),
             (SettingsPage::Models, icons::sparkle as Icon, "Models"),
         ] {
             if nav_row(&mut ui, icon, label, page == p).clicked() {
                 self.settings = Some(p);
             }
+        }
+        ui.add_space(12.0);
+        nav_group(&mut ui, "Daemon");
+        if nav_row(&mut ui, icons::server as Icon, "Daemon", page == SettingsPage::Daemon).clicked() {
+            self.settings = Some(SettingsPage::Daemon);
         }
 
         // The product and its version sign the nav, the way OpenCode's does.
@@ -256,67 +263,50 @@ impl App {
         }
 
         ui.add_space(14.0);
-        note(ui, "The daemon owns sessions, provider keys and receipts. Until it is running this window reads the workspace and states preferences, nothing more.");
+        note(ui, "The daemon owns sessions and receipts. Until it is running this window reads the workspace and states preferences, nothing more.");
     }
 
+    /// Where each provider's key is kept, and the command that puts it there.
+    ///
+    /// It used to list providers as "connected" when a key variable was set in
+    /// this window's environment, and told you to set one. The environment is
+    /// no source of keys (CONTRIBUTING rule 4), and this window's environment
+    /// was never the daemon's anyway. Now each provider is shown with the
+    /// operating system's own command that files its key where the providers
+    /// crate reads it, and whether a key is stored is said once, plainly, as
+    /// not reported: the window never opens the store, so it never holds a
+    /// key, and no daemon reports that fact over the wire yet.
     fn page_providers(&mut self, ui: &mut egui::Ui) {
         let Some(catalog) = self.catalog.clone() else {
             note(ui, "The model catalog did not load, so there is nothing to list.");
             return;
         };
-        let (ready, rest): (Vec<_>, Vec<_>) =
-            catalog.providers.iter().partition(|p| Catalog::provider_ready(p));
 
-        section(ui, "Connected");
-        if ready.is_empty() {
-            note(ui, "None yet. A provider is connected when the variable it authenticates with is set in this window's environment.");
-        } else {
-            card(ui, |ui| {
-                for (i, p) in ready.iter().enumerate() {
-                    if i > 0 {
-                        rule(ui);
-                    }
-                    let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), egui::Sense::hover());
-                    provider_badge(ui, egui::pos2(r.left() + 20.0, r.center().y), 14.0, &p.id, &p.name);
-                    let name = ui.painter().text(egui::pos2(r.left() + 36.0, r.center().y), Align2::LEFT_CENTER, &p.name, theme::sans(theme::FS_TITLE), theme::INK);
-                    tag(ui, egui::pos2(name.right() + 10.0, r.center().y), "Environment");
-                    ui.painter().text(egui::pos2(r.right() - 14.0, r.center().y), Align2::RIGHT_CENTER, p.env.join(", "), theme::mono(theme::FS_MICRO), theme::FAINTER);
-                }
-            });
-        }
-
-        ui.add_space(16.0);
-        section(ui, "Available");
+        section(ui, "Where each key is kept");
         card(ui, |ui| {
-            if rest.is_empty() {
-                plain_row(ui, "Every provider in the catalog is connected.");
-            }
-            for (i, p) in rest.iter().enumerate() {
+            for (i, p) in catalog.providers.iter().enumerate() {
                 if i > 0 {
                     rule(ui);
                 }
-                let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 50.0), egui::Sense::hover());
-                provider_badge(ui, egui::pos2(r.left() + 20.0, r.top() + 18.0), 14.0, &p.id, &p.name);
-                ui.painter().text(egui::pos2(r.left() + 36.0, r.top() + 18.0), Align2::LEFT_CENTER, &p.name, theme::sans(theme::FS_TITLE), theme::INK);
-                let needs = if p.env.is_empty() {
-                    "No variable declared for it.".to_string()
-                } else {
-                    format!("Needs {} in the environment.", p.env.join(" or "))
-                };
-                ui.painter().text(egui::pos2(r.left() + 36.0, r.top() + 36.0), Align2::LEFT_CENTER, needs, theme::sans(theme::FS_META), theme::FAINT);
-
-                let b = Rect::from_min_size(egui::pos2(r.right() - 14.0 - 84.0, r.center().y - 13.0), Vec2::new(84.0, 26.0));
-                let connect = ui.interact(b, ui.id().with(("connect", &p.id)), egui::Sense::hover());
-                ui.painter().rect_stroke(b, CornerRadius::same(6), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
-                icons::plus(ui.painter(), egui::pos2(b.left() + 16.0, b.center().y), theme::FAINTER);
-                ui.painter().text(egui::pos2(b.left() + 30.0, b.center().y), Align2::LEFT_CENTER, "Connect", theme::sans(theme::FS_UI), theme::FAINTER);
-                let var = p.env.first().map(String::as_str).unwrap_or("the variable");
-                connect.on_hover_text(format!("Keys are the daemon's to keep, and it is not running. Until then, set {var} and start the window again."));
+                key_row(ui, &p.id, &p.name);
             }
         });
+        ui.add_space(10.0);
+        note(
+            ui,
+            &format!(
+                "Each key is {} in {}, and never an environment variable. The command asks for the key rather than taking it as an argument, so it stays out of your shell's history.",
+                crate::keys::entry_form(),
+                crate::keys::STORE
+            ),
+        );
 
-        ui.add_space(14.0);
-        note(ui, "Connected means the key is present in this window's environment. That is a check, not a promise the key works.");
+        ui.add_space(18.0);
+        section(ui, "Whether a key is stored");
+        note(
+            ui,
+            "Not reported. The daemon is what reads a key, and no daemon says yet which providers it holds one for. This window never opens the credential store, so it never holds a key, and it does not guess.",
+        );
     }
 
     fn page_models(&mut self, ui: &mut egui::Ui) {
@@ -487,13 +477,41 @@ fn text_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     )
 }
 
-/// A small tag beside a name, like OpenCode's "Environment".
-fn tag(ui: &mut egui::Ui, at: egui::Pos2, text: &str) {
-    let galley = ui.painter().layout_no_wrap(text.to_string(), theme::sans(theme::FS_MICRO), theme::FAINT);
-    let rect = Rect::from_min_size(egui::pos2(at.x, at.y - 9.0), Vec2::new(galley.size().x + 12.0, 18.0));
-    ui.painter().rect_filled(rect, CornerRadius::same(4), theme::FACE);
-    ui.painter().rect_stroke(rect, CornerRadius::same(4), Stroke::new(1.0, theme::HAIR_2), egui::StrokeKind::Inside);
-    ui.painter().galley(egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y / 2.0), galley, theme::FAINT);
+/// One provider: its mark and name, the command that files its key under the
+/// name, and a copy at the right. "Copied" answers the click while the pointer
+/// stays on it, so the copy says it happened without a toast.
+fn key_row(ui: &mut egui::Ui, id: &str, name: &str) {
+    let command = crate::keys::store_command(id);
+    let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), egui::Sense::hover());
+    provider_badge(ui, egui::pos2(r.left() + 20.0, r.top() + 18.0), 14.0, id, name);
+    ui.painter().text(egui::pos2(r.left() + 36.0, r.top() + 18.0), Align2::LEFT_CENTER, name, theme::sans(theme::FS_TITLE), theme::INK);
+
+    let copied_id = ui.id().with(("copied", id));
+    let copied = ui.ctx().data(|d| d.get_temp::<bool>(copied_id)).unwrap_or(false);
+    let word = if copied { "Copied" } else { "Copy" };
+    let tone = if copied { theme::FAINT } else { theme::PERI_2 };
+    let g = theme::line(ui, word, theme::sans(theme::FS_UI), tone, 80.0);
+    let b = Rect::from_min_max(
+        egui::pos2(r.right() - 8.0 - g.size().x - 12.0, r.center().y - 12.0),
+        egui::pos2(r.right() - 8.0, r.center().y + 12.0),
+    );
+    let copy = ui.interact(b, ui.id().with(("copy", id)), egui::Sense::click());
+    if copy.hovered() {
+        ui.painter().rect_filled(b, CornerRadius::same(6), theme::FACE);
+    }
+    ui.painter().galley(egui::pos2(b.left() + 6.0, b.center().y - g.size().y / 2.0), g, tone);
+
+    let x = r.left() + 36.0;
+    let cmd = theme::line(ui, &command, theme::sans(theme::FS_META), theme::FAINT, (b.left() - 12.0 - x).max(0.0));
+    ui.painter().galley(egui::pos2(x, r.top() + 36.0 - cmd.size().y / 2.0), cmd, theme::FAINT);
+
+    if copy.clicked() {
+        ui.ctx().copy_text(command.clone());
+        ui.ctx().data_mut(|d| d.insert_temp(copied_id, true));
+    } else if copied && !copy.hovered() {
+        ui.ctx().data_mut(|d| d.remove::<bool>(copied_id));
+    }
+    copy.on_hover_text(format!("Copies the command, to run in a terminal:\n{command}"));
 }
 
 fn note(ui: &mut egui::Ui, text: &str) {
