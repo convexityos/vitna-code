@@ -149,9 +149,9 @@ impl App {
         card(ui, |ui| {
             let mode = self.mode;
             let mut pick = None;
-            setting_row(ui, "Mode", "Build edits files. Plan proposes and stops.", |ui| {
+            setting_row(ui, "Mode", "What a turn may change. Nothing sits between the two yet.", |ui| {
                 // Right-to-left, so the later pill lands leftmost.
-                for m in [Mode::Plan, Mode::Build] {
+                for m in [Mode::BuildWithoutAsking, Mode::Plan] {
                     if pill(ui, m.label(), mode == m).clicked() {
                         pick = Some(m);
                     }
