@@ -46,7 +46,10 @@ one that overclaims now opens with a correction naming what it got wrong.
 3. **Several surfaces marked Verified have no tests at all**: `apps/vitna-cli`
    (0), `crates/skills` (0) and `crates/telemetry` (0). `apps/vitna-tui`,
    `crates/daemon`, `crates/mcp`, `crates/context` and `crates/policy` have one
-   lifecycle smoke test each.
+   lifecycle smoke test each. **`apps/vitna-tui` was replaced on 2026-09-23**:
+   the client this finding describes answered every prompt with a reply, a
+   diff and a receipt path it made up. Its row in the Phase 1 ledger says what
+   the new one does and what is asserted.
 4. **The invariant record cited design documents as verification.** An ADR
    records intent; it cannot verify an implementation. That section now names a
    test or says that nothing asserts the invariant.
@@ -72,7 +75,7 @@ one that overclaims now opens with a correction naming what it got wrong.
 | **Phase 0A** | Authority, Invariants, Threat Model, Platform & Dependency Matrices | **COMPLETE** | A documentation phase: every artifact exists. See `docs/PHASE_0A_GATE_REPORT.md` |
 | **Phase 0B** | Protocol Envelope, Event Store, Runner Journal, Receipt Trust Model | **COMPLETE** | Framing, hash chain, journal and replay are all asserted by tests. See `docs/PHASE_0B_GATE_REPORT.md` |
 | **Phase 0C** | Platform Proof: Fake Provider & Runner, Hostile Repos, Hardware CI | **PARTIAL** | Two of five deliverables are Partial. Hardware CI was not real until 2026-09-20: the Windows ARM64 leg had never executed. See `docs/PHASE_0C_GATE_REPORT.md` |
-| **Phase 1** | Durable Vertical Slice (CLI, TUI, Daemon, Guarded Runner, Local Receipt v0) | **PARTIAL** | The slice runs end to end, but the CLI has no tests and the TUI and daemon have one smoke test each. See `docs/PHASE_1_GATE_REPORT.md` |
+| **Phase 1** | Durable Vertical Slice (CLI, TUI, Daemon, Guarded Runner, Local Receipt v0) | **PARTIAL** | The slice runs end to end, but the CLI has no tests and the daemon has one smoke test. The TUI reads receipts and reaches the daemon, and starts no turn, because the daemon serves no `SubmitTurn`. See `docs/PHASE_1_GATE_REPORT.md` |
 | **Phase 2** | Competitive Solo-Agent Alpha (OpenAI/Anthropic adapters, Git broker, inspect/build) | **COMPLETE** | The best covered phase: golden stream replay, and 86 tests across tools, git-broker and git-workspaces. See `docs/PHASE_2_GATE_REPORT.md` |
 | **Phase 3** | Trustworthy Solo-Agent Beta (Strong sandbox, MCP, keychain secrets, Playwright) | **PARTIAL** | Strong isolation is not implemented and is refused rather than downgraded. Windows has no sandbox backend. MCP has one test. See `docs/PHASE_3_GATE_REPORT.md` |
 | **Phase 4** | Durable Multi-Agent Beta (DAG scheduler, per-agent clones, merge queue) | **COMPLETE** | Cycle detection, cascading cancellation, merge queue and the 3-agent pipeline are asserted. See `docs/PHASE_4_GATE_REPORT.md` |
@@ -136,7 +139,7 @@ one that overclaims now opens with a correction naming what it got wrong.
 | Orchestration State Machine | `crates/orchestration/src/engine.rs` | Turn lifecycle, exact-action approval check, and Merkle root receipt calculation | Verified |
 | Local Daemon & Session Store | `crates/daemon/src/server.rs` | One test covers this crate: `test_daemon_server_session_and_run`, a happy-path session and run. The event store beneath it is separately and properly tested (`crates/store`, hash chain and replay). The daemon's own behaviour under a dropped connection, a concurrent session or a restart is not asserted. | Smoke tested |
 | Non-Interactive CLI Suite | `apps/vitna-cli/src/main.rs` | **`apps/vitna-cli` contains no tests at all.** The subcommands exist and the crate compiles and clippy-passes on five platforms. No test invokes any subcommand, checks an exit code, or covers argument parsing. | Unverified |
-| Calm Terminal TUI Client | `apps/vitna-tui/src/lib.rs` & `main.rs` | One test covers this crate: `test_terminal_app_lifecycle`. None of the three properties this row names is asserted by it: not the split-pane layout, not the single amber signal budget, and not the approval modal. | Smoke tested |
+| Terminal Client | `apps/vitna-tui/src/` | Rebuilt 2026-09-23 in the desktop window's material. It states the folder and its branch (through `host_git`), whether a daemon completes the declared handshake, and the runs `.vitna/receipts` holds, each read through `vitna_receipt_verify`. Asserted, 52 tests, six of the guards mutation checked: Enter with nothing to send to draws nothing and keeps the draft, and a line break inside a paste Windows delivers as keys stays a line break; a key typed before an approval arms, a held key, or a second answer cannot answer it; a hostile path in a receipt reaches the screen as visible pictures, never as escapes; a link, a directory or an oversized file in the receipts folder is not read; every colour drawn is a palette rung and none is written as a literal; every state still reads with NO_COLOR; every screen keeps its composer at 80x24. **Not asserted:** it starts no turn, since `vitna-coded` serves no `SubmitTurn`, so the transcript, tool rows and approval box are drawn only from test fixtures; the handshake with the real `vitna-coded` binary was checked by hand on Windows, and the test runs it against a stand-in; no receipt's signature is ever checked, because nothing the terminal can reach publishes the daemon's key. | Partial |
 | End-to-End Vertical Slice Test | `crates/orchestration/tests/vertical_slice_test.rs` | Full execution: inspection -> creation -> modification -> verification -> signed receipt | Verified |
 | Phase 1 Gate Report | `docs/PHASE_1_GATE_REPORT.md` | Formal audit certifying Phase 1 deliverables and authorizing Phase 2 progression | Verified |
 

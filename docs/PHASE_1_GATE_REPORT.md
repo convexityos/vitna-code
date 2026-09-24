@@ -14,6 +14,11 @@
 > named for are barely covered. `apps/vitna-cli` contains no tests at all, and
 > `apps/vitna-tui` and `crates/daemon` have one lifecycle smoke test each. None
 > of the TUI properties this report describes is asserted.
+>
+> **2026-09-23:** the terminal client section 2.6 describes no longer exists.
+> It answered every prompt with a canned reply, a diff and a receipt path it
+> made up, and it was replaced by one that starts no turn it cannot start. See
+> its row in `IMPLEMENTATION_STATUS.md`.
 
 
 - Status: PASSED
