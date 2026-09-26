@@ -129,10 +129,11 @@ describe('looking a model up', () => {
   });
 
   it('answers null for the sku the daemon hardcodes today', () => {
-    // crates/daemon/src/server.rs reports `claude-3-7-sonnet`, which this
-    // catalog does not carry. The answer is null rather than a neighbouring
-    // Claude's rate: a window that cannot price a model says so.
-    expect(findModel('anthropic', 'claude-3-7-sonnet')).toBeNull();
+    // crates/daemon/src/server.rs signs a run that called no model as sku
+    // `keyword-stub` from provider `none`, which this catalog does not carry.
+    // The answer is null rather than a neighbouring model's rate: a window
+    // that cannot price a model says so.
+    expect(findModel('none', 'keyword-stub')).toBeNull();
   });
 
   it('answers null for a provider it does not carry, and empty for its models', () => {
