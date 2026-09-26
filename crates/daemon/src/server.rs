@@ -184,8 +184,15 @@ impl DaemonServer {
             run_id: run_id.clone(),
             workspace_root: session.workspace_root.clone(),
             auto_approve,
-            model_sku: "claude-3-7-sonnet".to_string(),
-            provider_name: "fake".to_string(),
+            // No model runs on this path: the one edit below is picked by
+            // looking for a keyword in the prompt. So the receipt names no
+            // provider and calls the stand-in what it is. This used to sign
+            // "claude-3-7-sonnet" from a provider named "fake", so every
+            // `vitna run` attested to a model that never served it. The v1
+            // schema types both fields as plain strings, so neither value
+            // needed a change to it.
+            model_sku: "keyword-stub".to_string(),
+            provider_name: "none".to_string(),
             sandbox_guarantee: "guarded".to_string(),
             verification_command,
             allow_unsandboxed,
