@@ -12,10 +12,10 @@
 //! that read ANTHROPIC_API_KEY and OPENAI_API_KEY from the environment, which
 //! CONTRIBUTING's fourth rule forbids.
 //!
-//! Known limitation: `DaemonServer::open_default` generates a fresh signing
-//! key on every start, so a receipt signed by one run of this binary cannot be
-//! checked against the key of the next. Keeping one key, owner-only, is a
-//! separate change.
+//! It signs with this account's device key, kept owner-only in `~/.vitna`
+//! (`vitna_daemon::key`), so a receipt signed by one run of this binary checks
+//! against the key of the next. Until that module, it made a fresh key on every
+//! start, and no receipt it signed could be checked a minute later.
 //!
 //! Where it listens and keeps its journal, and how it starts, live in
 //! `vitna_daemon::launch`, which `vitna serve` starts through as well, so the

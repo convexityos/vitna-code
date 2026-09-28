@@ -51,7 +51,14 @@ enum Commands {
         sub: ReceiptCommands,
     },
     /// Verify an exported receipt file independently
-    Verify { receipt_file: String },
+    Verify {
+        receipt_file: String,
+        /// The public key (hex) the receipt must be signed with. Without it,
+        /// the signature is checked against this account's device key and a
+        /// receipt signed elsewhere is reported as such, not failed.
+        #[arg(long)]
+        key: Option<String>,
+    },
     /// Check local environment and daemon health
     Doctor,
     /// Start the local daemon: the same daemon, endpoint and journal as vitna-coded
@@ -87,8 +94,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Doctor) => {
             run_doctor().await?;
         }
-        Some(Commands::Verify { receipt_file }) => {
-            run_verify(&receipt_file)?;
+        Some(Commands::Verify { receipt_file, key }) => {
+            run_verify(&receipt_file, key.as_deref())?;
         }
         Some(Commands::Run {
             task,
@@ -173,17 +180,29 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // 4. Device Signing Key
-    let key = vitna_receipts::generate_signing_key();
-    let pubkey_hex = hex::encode(key.verifying_key().to_bytes());
-    println!("[OK] Cryptographic Signing Core: Ed25519 Operational");
-    println!("     Device Public Key: {}", pubkey_hex);
+    // 4. Device Signing Key: the one this account signs receipts with, read
+    // and never made here. This used to print the public half of a key made
+    // for the occasion and thrown away, which no receipt was ever signed with.
+    match vitna_daemon::launch::vitna_home() {
+        Ok(home) => match vitna_daemon::key::public_key_in(&home) {
+            Ok(Some(public)) => {
+                println!("[OK] Device Signing Key: Ed25519, in {}", home.display());
+                println!("     Device Public Key: {}", public);
+            }
+            Ok(None) => println!(
+                "[OK] Device Signing Key: none yet. The daemon makes one in {} the first time it signs.",
+                home.display()
+            ),
+            Err(e) => println!("[FAIL] Device Signing Key: {}", e),
+        },
+        Err(e) => println!("[FAIL] Device Signing Key: {}", e),
+    }
 
     println!("\nAll systems verified for Vitna local-first operation.");
     Ok(())
 }
 
-fn run_verify(receipt_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn run_verify(receipt_path: &str, key: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(receipt_path);
     if !path.exists() {
         eprintln!("Error: Receipt file does not exist: {}", receipt_path);
@@ -209,6 +228,40 @@ fn run_verify(receipt_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    // The signature: against the key given, which it must match, or else
+    // against this account's device key, which a receipt signed on another
+    // device does not match without anything being wrong with it.
+    let signature = match key {
+        Some(given) => {
+            let report = vitna_receipt_verify::ReceiptVerifier::verify_receipt(&verified.receipt, Some(given))?;
+            if !report.signature_verified {
+                eprintln!("Receipt Verification FAILED:");
+                for err in &report.errors {
+                    eprintln!("  - {}", err);
+                }
+                std::process::exit(1);
+            }
+            "verified against the key given".to_string()
+        }
+        None => {
+            let device = vitna_daemon::launch::vitna_home()
+                .ok()
+                .and_then(|home| vitna_daemon::key::public_key_in(&home).ok().flatten());
+            match device {
+                None => "not checked: this account has no device key to check it against, and no --key was given"
+                    .to_string(),
+                Some(public) => {
+                    let report = vitna_receipt_verify::ReceiptVerifier::verify_receipt(&verified.receipt, Some(&public))?;
+                    if report.signature_verified {
+                        "verified against this device's key".to_string()
+                    } else {
+                        "not this device's key: signed on another device, or changed since it was signed. Check it with --key and the signer's public key".to_string()
+                    }
+                }
+            }
+        }
+    };
+
     let r = &verified.receipt;
     println!("Receipt Checks Passed");
     println!("================================");
@@ -220,11 +273,7 @@ fn run_verify(receipt_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("Completion State:  {}", r.completion_state);
     println!("Evidence Count:    {}", r.evidence_items.len());
     println!("Files Modified:    {}", r.changeset.files_modified.len());
-    if verified.report.signature_verified {
-        println!("Device Signature:  verified");
-    } else {
-        println!("Device Signature:  not checked (no public key supplied)");
-    }
+    println!("Device Signature:  {}", signature);
 
     Ok(())
 }

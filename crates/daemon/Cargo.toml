@@ -26,6 +26,21 @@ vitna-receipts.workspace = true
 vitna-telemetry.workspace = true
 vitna-runner.workspace = true
 ed25519-dalek.workspace = true
+hex.workspace = true
+
+# The device key file is created with a protected, owner-only DACL, which
+# std cannot express.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+# A receipt is checked the way anyone holding it checks it.
+vitna-receipt-verify.workspace = true
 
 [[bin]]
 name = "vitna-coded"
