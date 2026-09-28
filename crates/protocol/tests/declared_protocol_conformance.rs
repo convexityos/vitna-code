@@ -212,3 +212,110 @@ fn the_declaration_parser_actually_finds_messages() {
     );
     assert!(declared_messages("// message Commented {").is_empty());
 }
+
+// ---- fields ----------------------------------------------------------------
+//
+// Everything above compares message NAMES. These compare the fields inside
+// them, which the name check said out loud it could not see: a `SubmitTurn`
+// that had lost a field passed it. The framing is serde JSON, so a Rust
+// struct's serialized keys ARE the wire form, and a rename here is a rename on
+// the wire.
+
+/// The field names a `.proto` message declares, in the order it declares them.
+fn declared_fields(source: &str, message: &str) -> Vec<String> {
+    let start = source
+        .find(&format!("message {message} {{"))
+        .unwrap_or_else(|| panic!("{message} is not declared"));
+    let body_start = start + source[start..].find('{').expect("a message has a body");
+    let body_end = body_start
+        + source[body_start..]
+            .find('}')
+            .expect("a message body closes");
+
+    source[body_start + 1..body_end]
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or("").trim())
+        .filter(|line| line.ends_with(';') && line.contains('='))
+        .filter_map(|line| {
+            // `repeated string bound_mounts = 8;` -> `bound_mounts`
+            let before_eq = line.split('=').next()?.trim();
+            before_eq.split_whitespace().last().map(str::to_string)
+        })
+        .collect()
+}
+
+/// The keys a value actually serializes to.
+fn serialized_fields<T: serde::Serialize>(value: &T) -> Vec<String> {
+    match serde_json::to_value(value).expect("serialize") {
+        serde_json::Value::Object(map) => map.keys().cloned().collect(),
+        other => panic!("expected an object, got {other}"),
+    }
+}
+
+fn assert_fields_match<T: serde::Serialize + Default>(proto_file: &str, message: &str) {
+    assert_fields_of(proto_file, message, &T::default());
+}
+
+fn assert_fields_of<T: serde::Serialize>(proto_file: &str, message: &str, value: &T) {
+    let declared: BTreeSet<String> = declared_fields(&proto(proto_file), message)
+        .into_iter()
+        .collect();
+    let implemented: BTreeSet<String> = serialized_fields(value).into_iter().collect();
+
+    assert_eq!(
+        declared,
+        implemented,
+        "{message} does not match its declaration.\n  \
+         declared but not serialized: {:?}\n  \
+         serialized but not declared: {:?}",
+        declared.difference(&implemented).collect::<Vec<_>>(),
+        implemented.difference(&declared).collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn every_implemented_message_carries_exactly_its_declared_fields() {
+    use vitna_protocol::messages::*;
+
+    assert_fields_match::<HandshakeRequest>("envelope.proto", "HandshakeRequest");
+    assert_fields_match::<HandshakeResponse>("envelope.proto", "HandshakeResponse");
+    assert_fields_match::<ErrorResponse>("envelope.proto", "ErrorResponse");
+    assert_fields_match::<SubscribeEvents>("commands.proto", "SubscribeEvents");
+    assert_fields_match::<ApprovalRequested>("events.proto", "ApprovalRequested");
+    assert_fields_match::<ToolStarted>("events.proto", "ToolStarted");
+    assert_fields_match::<ToolFinished>("events.proto", "ToolFinished");
+}
+
+/// The frame itself, which carries every other message.
+/// The frame itself, which carries every other message. Built rather than
+/// defaulted, because `ProtocolEnvelope` has no `Default` and a public type
+/// should not grow one to suit a test.
+#[test]
+fn the_envelope_carries_exactly_its_declared_fields() {
+    let envelope = vitna_protocol::ProtocolEnvelope::new(
+        vitna_protocol::type_url::event::DIAGNOSTIC,
+        "sess",
+        "run",
+        1,
+        "key",
+        Vec::new(),
+    );
+    assert_fields_of("envelope.proto", "ProtocolEnvelope", &envelope);
+}
+
+/// Mutation check on the parser: a helper that found no fields would make
+/// every comparison above pass by comparing two empty sets.
+#[test]
+fn the_field_parser_actually_finds_fields() {
+    let tool_started = declared_fields(&proto("events.proto"), "ToolStarted");
+    assert_eq!(tool_started, vec!["tool_call_id", "started_at_ms"]);
+
+    // A `repeated` field, and one followed by a trailing comment.
+    let approval = declared_fields(&proto("events.proto"), "ApprovalRequested");
+    assert!(approval.contains(&"environment_names".to_string()));
+    let finished = declared_fields(&proto("events.proto"), "ToolFinished");
+    assert!(
+        finished.contains(&"status".to_string()),
+        "a field whose line ends in a comment must still be found: {finished:?}"
+    );
+}
