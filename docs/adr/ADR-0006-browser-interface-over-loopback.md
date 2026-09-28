@@ -30,17 +30,22 @@ This ADR does not change ADR-0005. It adds a second, separate listener, started 
 - `vitna-coded` and `vitna serve` never bind TCP.
 - The IPC endpoints ADR-0005 declares are unchanged, so `no_declared_endpoint_is_tcp` still holds.
 
-### 2. Opt-in, per launch, on 127.0.0.1 only
+### 2. Opt-in, per launch, on the loopback only
 
-- **One address.** The server binds `127.0.0.1`, never a wildcard address and never `[::1]`. It opens the page at `http://127.0.0.1:<port>`, never at `localhost`.
-- **Why not `localhost`.** A browser may resolve that name to `[::1]` first. Another process, another account's included, could be listening there. It would then serve its own page at the very origin this one uses, and that page could read the launch code out of the address.
+- **The origin is `http://localhost:<port>`.** That is the name OpenRouter documents for a local app's key callback, "supported on any port" (openrouter.ai/docs, OAuth PKCE guide, retrieved 2026-09-28). The guide says nothing about `127.0.0.1`, and the page connects the person's key through that flow.
+- **Both loopback addresses are held.** A browser may look `localhost` up as `[::1]` before `127.0.0.1`.
+  - A server holding only one address would let another process, another account's included, take the other on the same port.
+  - That process would then serve its own page at the very origin this one uses, and could read the launch code out of the address.
+  - So the server binds `127.0.0.1` and, where the machine has an IPv6 loopback, `[::1]`, on one port.
+  - Either address being taken is an error. A machine with no IPv6 loopback has no `[::1]` for anyone to take.
+- **Never a wildcard address.**
 - **The port.** It is 7788 unless `--port` says otherwise.
 - **A port in use is an error, not a reason to move.** The page keeps the person's key and conversations in its origin's storage, and a moved port is a different origin.
 
 ### 3. Admission, in this order, before any handler runs
 
 1. **The TCP peer** must be a loopback address.
-2. **The `Host` header** must be exactly `127.0.0.1:<port>` or `localhost:<port>`. A page on another name that resolves to 127.0.0.1 (DNS rebinding) sends its own name, and is refused. This applies to the interface's files as well as the API.
+2. **The `Host` header** must be exactly `localhost:<port>`, `127.0.0.1:<port>` or `[::1]:<port>`. A page on another name that resolves to a loopback address (DNS rebinding) sends its own name, and is refused. This applies to the interface's files as well as the API.
 3. **The request's origin.** Every API request is a `POST` and must carry an `Origin` equal to `http://` plus the `Host` it was sent to. A browser that sends `Sec-Fetch-Site` must send `same-origin`. Browsers send `Origin` on every cross-site request and on a same-origin POST, so a request from any other page is refused.
 4. **The session token.** Every API request except the session exchange must carry `Authorization: Bearer <session token>`.
    - The server sends no CORS headers at all.
@@ -51,7 +56,7 @@ This ADR does not change ADR-0005. It adds a second, separate listener, started 
 ### 4. Session bootstrap without a lasting secret on a command line
 
 1. `vitna app` mints a one-time launch code: 32 random bytes, valid for 120 seconds and for one use.
-2. It opens `http://127.0.0.1:<port>/#launch=<code>` as an app window of the person's own Chromium browser (`--app`), or in the default browser where there is none.
+2. It opens `http://localhost:<port>/#launch=<code>` as an app window of the person's own Chromium browser (`--app`), or in the default browser where there is none.
 3. The code travels in the fragment, which a browser never sends to any server.
 4. The page exchanges it at `POST /api/v1/session` for a session token and removes it from the address bar. The token is 32 random bytes, held only in the server's memory and the tab's `sessionStorage`.
 

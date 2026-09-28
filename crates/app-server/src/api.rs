@@ -154,7 +154,7 @@ pub(crate) async fn handle(state: &State, peer: SocketAddr, request: Request<Inc
         return refusal(
             StatusCode::MISDIRECTED_REQUEST,
             "wrong_host",
-            "This server answers only to 127.0.0.1 and localhost.",
+            "This server answers only to localhost, 127.0.0.1 and [::1].",
         );
     };
     let path = request.uri().path().to_string();

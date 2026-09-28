@@ -5,6 +5,7 @@
 use ed25519_dalek::SigningKey;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -21,6 +22,7 @@ struct Harness {
     port: u16,
     launcher: Launcher,
     public_key: String,
+    addresses: Vec<SocketAddr>,
 }
 
 impl Harness {
@@ -70,6 +72,7 @@ impl Harness {
         .await
         .expect("bind");
         let port = server.port();
+        let addresses = server.addresses();
         let launcher = server.launcher();
         tokio::spawn(server.serve());
         Self {
@@ -77,6 +80,7 @@ impl Harness {
             port,
             launcher,
             public_key,
+            addresses,
         }
     }
 
@@ -84,8 +88,9 @@ impl Harness {
         self.base.join("project")
     }
 
+    /// The origin a browser opened at the launch address sends.
     fn origin(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        format!("http://localhost:{}", self.port)
     }
 
     /// A session, as the page makes one from the address it was opened at.
@@ -163,12 +168,29 @@ async fn send(
     headers: &[(&str, &str)],
     body: &[u8],
 ) -> Reply {
-    let mut stream = TcpStream::connect(("127.0.0.1", port))
-        .await
-        .expect("connect");
+    send_at(
+        SocketAddr::from(([127, 0, 0, 1], port)),
+        method,
+        target,
+        headers,
+        body,
+    )
+    .await
+}
+
+/// As `send`, to one address the server listens on.
+async fn send_at(
+    address: SocketAddr,
+    method: &str,
+    target: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Reply {
+    let port = address.port();
+    let mut stream = TcpStream::connect(address).await.expect("connect");
     let mut request = format!("{method} {target} HTTP/1.1\r\n");
     if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
-        request.push_str(&format!("Host: 127.0.0.1:{port}\r\n"));
+        request.push_str(&format!("Host: localhost:{port}\r\n"));
     }
     for (name, value) in headers {
         request.push_str(&format!("{name}: {value}\r\n"));
@@ -226,7 +248,7 @@ async fn a_launch_code_opens_one_session_once() {
     let h = Harness::start("launch").await;
     let url = h.launcher.url();
     assert!(
-        url.starts_with(&format!("http://127.0.0.1:{}/#launch=", h.port)),
+        url.starts_with(&format!("http://localhost:{}/#launch=", h.port)),
         "{url}"
     );
 
@@ -315,7 +337,7 @@ async fn requests_from_anywhere_else_are_refused() {
         "POST",
         "/api/v1/hello",
         &[
-            ("Origin", &format!("http://localhost:{port}")),
+            ("Origin", &format!("http://127.0.0.1:{port}")),
             ("Authorization", &bearer),
         ],
         b"",
@@ -323,8 +345,22 @@ async fn requests_from_anywhere_else_are_refused() {
     .await;
     assert_eq!(
         other_name.status, 403,
-        "localhost is another origin from 127.0.0.1"
+        "127.0.0.1 is another origin from localhost"
     );
+    // The same pair by address is its own origin, and allowed.
+    let by_address = send(
+        port,
+        "POST",
+        "/api/v1/hello",
+        &[
+            ("Host", &format!("127.0.0.1:{port}")),
+            ("Origin", &format!("http://127.0.0.1:{port}")),
+            ("Authorization", &bearer),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(by_address.status, 200, "{}", by_address.text());
     let cross_site = send(
         port,
         "POST",
@@ -695,4 +731,41 @@ async fn the_interface_is_served_and_cannot_be_framed() {
     let head = send(port, "HEAD", "/", &[], b"").await;
     assert_eq!(head.status, 200);
     assert!(head.body.is_empty());
+}
+
+#[tokio::test]
+async fn both_loopbacks_are_held_for_the_page_s_name() {
+    let h = Harness::start("loopbacks").await;
+    assert!(
+        h.addresses
+            .iter()
+            .any(|a| a.is_ipv4() && a.ip().is_loopback()),
+        "{:?}",
+        h.addresses
+    );
+    // A browser may look `localhost` up as [::1] first. Where this machine
+    // has an IPv6 loopback, the server holds it on the same port, so nothing
+    // else can answer to the page's own origin there.
+    let Some(v6) = h.addresses.iter().find(|a| a.is_ipv6()).copied() else {
+        eprintln!("skipped: this machine has no IPv6 loopback");
+        return;
+    };
+    assert_eq!(v6.port(), h.port);
+    let page = send_at(v6, "GET", "/", &[], b"").await;
+    assert_eq!(page.status, 200, "{}", page.text());
+    let token = h.session().await;
+    let bearer = format!("Bearer {token}");
+    let origin = h.origin();
+    let hello = send_at(
+        v6,
+        "POST",
+        "/api/v1/hello",
+        &[
+            ("Origin", origin.as_str()),
+            ("Authorization", bearer.as_str()),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(hello.status, 200, "{}", hello.text());
 }

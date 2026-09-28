@@ -32,11 +32,15 @@ pub(crate) fn peer_is_local(ip: IpAddr) -> bool {
     ip.to_canonical().is_loopback()
 }
 
-/// The `Host` header, when it names this server exactly. The server listens
-/// on 127.0.0.1 only; `localhost` is accepted because a person may type it.
+/// The `Host` header, when it names this server exactly: `localhost`, where
+/// the page is opened, or one of the two loopback addresses it listens on.
 pub(crate) fn our_host(host: Option<&str>, port: u16) -> Option<String> {
     let host = host?.trim().to_ascii_lowercase();
-    let ours = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    let ours = [
+        format!("localhost:{port}"),
+        format!("127.0.0.1:{port}"),
+        format!("[::1]:{port}"),
+    ];
     ours.contains(&host).then_some(host)
 }
 
@@ -79,6 +83,10 @@ mod tests {
         assert_eq!(
             our_host(Some("LocalHost:7788"), 7788).as_deref(),
             Some("localhost:7788")
+        );
+        assert_eq!(
+            our_host(Some("[::1]:7788"), 7788).as_deref(),
+            Some("[::1]:7788")
         );
         // DNS rebinding: another name that resolves here.
         assert_eq!(our_host(Some("attacker.example:7788"), 7788), None);

@@ -1,10 +1,11 @@
 //! `vitna app`: the Vitna Code interface, served from this machine (ADR-0006).
 //!
-//! One folder, one port on 127.0.0.1, one process. The page it serves is the
-//! page app.vitna.ai serves, built for the runner, and it still calls the
-//! model itself on the person's own key. This server gives it what only the
-//! machine can: the folder's files in place, commands inside the OS sandbox,
-//! and receipts signed with the device key.
+//! One folder, one port on this machine's loopback, one process. The page it
+//! serves at `http://localhost:<port>` is the page app.vitna.ai serves, built
+//! for the runner, and it still calls the model itself on the person's own
+//! key. This server gives it what only the machine can: the folder's files in
+//! place, commands inside the OS sandbox, and receipts signed with the device
+//! key.
 //!
 //! Nothing here is reachable from the daemon's IPC endpoints, and nothing
 //! binds unless someone runs `vitna app`.
@@ -19,7 +20,7 @@ pub mod window;
 use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -35,7 +36,7 @@ pub const DEFAULT_PORT: u16 = 7788;
 pub struct AppConfig {
     /// The folder the page works in.
     pub folder: PathBuf,
-    /// The port on 127.0.0.1, or 0 for any free one (tests).
+    /// The port on this machine's loopback, or 0 for any free one (tests).
     pub port: u16,
     /// The built interface. Without it the server says how to build one.
     pub ui: Option<PathBuf>,
@@ -117,7 +118,7 @@ impl State {
 }
 
 fn origin(port: u16) -> String {
-    format!("http://127.0.0.1:{port}")
+    format!("http://localhost:{port}")
 }
 
 /// A handle that mints launch addresses while the server runs.
@@ -135,12 +136,12 @@ impl Launcher {
 }
 
 pub struct AppServer {
-    listener: TcpListener,
+    listeners: Vec<TcpListener>,
     state: Arc<State>,
 }
 
 impl AppServer {
-    /// Resolves the folder and binds 127.0.0.1. A port already in use is an
+    /// Resolves the folder and binds the loopback. A port already in use is an
     /// error rather than a reason to take another, since another port is
     /// another origin, with none of the page's saved state.
     pub async fn bind(
@@ -161,23 +162,7 @@ impl AppServer {
             ),
             None => None,
         };
-        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, config.port)))
-            .await
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::AddrInUse {
-                    format!(
-                        "port {} on 127.0.0.1 is in use. Stop whatever holds it, or pass --port; \
-                         a page opened on another port starts without its saved key and conversations",
-                        config.port
-                    )
-                } else {
-                    format!("cannot listen on 127.0.0.1:{}: {e}", config.port)
-                }
-            })?;
-        let port = listener
-            .local_addr()
-            .map_err(|e| format!("cannot read the port it listens on: {e}"))?
-            .port();
+        let (listeners, port) = bind_loopback(config.port).await?;
         let commands = Commands::decide(runner.as_ref(), &root, config.allow_unsandboxed);
         let folder_name = root
             .file_name()
@@ -200,7 +185,7 @@ impl AppServer {
             command_slot: tokio::sync::Semaphore::new(1),
         };
         Ok(Self {
-            listener,
+            listeners,
             state: Arc::new(state),
         })
     }
@@ -209,9 +194,18 @@ impl AppServer {
         self.state.port
     }
 
-    /// `http://127.0.0.1:<port>`, the only origin the page is served from.
+    /// `http://localhost:<port>`, the origin the page is opened at.
     pub fn origin(&self) -> String {
         origin(self.state.port)
+    }
+
+    /// The addresses it listens on: 127.0.0.1, and [::1] where this machine
+    /// has an IPv6 loopback.
+    pub fn addresses(&self) -> Vec<SocketAddr> {
+        self.listeners
+            .iter()
+            .filter_map(|l| l.local_addr().ok())
+            .collect()
     }
 
     pub fn folder(&self) -> &Path {
@@ -235,25 +229,76 @@ impl AppServer {
 
     /// Answers connections until the process stops.
     pub async fn serve(self) -> Result<(), String> {
-        loop {
-            let (stream, peer) = match self.listener.accept().await {
-                Ok(accepted) => accepted,
-                // A connection that failed before it was accepted is that
-                // connection's problem, not the server's.
-                Err(_) => continue,
-            };
-            let state = self.state.clone();
-            tokio::spawn(async move {
-                let service = hyper::service::service_fn(move |request| {
-                    let state = state.clone();
-                    async move { Ok::<_, Infallible>(api::handle(&state, peer, request).await) }
-                });
-                // HTTP/1.1 only, and no upgrades: a WebSocket handshake gets
-                // an ordinary reply and nothing more.
-                let _ = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
-                    .await;
+        let mut listeners = self.listeners.into_iter();
+        let first = listeners.next().ok_or("nothing to listen on")?;
+        for more in listeners {
+            tokio::spawn(accept(more, self.state.clone()));
+        }
+        accept(first, self.state).await;
+        Ok(())
+    }
+}
+
+async fn accept(listener: TcpListener, state: Arc<State>) {
+    loop {
+        let (stream, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            // A connection that failed before it was accepted is that
+            // connection's problem, not the server's.
+            Err(_) => continue,
+        };
+        let state = state.clone();
+        tokio::spawn(async move {
+            let service = hyper::service::service_fn(move |request| {
+                let state = state.clone();
+                async move { Ok::<_, Infallible>(api::handle(&state, peer, request).await) }
             });
+            // HTTP/1.1 only, and no upgrades: a WebSocket handshake gets an
+            // ordinary reply and nothing more.
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                .await;
+        });
+    }
+}
+
+fn in_use(address: &str, port: u16) -> String {
+    format!(
+        "port {port} on {address} is in use. Stop whatever holds it, or pass --port; a page opened \
+         on another port starts without its saved key and conversations"
+    )
+}
+
+/// Binds 127.0.0.1 and, where this machine has one, the IPv6 loopback, on one
+/// port. The page is opened at `localhost`, which a browser may look up as
+/// [::1] before 127.0.0.1, so a server holding only 127.0.0.1 would let any
+/// other process that took [::1] on the same port answer to the page's own
+/// origin, and read the launch code out of its address. Holding both leaves
+/// that name nobody else's. Port 0 (tests) takes a free port for both.
+async fn bind_loopback(port: u16) -> Result<(Vec<TcpListener>, u16), String> {
+    for _ in 0..8 {
+        let v4 = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+            .await
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::AddrInUse => in_use("127.0.0.1", port),
+                _ => format!("cannot listen on 127.0.0.1:{port}: {e}"),
+            })?;
+        let bound = v4
+            .local_addr()
+            .map_err(|e| format!("cannot read the port it listens on: {e}"))?
+            .port();
+        match TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, bound))).await {
+            Ok(v6) => return Ok((vec![v4, v6], bound)),
+            // A free port for 127.0.0.1 that something holds on [::1]: try
+            // another, where any port will do.
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && port == 0 => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                return Err(in_use("[::1]", port))
+            }
+            // No IPv6 loopback on this machine, so nothing can answer to
+            // localhost there either.
+            Err(_) => return Ok((vec![v4], bound)),
         }
     }
+    Err("no port was free on both 127.0.0.1 and [::1]".to_string())
 }

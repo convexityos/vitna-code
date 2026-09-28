@@ -81,7 +81,7 @@ enum Commands {
     App {
         /// The folder to open. Defaults to the current folder.
         folder: Option<PathBuf>,
-        /// The port on 127.0.0.1. Another port is another origin, which
+        /// The port on this machine's loopback. Another port is another origin, which
         /// starts without the page's saved key and conversations, so a port in
         /// use is an error rather than a reason to take the next one.
         #[arg(long, default_value_t = vitna_app_server::DEFAULT_PORT)]
@@ -203,7 +203,7 @@ fn shown(path: &Path) -> String {
     text.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(text)
 }
 
-/// Serves a folder to the Vitna Code interface on 127.0.0.1 (ADR-0006) and
+/// Serves a folder to the Vitna Code interface on localhost (ADR-0006) and
 /// opens it in a window, until Ctrl+C.
 async fn run_app(
     folder: Option<PathBuf>,
