@@ -38,6 +38,10 @@ pub const BACKEND_NO_PROCESS: &str = "no_process";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionOutput {
+    /// The id this action has in the runner's journal, which the statement
+    /// digest binds. A receipt names it so the digest can be recomputed.
+    #[serde(default)]
+    pub action_id: String,
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
@@ -403,6 +407,7 @@ impl Runner for ProcessRunner {
         }
 
         Ok(ExecutionOutput {
+            action_id,
             exit_code,
             stdout,
             stderr,

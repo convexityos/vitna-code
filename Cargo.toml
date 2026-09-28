@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "apps/vitna-cli",
     "apps/vitna-tui",
+    "crates/app-server",
     "crates/daemon",
     "crates/protocol",
     "crates/store",
@@ -92,3 +93,4 @@ vitna-skills = { path = "crates/skills" }
 vitna-telemetry = { path = "crates/telemetry" }
 vitna-evals = { path = "crates/evals" }
 vitna-daemon = { path = "crates/daemon" }
+vitna-app-server = { path = "crates/app-server" }
