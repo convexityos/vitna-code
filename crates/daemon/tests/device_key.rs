@@ -46,6 +46,8 @@ async fn a_receipt_checks_against_the_key_the_account_keeps() {
     let dir = fresh("receipt");
     let home = dir.join(".vitna");
     let workspace = dir.join("workspace");
+    // Made first, as every caller of `load_or_create` makes it.
+    std::fs::create_dir_all(&home).expect("create the account's folder");
     std::fs::create_dir_all(&workspace).expect("create the workspace");
     let daemon = DaemonServer::new(
         EventStore::open_in_memory().expect("open store"),

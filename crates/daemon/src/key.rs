@@ -37,6 +37,7 @@
 use std::fs::File;
 use std::io::{ErrorKind, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ed25519_dalek::SigningKey;
 
@@ -63,22 +64,39 @@ pub fn load_or_create(dir: &Path) -> Result<SigningKey, String> {
         Err(e) => return Err(format!("could not read the signing key {}: {e}", path.display())),
     }
 
+    // The key is written in full under a name of its own, then linked into
+    // place in one step that fails if a key is already there. A daemon that
+    // starts at the same moment therefore finds no key or a whole one, never
+    // the empty file between another's create and its write, which it would
+    // read as a file that is not a key and refuse to start over.
     let key = vitna_receipts::generate_signing_key();
-    let mut file = match create_owner_only(&path) {
-        Ok(file) => file,
-        // Another daemon on this store made it first, and theirs is the key.
-        Err(e) if e.kind() == ErrorKind::AlreadyExists => return read_key(&path),
-        Err(e) => return Err(format!("could not create the signing key {}: {e}", path.display())),
-    };
+    static STAGED: AtomicU64 = AtomicU64::new(0);
+    let staging = dir.join(format!(
+        "{KEY_FILE}.{}.{}.new",
+        std::process::id(),
+        STAGED.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut file = create_owner_only(&staging)
+        .map_err(|e| format!("could not create the signing key {}: {e}", staging.display()))?;
     let body = format!("{HEADER}\n{}\n", hex::encode(key.to_bytes()));
-    if let Err(e) = file.write_all(body.as_bytes()).and_then(|_| file.sync_all()) {
+    let written = file.write_all(body.as_bytes()).and_then(|_| file.sync_all());
+    drop(file);
+    if let Err(e) = written {
         // Nothing was ever signed with it, so taking it back is safe.
-        drop(file);
-        let _ = std::fs::remove_file(&path);
-        return Err(format!("could not write the signing key {}: {e}", path.display()));
+        let _ = std::fs::remove_file(&staging);
+        return Err(format!("could not write the signing key {}: {e}", staging.display()));
     }
-    tracing::info!(key = %path.display(), "made this daemon's signing key");
-    Ok(key)
+    let placed = std::fs::hard_link(&staging, &path);
+    let _ = std::fs::remove_file(&staging);
+    match placed {
+        Ok(()) => {
+            tracing::info!(key = %path.display(), "made this daemon's signing key");
+            Ok(key)
+        }
+        // Another daemon made it first, and theirs is the key.
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => read_key(&path),
+        Err(e) => Err(format!("could not put the signing key in place at {}: {e}", path.display())),
+    }
 }
 
 /// The public half of the key in `dir`, in hex, or `None` when no key has
@@ -480,6 +498,35 @@ mod tests {
         let key = load_or_create(&dir).expect("made");
         assert_eq!(public_key_in(&dir).expect("read"), Some(hex::encode(key.verifying_key().to_bytes())));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemons_starting_together_agree_on_one_key() {
+        // Three `vitna serve` processes starting at once on a fresh account
+        // found the key file empty, between one's create and its write, and
+        // one refused to start (vitna-code #29, linux aarch64).
+        for round in 0..20 {
+            let dir = fresh_dir(&format!("together_{round}"));
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let starts: Vec<_> = (0..8)
+                .map(|_| {
+                    let (dir, gate) = (dir.clone(), gate.clone());
+                    std::thread::spawn(move || {
+                        gate.wait();
+                        load_or_create(&dir).map(|key| key.verifying_key())
+                    })
+                })
+                .collect();
+            let keys: Vec<_> = starts
+                .into_iter()
+                .map(|start| start.join().expect("thread").expect("every daemon starts"))
+                .collect();
+            assert!(keys.iter().all(|k| *k == keys[0]), "daemons starting together signed with different keys");
+            assert_eq!(public_key_in(&dir).expect("read"), Some(hex::encode(keys[0].to_bytes())));
+            let left: Vec<_> = std::fs::read_dir(&dir).expect("list").map(|e| e.expect("entry").file_name()).collect();
+            assert_eq!(left, [std::ffi::OsString::from(KEY_FILE)], "a staging file was left behind");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]
