@@ -618,7 +618,9 @@ fn reported(value: &str) -> String {
 /// The commit the folder's checkout is at, read from its `.git` through the
 /// same file layer: `HEAD` itself, or the branch it names, loose or packed.
 fn base_commit(state: &State) -> Option<String> {
-    let head = String::from_utf8(state.files.read(".git/HEAD").ok()?).ok()?;
+    let text = String::from_utf8(state.files.read(".git/HEAD").ok()?).ok()?;
+    // HEAD is one line; anything after it is not part of the reference.
+    let head = text.lines().next().unwrap_or("").to_string();
     if let Some(id) = journal::commit_id(&head) {
         return Some(id);
     }

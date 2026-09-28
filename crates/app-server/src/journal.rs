@@ -159,9 +159,9 @@ pub(crate) fn receipt(
             continue;
         };
         let place = if directory.is_empty() {
-            "the folder's top".to_string()
+            "at the top of the folder".to_string()
         } else {
-            directory.clone()
+            format!("in {directory}")
         };
         if let Some(ran) = ran {
             ran_unsandboxed |= ran.sandbox_backend == vitna_runner::BACKEND_NONE;
@@ -180,18 +180,22 @@ pub(crate) fn receipt(
             } else {
                 "sandbox_captured"
             };
+            let isolation = match ran.sandbox_backend.as_str() {
+                vitna_runner::BACKEND_NONE => "with no sandbox".to_string(),
+                vitna_runner::BACKEND_NO_PROCESS => {
+                    "in a runner that starts no process".to_string()
+                }
+                backend => format!("in the {backend} sandbox ({})", ran.sandbox_enforcement),
+            };
             evidence.push((
                 grade,
-                format!(
-                    "`{command}` in {place} exited {} ({}, {})",
-                    ran.exit_code, ran.sandbox_backend, ran.sandbox_enforcement
-                ),
+                format!("`{command}` {place} exited {}, {isolation}", ran.exit_code),
                 Some(ran.statement_digest.clone()),
             ));
         } else if let Some(reason) = not_run {
             evidence.push((
                 "broker_observed",
-                format!("`{command}` in {place} did not complete: {reason}"),
+                format!("`{command}` {place} did not complete: {reason}"),
                 None,
             ));
         }
@@ -390,6 +394,14 @@ mod tests {
         assert_eq!(
             bare.evidence_items[1].grade, "broker_observed",
             "nothing confined it"
+        );
+        assert_eq!(
+            bare.evidence_items[1].description,
+            "`npm test` at the top of the folder exited 0, with no sandbox"
+        );
+        assert_eq!(
+            sandboxed.evidence_items[0].description,
+            "`npm test` at the top of the folder exited 0, in the bubblewrap sandbox (fully_enforced)"
         );
         let none = receipt(
             &[write("a", "1", "2")],
