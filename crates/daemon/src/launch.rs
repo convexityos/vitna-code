@@ -51,14 +51,20 @@ impl Launch {
 /// land beside the current folder instead, which is the defect this module
 /// exists to remove.
 pub fn default_store() -> Result<PathBuf, String> {
+    vitna_home()
+        .map(|home| home.join("daemon.db"))
+        .map_err(|e| format!("{e}, so --store must be given"))
+}
+
+/// `.vitna` under the home directory: this account's Vitna folder, where the
+/// daemon keeps its journal by default and the device key always.
+pub fn vitna_home() -> Result<PathBuf, String> {
     let home = ["HOME", "USERPROFILE"]
         .iter()
         .filter_map(|name| std::env::var(name).ok())
         .find(|value| !value.is_empty())
-        .ok_or_else(|| {
-            "neither HOME nor USERPROFILE is set, so --store must be given".to_string()
-        })?;
-    Ok(PathBuf::from(home).join(".vitna").join("daemon.db"))
+        .ok_or_else(|| "neither HOME nor USERPROFILE is set".to_string())?;
+    Ok(PathBuf::from(home).join(".vitna"))
 }
 
 /// The daemon's log, on stdout, at `info` unless `RUST_LOG` says otherwise.
