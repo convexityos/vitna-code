@@ -70,6 +70,37 @@ enum Target {
     Missing { path: PathBuf },
 }
 
+/// A removal that has been checked but not yet made.
+pub(crate) struct PendingRemove {
+    requested: String,
+    /// The SHA-256 of what the file holds, read through a handle to the very
+    /// file the removal acts on.
+    pub(crate) preimage_hash: String,
+    target: RemoveTarget,
+}
+
+/// The file's folder, opened and verified, and the file's name in it. The
+/// removal names the file relative to that folder, so a folder swapped for a
+/// link after the check cannot redirect it.
+#[cfg(unix)]
+struct RemoveTarget {
+    dir: File,
+    name: OsString,
+    /// The file as it was opened and hashed.
+    checked: fs::Metadata,
+}
+
+/// The file itself, opened with the right to delete it. Deleting through the
+/// handle deletes exactly the file that was hashed, whatever its name leads
+/// to by then.
+#[cfg(windows)]
+struct RemoveTarget {
+    file: File,
+}
+
+#[cfg(not(any(unix, windows)))]
+struct RemoveTarget;
+
 /// A workspace root, resolved to its real location once per tool call.
 pub(crate) struct Workspace {
     /// The root as configured. Lexical checks run against it, so an absolute
@@ -224,6 +255,99 @@ impl Workspace {
         self.verify_written(&path, &requested, content)
     }
 
+    /// Checks a regular file for removal and hashes what it holds, through a
+    /// handle verified the way a read's is. Nothing is changed on disk, so a
+    /// removal refused after this (a hash that does not match, say) leaves no
+    /// trace. `real` is where `resolve` found the file.
+    pub(crate) fn prepare_remove(&self, real: &Path, requested: &str) -> Result<PendingRemove, String> {
+        let (mut file, target) = self.open_for_removal(real, requested)?;
+        let (bytes, longer) = read_up_to(&mut file, MAX_FILE_BYTES)
+            .map_err(|e| format!("Cannot read '{}': {}", requested, e))?;
+        if longer {
+            return Err(format!(
+                "Refusing to remove '{}': it is larger than {} bytes, the most read to check what it holds",
+                requested, MAX_FILE_BYTES
+            ));
+        }
+        Ok(PendingRemove {
+            requested: requested.to_string(),
+            preimage_hash: sha256_hex(&bytes),
+            target,
+        })
+    }
+
+    /// Removes the file a prepared removal checked, and only that file: one
+    /// put in its place since is left alone.
+    pub(crate) fn commit_remove(&self, pending: PendingRemove) -> Result<(), String> {
+        remove_target(pending.target, &pending.requested)
+    }
+
+    /// The file, opened and verified as a read's is, and its folder, opened
+    /// and verified the same way.
+    #[cfg(unix)]
+    fn open_for_removal(&self, real: &Path, requested: &str) -> Result<(File, RemoveTarget), String> {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let file = self.open_regular(real, requested)?;
+        let checked = file
+            .metadata()
+            .map_err(|e| format!("Cannot inspect '{}': {}", requested, e))?;
+        let (Some(parent), Some(name)) = (real.parent(), real.file_name()) else {
+            return Err(format!("'{}' does not name a file", requested));
+        };
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
+        let dir = options
+            .open(parent)
+            .map_err(|e| format!("Cannot open the folder holding '{}': {}", requested, e))?;
+        let dir_meta = dir
+            .metadata()
+            .map_err(|e| format!("Cannot inspect the folder holding '{}': {}", requested, e))?;
+        self.verify_location(&dir, &dir_meta, parent, requested)?;
+        Ok((
+            file,
+            RemoveTarget {
+                dir,
+                name: name.to_os_string(),
+                checked,
+            },
+        ))
+    }
+
+    /// The file, opened with the right to read and delete it and verified as
+    /// a read's is. The read goes through a duplicate of the same handle.
+    #[cfg(windows)]
+    fn open_for_removal(&self, real: &Path, requested: &str) -> Result<(File, RemoveTarget), String> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_READ};
+
+        let meta =
+            fs::metadata(real).map_err(|e| format!("Cannot read '{}': {}", requested, e))?;
+        if !meta.is_file() {
+            return Err(not_regular(requested, &meta));
+        }
+        let mut options = OpenOptions::new();
+        options.access_mode(FILE_GENERIC_READ | DELETE);
+        let file = options
+            .open(real)
+            .map_err(|e| format!("Cannot open '{}': {}", requested, e))?;
+        self.verify_opened(&file, real, requested)?;
+        let reader = file
+            .try_clone()
+            .map_err(|e| format!("Cannot open '{}': {}", requested, e))?;
+        Ok((reader, RemoveTarget { file }))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn open_for_removal(&self, _real: &Path, requested: &str) -> Result<(File, RemoveTarget), String> {
+        Err(format!(
+            "Cannot remove '{}': this platform has no way to remove a checked file",
+            requested
+        ))
+    }
+
     /// Reads a just-written file back and compares it with what was written,
     /// byte for byte, line endings included.
     fn verify_written(&self, path: &Path, requested: &str, content: &[u8]) -> Result<String, String> {
@@ -253,7 +377,11 @@ impl Workspace {
     /// Resolves the deepest existing ancestor of `path`, which must be a real
     /// directory inside the workspace, and lists the directories still
     /// missing below it, outermost first.
-    fn existing_parent(&self, path: &Path, requested: &str) -> Result<(PathBuf, Vec<OsString>), String> {
+    pub(crate) fn existing_parent(
+        &self,
+        path: &Path,
+        requested: &str,
+    ) -> Result<(PathBuf, Vec<OsString>), String> {
         let mut existing = path
             .parent()
             .ok_or_else(|| format!("'{}' has no parent directory", requested))?
@@ -348,6 +476,18 @@ impl Workspace {
         if !meta.is_file() {
             return Err(not_regular(requested, &meta));
         }
+        self.verify_location(file, &meta, expected, requested)
+    }
+
+    /// Checks that an open handle lies inside the workspace. `meta` is the
+    /// handle's own metadata and `expected` the resolved path it was opened by.
+    fn verify_location(
+        &self,
+        file: &File,
+        meta: &fs::Metadata,
+        expected: &Path,
+        requested: &str,
+    ) -> Result<(), String> {
         match opened_path(file) {
             Ok(Some(actual)) if self.contains(&actual) => Ok(()),
             Ok(Some(_)) => Err(format!(
@@ -358,7 +498,7 @@ impl Workspace {
             // for identity: the path that was checked must still name the
             // file that was opened.
             Ok(None) => match fs::symlink_metadata(expected) {
-                Ok(now) if same_file(&meta, &now) => Ok(()),
+                Ok(now) if same_file(meta, &now) => Ok(()),
                 _ => Err(format!("'{}' changed while it was being opened", requested)),
             },
             Err(e) => Err(format!(
@@ -409,6 +549,95 @@ fn describe(meta: &fs::Metadata) -> &'static str {
         }
     }
     "a special file"
+}
+
+/// Removes the checked file by its name in its checked folder, once that name
+/// is confirmed to still lead to the file that was hashed. `O_NOFOLLOW`
+/// refuses a link put in its place and the identity check any other file. A
+/// file renamed onto that name in the instant between the check and the
+/// unlink is the one case left, and it lies in the same checked folder.
+#[cfg(unix)]
+fn remove_target(target: RemoveTarget, requested: &str) -> Result<(), String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+
+    let changed = || {
+        format!(
+            "'{}' changed before it could be removed, so it was left alone",
+            requested
+        )
+    };
+    let name = CString::new(target.name.as_bytes())
+        .map_err(|_| format!("Cannot remove '{}': its name holds a NUL byte", requested))?;
+    // SAFETY: `target.dir` owns an open folder descriptor for the whole call,
+    // and `name` is NUL-terminated.
+    let fd = unsafe {
+        libc::openat(
+            target.dir.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd == -1 {
+        return Err(changed());
+    }
+    // SAFETY: `openat` has just returned this descriptor, and nothing else owns it.
+    let now = unsafe { File::from_raw_fd(fd) };
+    match now.metadata() {
+        Ok(meta) if meta.is_file() && same_file(&target.checked, &meta) => {}
+        _ => return Err(changed()),
+    }
+    drop(now);
+    // SAFETY: as for `openat` above.
+    if unsafe { libc::unlinkat(target.dir.as_raw_fd(), name.as_ptr(), 0) } == -1 {
+        return Err(format!(
+            "Cannot remove '{}': {}",
+            requested,
+            io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+/// Marks the checked handle's file for deletion. It goes when the handle
+/// closes, at the end of this call, or once whatever else holds it open lets
+/// go.
+#[cfg(windows)]
+fn remove_target(target: RemoveTarget, requested: &str) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
+    };
+
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: the handle is owned by `target.file`, which outlives the call,
+    // and `info` is a FILE_DISPOSITION_INFO of exactly the size passed.
+    let ok = unsafe {
+        SetFileInformationByHandle(
+            target.file.as_raw_handle(),
+            FileDispositionInfo,
+            std::ptr::from_ref(&info).cast(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "Cannot remove '{}': {}",
+            requested,
+            io::Error::last_os_error()
+        ));
+    }
+    drop(target.file);
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn remove_target(_target: RemoveTarget, requested: &str) -> Result<(), String> {
+    Err(format!(
+        "Cannot remove '{}': this platform has no way to remove a checked file",
+        requested
+    ))
 }
 
 /// Writes everything, then flushes it to the device before the handle is
@@ -891,6 +1120,63 @@ mod tests {
         drop(file);
         let err = s.workspace().prepare_write("big.bin").err().expect("refused");
         assert!(err.contains("larger than"), "{}", err);
+    }
+
+    fn existing(ws: &Workspace, requested: &str) -> PathBuf {
+        match ws.resolve(requested).expect("resolve") {
+            Resolved::Existing(real) => real,
+            Resolved::Missing(_) => panic!("{} exists", requested),
+        }
+    }
+
+    #[test]
+    fn test_remove_takes_the_file_it_hashed() {
+        let s = Scratch::new("remove");
+        fs::create_dir_all(s.ws().join("sub")).unwrap();
+        fs::write(s.ws().join("sub").join("gone.txt"), "bye\n").unwrap();
+        let ws = s.workspace();
+
+        let pending = ws
+            .prepare_remove(&existing(&ws, "sub/gone.txt"), "sub/gone.txt")
+            .expect("prepare");
+        assert_eq!(pending.preimage_hash, sha256_hex(b"bye\n"));
+        assert!(s.ws().join("sub").join("gone.txt").exists(), "preparing removed it");
+        ws.commit_remove(pending).expect("remove");
+        assert!(!s.ws().join("sub").join("gone.txt").exists());
+        assert!(s.ws().join("sub").is_dir(), "the folder went with the file");
+    }
+
+    #[test]
+    fn test_remove_leaves_a_file_put_in_place_of_the_one_it_hashed() {
+        let s = Scratch::new("remove_swapped");
+        fs::write(s.ws().join("a.txt"), "checked").unwrap();
+        fs::write(s.ws().join("b.txt"), "someone else's").unwrap();
+        let ws = s.workspace();
+
+        let pending = ws
+            .prepare_remove(&existing(&ws, "a.txt"), "a.txt")
+            .expect("prepare");
+        if fs::rename(s.ws().join("b.txt"), s.ws().join("a.txt")).is_err() {
+            eprintln!("skipped: this machine will not replace a file another handle holds");
+            return;
+        }
+        // Where the removal goes by name it refuses; where it goes by handle
+        // it removes the replaced file. Either way the new one survives.
+        let _ = ws.commit_remove(pending);
+        assert_eq!(fs::read_to_string(s.ws().join("a.txt")).unwrap(), "someone else's");
+    }
+
+    #[test]
+    fn test_remove_refuses_what_is_not_a_regular_file() {
+        let s = Scratch::new("remove_dir");
+        fs::create_dir_all(s.ws().join("d")).unwrap();
+        let ws = s.workspace();
+        let err = ws
+            .prepare_remove(&existing(&ws, "d"), "d")
+            .err()
+            .expect("refused");
+        assert!(err.contains("a directory"), "{}", err);
+        assert!(s.ws().join("d").is_dir());
     }
 
     #[test]

@@ -70,6 +70,7 @@ See [IMPLEMENTATION_STATUS.md](file:///c:/Users/baseb/convexity/vitna-code/IMPLE
 - [Data Retention and Sensitive Payload Storage (ADR-0003)](file:///c:/Users/baseb/convexity/vitna-code/docs/adr/ADR-0003-data-retention-and-sensitive-storage.md)
 - [Persistence Engine and Storage Actor (ADR-0004)](file:///c:/Users/baseb/convexity/vitna-code/docs/adr/ADR-0004-persistence-engine-and-actor-model.md)
 - [IPC Transport and Wire Framing (ADR-0005)](file:///c:/Users/baseb/convexity/vitna-code/docs/adr/ADR-0005-ipc-transport-and-wire-framing.md)
+- [The Browser Interface over Loopback, `vitna app` (ADR-0006)](file:///c:/Users/baseb/convexity/vitna-code/docs/adr/ADR-0006-browser-interface-over-loopback.md)
 - [Threat Model and Trust Boundaries](file:///c:/Users/baseb/convexity/vitna-code/docs/threat-model/THREAT_MODEL.md)
 - [Complete Authority Inventory](file:///c:/Users/baseb/convexity/vitna-code/docs/AUTHORITY_INVENTORY.md)
 - [Dependency and License Decision Matrix](file:///c:/Users/baseb/convexity/vitna-code/docs/DEPENDENCY_MATRIX.md)

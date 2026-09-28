@@ -1,0 +1,25 @@
+[package]
+name = "vitna-app-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes = "1"
+ed25519-dalek.workspace = true
+form_urlencoded = "1"
+hex.workspace = true
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+vitna-receipts.workspace = true
+vitna-runner.workspace = true
+vitna-tools.workspace = true
+
+[dev-dependencies]
+vitna-receipt-verify.workspace = true
