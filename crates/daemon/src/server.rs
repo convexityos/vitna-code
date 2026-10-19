@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use vitna_orchestration::{OrchestrationConfig, OrchestrationEngine, StepType};
-use vitna_receipts::{generate_signing_key, VitnaRunReceiptV1};
+use vitna_receipts::VitnaRunReceiptV1;
 use vitna_runner::{ProcessRunner, Runner};
 use vitna_store::EventStore;
 
@@ -47,8 +47,20 @@ impl DaemonServer {
         }
     }
 
-    /// Initializes a daemon server with a persistent SQLite WAL event store and default process runner.
+    /// Initializes a daemon server with a persistent SQLite WAL event store and
+    /// default process runner, signing with this account's device key.
+    ///
+    /// The key is the one in this account's Vitna folder (`~/.vitna`), made the
+    /// first time any daemon needs it, whichever store it opens: one account is
+    /// one signer. It is never kept beside a store, since `vitna run` keeps its
+    /// store inside the project it runs in, where a key could be committed.
     pub fn open_default<P: AsRef<Path>>(db_path: P) -> Result<Self, String> {
+        Self::open_with_key_in(db_path, &crate::launch::vitna_home()?)
+    }
+
+    /// As [`open_default`](Self::open_default), with the device key kept in
+    /// `key_dir`, which tests point at a folder of their own.
+    pub fn open_with_key_in<P: AsRef<Path>>(db_path: P, key_dir: &Path) -> Result<Self, String> {
         let parent = db_path.as_ref().parent();
         if let Some(p) = parent {
             let _ = std::fs::create_dir_all(p);
@@ -64,8 +76,16 @@ impl DaemonServer {
         let runner = ProcessRunner::open_or_create(journal_path)
             .map_err(|e| format!("Failed to initialize process runner journal: {}", e))?;
 
-        let signing_key = generate_signing_key();
+        std::fs::create_dir_all(key_dir)
+            .map_err(|e| format!("could not make the folder for the device key {}: {e}", key_dir.display()))?;
+        let signing_key = crate::key::load_or_create(key_dir)?;
         Ok(Self::new(store, Arc::new(runner), signing_key))
+    }
+
+    /// The public half of the key this daemon signs receipts with, in hex: what
+    /// anyone checking one of its receipts checks the signature against.
+    pub fn device_public_key(&self) -> String {
+        hex::encode(self.signing_key.verifying_key().to_bytes())
     }
 
     /// Creates a new workspace-bound session.
@@ -184,8 +204,15 @@ impl DaemonServer {
             run_id: run_id.clone(),
             workspace_root: session.workspace_root.clone(),
             auto_approve,
-            model_sku: "claude-3-7-sonnet".to_string(),
-            provider_name: "fake".to_string(),
+            // No model runs on this path: the one edit below is picked by
+            // looking for a keyword in the prompt. So the receipt names no
+            // provider and calls the stand-in what it is. This used to sign
+            // "claude-3-7-sonnet" from a provider named "fake", so every
+            // `vitna run` attested to a model that never served it. The v1
+            // schema types both fields as plain strings, so neither value
+            // needed a change to it.
+            model_sku: "keyword-stub".to_string(),
+            provider_name: "none".to_string(),
             sandbox_guarantee: "guarded".to_string(),
             verification_command,
             allow_unsandboxed,

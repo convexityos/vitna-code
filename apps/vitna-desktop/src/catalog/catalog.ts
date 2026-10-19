@@ -105,11 +105,12 @@ export function modelsFor(providerId: string): CatalogModel[] {
 }
 
 /**
- * One model, or null. Null happens for real: the daemon's placeholder sku
- * (`claude-3-7-sonnet`, crates/daemon/src/server.rs) is old enough that the
- * current catalog does not carry it, and a model released after `fetched_at`
- * will not be here either. Both cases want the same answer, which is that this
- * window cannot price it, rather than a guess from a neighbouring row.
+ * One model, or null. Null happens for real: the daemon signs a run that
+ * called no model as sku `keyword-stub` from provider `none`
+ * (crates/daemon/src/server.rs), which this catalog does not carry, and a
+ * model released after `fetched_at` will not be here either. Both cases want
+ * the same answer, which is that this window cannot price it, rather than a
+ * guess from a neighbouring row.
  */
 export function findModel(providerId: string, sku: string): CatalogModel | null {
   return modelsFor(providerId).find((m) => m.sku === sku) ?? null;

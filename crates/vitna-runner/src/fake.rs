@@ -127,6 +127,7 @@ impl crate::Runner for std::sync::Mutex<FakeRunner> {
             statement_digest: crate::compute_statement_digest(
                 &action_id, command, exit_code, &stdout, &stderr, backend, backend,
             ),
+            action_id,
             exit_code,
             stdout,
             stderr,

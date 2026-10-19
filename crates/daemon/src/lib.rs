@@ -1,6 +1,8 @@
 //! Local daemon engine managing session lifecycle, persistence, and IPC dispatch.
 
 pub mod ipc;
+pub mod key;
+pub mod launch;
 pub mod server;
 
 pub use server::{DaemonServer, SessionInfo};

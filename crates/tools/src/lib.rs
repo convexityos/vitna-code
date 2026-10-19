@@ -10,6 +10,7 @@ pub mod run_command;
 pub mod search_code;
 #[cfg(test)]
 mod test_support;
+pub mod workspace_files;
 mod workspace_fs;
 pub mod write_file;
 
