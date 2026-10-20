@@ -255,11 +255,52 @@ async fn accept(listener: TcpListener, state: Arc<State>) {
             });
             // HTTP/1.1 only, and no upgrades: a WebSocket handshake gets an
             // ordinary reply and nothing more.
-            let _ = hyper::server::conn::http1::Builder::new()
+            let served = hyper::server::conn::http1::Builder::new()
                 .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                .without_shutdown()
                 .await;
+            if let Ok(parts) = served {
+                linger(parts.io.into_inner()).await;
+            }
         });
     }
+}
+
+/// The most a closing connection reads and discards before giving up on the
+/// client. Above the largest body any route accepts, so a refused write of a
+/// whole file is drained rather than reset.
+const LINGER_BYTES: usize = vitna_tools::workspace_files::MAX_FILE_BYTES as usize + 1024 * 1024;
+/// How long a closing connection waits for the client to finish sending.
+const LINGER_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Closes a finished connection without destroying its last reply.
+///
+/// A route that refuses early (a bad token, a path the page may not write)
+/// answers before it has read the request's body. Closing a socket with bytes
+/// still unread makes the operating system send a reset, and a reset can
+/// arrive before the client has read the reply, so the client sees
+/// "connection reset" instead of the 403 it was owed. That is a race: it lost
+/// on macOS and Windows ARM64 in CI and won elsewhere. So the write side is
+/// shut first, which sends the reply and then a FIN, and whatever the client
+/// is still sending is read and discarded until it closes, up to
+/// `LINGER_BYTES` and `LINGER_FOR`. A client that sends past either is closed
+/// on, as before.
+async fn linger(mut stream: tokio::net::TcpStream) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    if stream.shutdown().await.is_err() {
+        return;
+    }
+    let _ = tokio::time::timeout(LINGER_FOR, async {
+        let mut buffer = vec![0u8; 64 * 1024];
+        let mut read = 0usize;
+        while read < LINGER_BYTES {
+            match stream.read(&mut buffer).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => read += n,
+            }
+        }
+    })
+    .await;
 }
 
 fn in_use(address: &str, port: u16) -> String {

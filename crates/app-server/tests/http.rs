@@ -769,3 +769,37 @@ async fn both_loopbacks_are_held_for_the_page_s_name() {
     .await;
     assert_eq!(hello.status, 200, "{}", hello.text());
 }
+
+/// A refusal given before the body is read still reaches the client.
+///
+/// The server refuses some requests from their head alone: a write to a path
+/// the page may not touch, a call with no session. Until the connection
+/// lingered (`lib.rs`, `linger`) it then closed with the body unread, the
+/// operating system answered the unread bytes with a reset, and the client
+/// read "connection reset" instead of its 403. Small bodies lost that race
+/// only sometimes (macOS and Windows ARM64 in CI); a body larger than the
+/// socket buffers loses it every time, which is what makes this test fail
+/// without the fix rather than flake.
+#[tokio::test]
+async fn a_refusal_given_before_the_body_is_read_still_reaches_the_client() {
+    let h = Harness::start("linger").await;
+    let token = h.session().await;
+    let large = vec![b'x'; 4 * 1024 * 1024];
+
+    let refused = h
+        .api(
+            Some(&token),
+            "fs/write",
+            "path=.vitna/receipts/forged.json&expect=absent",
+            &large,
+        )
+        .await;
+    assert_eq!(refused.status, 403, "{}", refused.text());
+    assert!(!h.folder().join(".vitna").exists(), "a refused write wrote");
+
+    let unauthenticated = h
+        .api(None, "fs/write", "path=notes.txt&expect=absent", &large)
+        .await;
+    assert_eq!(unauthenticated.status, 401, "{}", unauthenticated.text());
+    assert!(!h.folder().join("notes.txt").exists());
+}
