@@ -208,6 +208,178 @@ pub mod tool_status {
     pub const CANCELLED: &str = "cancelled";
 }
 
+/// `commands.proto`: open a session bound to one folder.
+///
+/// `initial_mode` is declared ("inspect", "build", "autopilot") and not yet
+/// acted on: every turn asks before any change, whatever mode was named. The
+/// daemon echoes it back in [`SessionCreated`] rather than pretending it took
+/// effect.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateSession {
+    #[serde(default)]
+    pub workspace_path: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub initial_mode: String,
+    #[serde(default)]
+    pub idempotency_key: String,
+}
+
+/// `envelope.proto`: the reply to [`CreateSession`] (ADR-0007).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCreated {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub workspace_path: String,
+    #[serde(default)]
+    pub initial_mode: String,
+}
+
+/// `commands.proto`: one turn of work in a session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmitTurn {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub attached_file_paths: Vec<String>,
+    #[serde(default)]
+    pub idempotency_key: String,
+}
+
+/// `commands.proto`: an operator's yes to one pending approval.
+///
+/// `action_digest` must equal the digest the daemon sent in
+/// [`ApprovalRequested`]: an approval binds to the exact action it was shown,
+/// so a yes cannot be carried over to a different one (CONTRIBUTING, rule 3).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApproveAction {
+    #[serde(default)]
+    pub approval_id: String,
+    #[serde(default)]
+    pub action_digest: String,
+    #[serde(default)]
+    pub scope: String,
+}
+
+/// `commands.proto`: an operator's no to one pending approval.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RejectAction {
+    #[serde(default)]
+    pub approval_id: String,
+    #[serde(default)]
+    pub action_digest: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// `events.proto`: text from the model, the operator or the daemon.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageDelta {
+    #[serde(default)]
+    pub message_id: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub delta_text: String,
+}
+
+/// `events.proto`: a tool the model asked for, before anything runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolProposed {
+    #[serde(default)]
+    pub tool_call_id: String,
+    #[serde(default)]
+    pub tool_name: String,
+    #[serde(default)]
+    pub tool_version: String,
+    #[serde(default)]
+    pub definition_digest: String,
+    #[serde(default)]
+    pub argument_digest: String,
+    #[serde(default)]
+    pub effect_class: String,
+    /// The arguments as the model sent them. serde writes bytes as an array
+    /// of numbers, which `codec.ts` reads as readily as proto3's base64.
+    #[serde(default)]
+    pub raw_arguments_json: Vec<u8>,
+}
+
+/// `events.proto`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffChanged {
+    #[serde(default)]
+    pub agent_workspace_id: String,
+    #[serde(default)]
+    pub diff_text: String,
+    #[serde(default)]
+    pub diff_digest: String,
+    #[serde(default)]
+    pub modified_files: Vec<String>,
+}
+
+/// `events.proto`. `cost_known` is false unless something priced the call;
+/// a zero cost beside `cost_known: false` is not a claim that it was free.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UsageUpdated {
+    #[serde(default)]
+    pub run_id: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model_sku: String,
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub completion_tokens: u64,
+    #[serde(default)]
+    pub cached_tokens: u64,
+    #[serde(default)]
+    pub cost_known: bool,
+    #[serde(default)]
+    pub cost_usd: f64,
+}
+
+/// `events.proto`. The states are the ones the declaration lists in its
+/// comment; [`run_state`] spells the ones this daemon reaches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunStateChanged {
+    #[serde(default)]
+    pub run_id: String,
+    #[serde(default)]
+    pub previous_state: String,
+    #[serde(default)]
+    pub new_state: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// The run states `events.proto` lists, spelled once.
+pub mod run_state {
+    pub const QUEUED: &str = "queued";
+    pub const RUNNING_MODEL: &str = "running_model";
+    pub const WAITING_FOR_APPROVAL: &str = "waiting_for_approval";
+    pub const RUNNING_TOOL: &str = "running_tool";
+    pub const COMPLETED: &str = "completed";
+    pub const FAILED: &str = "failed";
+}
+
+/// `events.proto`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Diagnostic {
+    #[serde(default)]
+    pub level: String,
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub details: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

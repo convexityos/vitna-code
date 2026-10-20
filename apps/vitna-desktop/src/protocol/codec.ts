@@ -171,6 +171,11 @@ const EVENT_DECODERS: Decoders = {
     error_details: str(o, 'error_details'),
     action_id: str(o, 'action_id'),
   }),
+  SessionCreated: (o) => ({
+    session_id: str(o, 'session_id'),
+    workspace_path: str(o, 'workspace_path'),
+    initial_mode: str(o, 'initial_mode'),
+  }),
   MessageDelta: (o) => ({
     message_id: str(o, 'message_id'),
     role: str(o, 'role'),

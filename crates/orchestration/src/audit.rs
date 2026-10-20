@@ -43,6 +43,19 @@ pub const CONTEXT_ASSEMBLED: &str = "vitna.audit.v1.ContextAssembled";
 /// A receipt was written for this run.
 pub const RECEIPT_GENERATED: &str = "vitna.audit.v1.ReceiptGenerated";
 
+/// An approval was refused, by the operator or by its deadline, with the
+/// reason the model is told. Evidence, like `ApprovalGranted`: the declared
+/// proof is that the tool never starts, and its `ToolFinished` says
+/// `cancelled`.
+pub const APPROVAL_REJECTED: &str = "vitna.audit.v1.ApprovalRejected";
+
+/// The agent loop asked the model, by provider, model, round and size.
+pub const MODEL_REQUESTED: &str = "vitna.audit.v1.ModelRequested";
+
+/// What the model answered: the model it said served it, how it finished,
+/// how many tools it asked for, and its usage.
+pub const MODEL_RESPONDED: &str = "vitna.audit.v1.ModelResponded";
+
 /// Every audit name, so a test can check the set rather than a list someone
 /// remembered to update.
 pub const ALL: &[&str] = &[
@@ -50,6 +63,9 @@ pub const ALL: &[&str] = &[
     APPROVAL_GRANTED,
     CONTEXT_ASSEMBLED,
     RECEIPT_GENERATED,
+    APPROVAL_REJECTED,
+    MODEL_REQUESTED,
+    MODEL_RESPONDED,
 ];
 
 /// Whether `type_url` is one of this engine's own names.

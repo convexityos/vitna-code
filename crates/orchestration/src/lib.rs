@@ -1,11 +1,15 @@
 //! Turn execution loop, agent state machine, approval gating, and receipt emission.
 
+pub mod agent;
+pub mod approval;
 pub mod audit;
 pub mod dag;
 pub mod engine;
 
+pub use agent::{AgentTurn, MAX_ROUNDS};
 pub use dag::{TaskGraph, TaskNode, TaskStatus};
-pub use engine::{OrchestrationConfig, OrchestrationEngine, StepType};
+pub use approval::{ApprovalDecision, ApprovalRequest, Approver, RuleApprover};
+pub use engine::{OrchestrationConfig, OrchestrationEngine, StepType, APPROVAL_TIMEOUT_MS};
 
 #[cfg(test)]
 mod tests {

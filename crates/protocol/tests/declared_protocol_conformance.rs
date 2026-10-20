@@ -284,6 +284,19 @@ fn every_implemented_message_carries_exactly_its_declared_fields() {
     assert_fields_match::<ApprovalRequested>("events.proto", "ApprovalRequested");
     assert_fields_match::<ToolStarted>("events.proto", "ToolStarted");
     assert_fields_match::<ToolFinished>("events.proto", "ToolFinished");
+    // Every payload the daemon builds or reads since it began serving turns
+    // (ADR-0007).
+    assert_fields_match::<CreateSession>("commands.proto", "CreateSession");
+    assert_fields_match::<SubmitTurn>("commands.proto", "SubmitTurn");
+    assert_fields_match::<ApproveAction>("commands.proto", "ApproveAction");
+    assert_fields_match::<RejectAction>("commands.proto", "RejectAction");
+    assert_fields_match::<SessionCreated>("envelope.proto", "SessionCreated");
+    assert_fields_match::<MessageDelta>("events.proto", "MessageDelta");
+    assert_fields_match::<ToolProposed>("events.proto", "ToolProposed");
+    assert_fields_match::<DiffChanged>("events.proto", "DiffChanged");
+    assert_fields_match::<UsageUpdated>("events.proto", "UsageUpdated");
+    assert_fields_match::<RunStateChanged>("events.proto", "RunStateChanged");
+    assert_fields_match::<Diagnostic>("events.proto", "Diagnostic");
 }
 
 /// The frame itself, which carries every other message.

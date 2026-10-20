@@ -1,10 +1,13 @@
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use vitna_orchestration::{OrchestrationConfig, OrchestrationEngine, StepType};
+use vitna_orchestration::{OrchestrationConfig, OrchestrationEngine, StepType, APPROVAL_TIMEOUT_MS};
+use vitna_providers::ProviderMessage;
+
+use crate::turns::{ModelRoute, PendingApprovals};
 use vitna_receipts::VitnaRunReceiptV1;
 use vitna_runner::{ProcessRunner, Runner};
 use vitna_store::EventStore;
@@ -35,6 +38,18 @@ pub struct DaemonServer {
     pub sessions: Arc<Mutex<HashMap<String, SessionInfo>>>,
     pub runner: Arc<dyn Runner>,
     pub signing_key: Arc<SigningKey>,
+    /// The model a turn reaches. `None` refuses `SubmitTurn`.
+    pub route: Option<ModelRoute>,
+    /// Approvals waiting for an operator, by approval id.
+    pub approvals: PendingApprovals,
+    /// How long an approval waits before it is refused.
+    pub approval_timeout_ms: u64,
+    /// Each session's conversation so far: every turn's prompt and the
+    /// model's last message, in memory only. A restarted daemon starts every
+    /// session's conversation afresh; the journal still holds the events.
+    pub histories: Arc<Mutex<HashMap<String, Vec<ProviderMessage>>>>,
+    /// Sessions with a turn running now.
+    pub active_turns: Arc<Mutex<HashSet<String>>>,
 }
 
 impl DaemonServer {
@@ -44,6 +59,11 @@ impl DaemonServer {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             runner,
             signing_key: Arc::new(signing_key),
+            route: None,
+            approvals: Arc::new(Mutex::new(HashMap::new())),
+            approval_timeout_ms: APPROVAL_TIMEOUT_MS,
+            histories: Arc::new(Mutex::new(HashMap::new())),
+            active_turns: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 

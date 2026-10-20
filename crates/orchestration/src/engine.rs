@@ -10,9 +10,13 @@ use vitna_receipts::{
     ChangeSetRecord, EvidenceItemRecord, FileModificationRecord, ModelSelectionRecord,
     RunnerExecutionStatementRecord, VitnaRunReceiptV1,
 };
+use vitna_protocol::messages::{run_state, tool_status, DiffChanged, RunStateChanged, ToolProposed};
+use vitna_protocol::type_url;
 use vitna_runner::Runner;
 use vitna_store::{EventRecord, EventStore, GENESIS_HASH};
 use vitna_tools::{ToolContext, ToolRegistry, ToolResult};
+
+use crate::approval::{ApprovalDecision, ApprovalRequest, Approver};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestrationConfig {
@@ -64,6 +68,37 @@ pub struct OrchestrationEngine {
     pub runner_statements: Vec<RunnerExecutionStatementRecord>,
     pub evidence_items: Vec<EvidenceItemRecord>,
     pub history: Vec<ContextMessage>,
+    /// Who is asked about a mutating action. `None` keeps the rule `vitna run`
+    /// has always had: `auto_approve` grants, anything else refuses.
+    pub approver: Option<Arc<dyn Approver>>,
+    /// How long an approval waits for a person, as `ApprovalRequested`
+    /// declares it to them.
+    pub approval_timeout_ms: u64,
+    /// The declared run state, moved by [`set_run_state`](Self::set_run_state).
+    pub run_state: String,
+    /// What the receipt will say about how the run ended. Defaults to the
+    /// completed case and is lowered by whoever cuts the run short, so a
+    /// stopped or failed run cannot be signed as a finished one.
+    pub completion_state: String,
+    /// Why this model served the run, as the receipt records it.
+    pub routing_reason: String,
+}
+
+/// How long a person has to answer an approval before it is refused.
+///
+/// Long enough to read a diff, short enough that a run whose operator walked
+/// away ends rather than holding its session open indefinitely.
+pub const APPROVAL_TIMEOUT_MS: u64 = 15 * 60 * 1000;
+
+/// The `effect_class` `ToolProposed` declares: "read", "write", "execute".
+fn effect_class(tool_name: &str, is_mutating: bool) -> &'static str {
+    if tool_name == "run_command" {
+        "execute"
+    } else if is_mutating {
+        "write"
+    } else {
+        "read"
+    }
 }
 
 /// Milliseconds since the epoch.
@@ -72,15 +107,6 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-/// The time limit an action carries, or 0 when it states none.
-///
-/// Part of what an operator is approving: the same command with a different
-/// limit is a different action, which is why the action digest covers every
-/// argument.
-fn timeout_ms_of(args: &serde_json::Value) -> u64 {
-    args.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(0)
 }
 
 /// A short, human-readable account of what a tool was asked to do.
@@ -135,7 +161,38 @@ impl OrchestrationEngine {
             runner_statements: Vec::new(),
             evidence_items: Vec::new(),
             history: Vec::new(),
+            approver: None,
+            approval_timeout_ms: APPROVAL_TIMEOUT_MS,
+            run_state: run_state::QUEUED.to_string(),
+            completion_state: "completed_with_evidence".to_string(),
+            routing_reason: "pinned_profile".to_string(),
         }
+    }
+
+    /// Asks `approver` about every mutating action instead of applying
+    /// `auto_approve`.
+    pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Self {
+        self.approver = Some(approver);
+        self
+    }
+
+    /// Moves the run to `new_state` and announces it. Moving to the state it
+    /// is already in records nothing, so a caller need not track it.
+    pub fn set_run_state(&mut self, new_state: &str, reason: &str) -> Result<(), String> {
+        if self.run_state == new_state {
+            return Ok(());
+        }
+        let previous_state = std::mem::replace(&mut self.run_state, new_state.to_string());
+        self.record_event(
+            type_url::event::RUN_STATE_CHANGED,
+            &RunStateChanged {
+                run_id: self.config.run_id.clone(),
+                previous_state,
+                new_state: new_state.to_string(),
+                reason: reason.to_string(),
+            },
+        )?;
+        Ok(())
     }
 
     /// Numbers this run's events from `next_sequence` instead of from the
@@ -283,29 +340,53 @@ impl OrchestrationEngine {
         )?;
 
         // Step 2: Dispatch step action
-        let (tool_name, args, is_mutating) = match &step {
-            StepType::InspectWorkspace => (
-                "list_dir".to_string(),
-                serde_json::json!({ "path": "." }),
-                false,
-            ),
+        let (tool_name, args) = match &step {
+            StepType::InspectWorkspace => {
+                ("list_dir".to_string(), serde_json::json!({ "path": "." }))
+            }
             StepType::ProposeEdit { path, content } => (
                 "write_file".to_string(),
                 serde_json::json!({ "path": path, "content": content }),
-                true,
             ),
             StepType::RunVerification { command } => (
                 "run_command".to_string(),
                 serde_json::json!({ "command": command }),
-                true,
             ),
         };
 
+        self.execute_tool(&tool_name, args, None).await
+    }
+
+    /// The guarded path a tool call takes, whoever chose it.
+    ///
+    /// `execute_task_step` picks its tool from a fixed `StepType`; the agent
+    /// loop picks it from what a model asked for. Both arrive here, so the
+    /// approval gate, the hash-chained events and the evidence capture are one
+    /// implementation rather than two. The guarantee a receipt claims IS this
+    /// path, and a second copy of it is a second thing that can quietly stop
+    /// matching the first.
+    ///
+    /// `call` is the model's id for the call, when a model made it. It then
+    /// becomes the `tool_call_id` every declared event carries, so a client
+    /// links the model's proposal to its approval, start and finish, and the
+    /// call also announces `ToolProposed`, `DiffChanged` and the run's state.
+    /// With `None` an id is minted, as a scripted step always had.
+    pub async fn execute_tool(
+        &mut self,
+        tool_name: &str,
+        args: serde_json::Value,
+        call: Option<&str>,
+    ) -> Result<ToolResult, String> {
+        let tool_name = tool_name.to_string();
         let tool = self
             .tool_registry
             .get(&tool_name)
             .ok_or_else(|| format!("Tool not found: {}", tool_name))?;
 
+        // Taken from the definition rather than from the caller, so the flag
+        // the gate enforces is the same one the model was shown.
+        let definition = tool.definition();
+        let is_mutating = definition.is_mutating;
         let action_digest = tool.compute_action_digest(&args);
 
         // One id for this tool call, minted before the approval that gates it,
@@ -313,22 +394,50 @@ impl OrchestrationEngine {
         // finish through it. A client uses that link to decide an approval took
         // effect, so the id has to exist before anything is asked.
         self.tool_calls += 1;
-        let tool_call_id = format!("tc-{}-{}", self.config.run_id, self.tool_calls);
+        let tool_call_id = match call {
+            Some(id) => id.to_string(),
+            None => format!("tc-{}-{}", self.config.run_id, self.tool_calls),
+        };
+
+        if call.is_some() {
+            self.record_event(
+                type_url::event::TOOL_PROPOSED,
+                &ToolProposed {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    tool_version: String::new(),
+                    definition_digest: vitna_tools::canonical_digest(
+                        &serde_json::to_value(&definition).unwrap_or_default(),
+                    ),
+                    argument_digest: vitna_tools::canonical_digest(&args),
+                    effect_class: effect_class(&tool_name, is_mutating).to_string(),
+                    raw_arguments_json: serde_json::to_vec(&args).unwrap_or_default(),
+                },
+            )?;
+        }
 
         // Step 3: Exact-action capability & approval check
         if is_mutating {
-            self.request_approval(
-                &tool_call_id,
-                &action_digest,
-                &format!("{tool_name}: {}", describe_arguments(&args)),
-                timeout_ms_of(&args),
-            )?;
-
-            if !self.config.auto_approve {
-                return Err(format!(
-                    "Action requires human approval: {} (digest: {})",
-                    tool_name, action_digest
-                ));
+            let description = format!("{tool_name}: {}", describe_arguments(&args));
+            let refused_by_rule = format!(
+                "Action requires human approval: {} (digest: {})",
+                tool_name, action_digest
+            );
+            if let ApprovalDecision::Rejected(reason) = self
+                .decide(
+                    &tool_call_id,
+                    &tool_name,
+                    &action_digest,
+                    &description,
+                    self.config.auto_approve,
+                    refused_by_rule,
+                )
+                .await?
+            {
+                if call.is_some() {
+                    self.finish_unstarted(&tool_call_id)?;
+                }
+                return Err(reason);
             }
 
             self.record_event(
@@ -344,27 +453,39 @@ impl OrchestrationEngine {
         // execution. A command that cannot be sandboxed needs its own approval,
         // and `auto_approve` does not supply it: the operator approved the work,
         // not the removal of the boundary around it.
+        let mut unsandboxed_approved = self.config.allow_unsandboxed;
         if tool_name == "run_command" && self.runner.spawns_processes() {
             if let Err(reason) = vitna_runner::sandbox_status(&self.config.workspace_root, false) {
                 // A SECOND approval, kept apart from the one above on
                 // purpose: approving the work and approving that it runs with
-                // no boundary around it are different decisions.
-                self.request_approval(
-                    &tool_call_id,
-                    &action_digest,
-                    &format!(
-                        "{tool_name} with NO OS sandbox: {reason}. Approving this                          removes the boundary, not just the work."
-                    ),
-                    timeout_ms_of(&args),
-                )?;
-
-                if !self.config.allow_unsandboxed {
-                    return Err(format!(
-                        "No OS sandbox is available for this workspace ({}). Running \
-                         '{}' unsandboxed requires explicit approval.",
-                        reason, tool_name
-                    ));
+                // no boundary around it are different decisions. With an
+                // approver it is put to the operator as its own question.
+                let description = format!(
+                    "{tool_name} with NO OS sandbox: {reason}. Approving this removes the \
+                     boundary, not just the work."
+                );
+                let refused_by_rule = format!(
+                    "No OS sandbox is available for this workspace ({}). Running \
+                     '{}' unsandboxed requires explicit approval.",
+                    reason, tool_name
+                );
+                if let ApprovalDecision::Rejected(reason) = self
+                    .decide(
+                        &tool_call_id,
+                        &tool_name,
+                        &action_digest,
+                        &description,
+                        self.config.allow_unsandboxed,
+                        refused_by_rule,
+                    )
+                    .await?
+                {
+                    if call.is_some() {
+                        self.finish_unstarted(&tool_call_id)?;
+                    }
+                    return Err(reason);
                 }
+                unsandboxed_approved = true;
 
                 self.record_event(
                     crate::audit::APPROVAL_GRANTED,
@@ -382,8 +503,11 @@ impl OrchestrationEngine {
             self.config.workspace_root.clone(),
             self.runner.clone(),
         );
-        ctx.allow_unsandboxed = self.config.allow_unsandboxed;
+        ctx.allow_unsandboxed = unsandboxed_approved;
 
+        if call.is_some() {
+            self.set_run_state(run_state::RUNNING_TOOL, &tool_call_id)?;
+        }
         let started_at_ms = now_ms();
         self.record_event(
             vitna_protocol::type_url::event::TOOL_STARTED,
@@ -393,30 +517,51 @@ impl OrchestrationEngine {
             },
         )?;
 
-        let result = tool.execute(args.clone(), &ctx).await?;
-
-        self.record_event(
-            vitna_protocol::type_url::event::TOOL_FINISHED,
-            &vitna_protocol::messages::ToolFinished {
-                tool_call_id: tool_call_id.clone(),
-                // A tool that runs no process has no exit code, so it reports
-                // success rather than inventing a signal it never saw.
-                exit_code: result
-                    .exit_code
-                    .unwrap_or(if result.success { 0 } else { 1 }),
-                // The runner holds the real stream digests and does not report
-                // them here yet. Empty means not recorded, never "no output".
-                stdout_digest: String::new(),
-                stderr_digest: String::new(),
-                duration_ms: now_ms().saturating_sub(started_at_ms),
-                status: if result.success {
-                    vitna_protocol::messages::tool_status::COMPLETED
-                } else {
-                    vitna_protocol::messages::tool_status::FAILED
+        let result = match tool.execute(args.clone(), &ctx).await {
+            Ok(result) => result,
+            Err(e) => {
+                // A started tool always finishes, so a client never holds a
+                // call open that ended in an error.
+                self.record_finished(&tool_call_id, 1, started_at_ms, tool_status::FAILED)?;
+                if call.is_some() {
+                    self.set_run_state(run_state::RUNNING_MODEL, "tool failed")?;
                 }
-                .to_string(),
-            },
+                return Err(e);
+            }
+        };
+
+        // A tool that runs no process has no exit code, so it reports success
+        // rather than inventing a signal it never saw.
+        let status = if result.success {
+            tool_status::COMPLETED
+        } else {
+            tool_status::FAILED
+        };
+        self.record_finished(
+            &tool_call_id,
+            result.exit_code.unwrap_or(if result.success { 0 } else { 1 }),
+            started_at_ms,
+            status,
         )?;
+
+        if call.is_some() {
+            if let Some(diff) = result.diff.as_ref().filter(|d| !d.is_empty()) {
+                self.record_event(
+                    type_url::event::DIFF_CHANGED,
+                    &DiffChanged {
+                        agent_workspace_id: self.config.run_id.clone(),
+                        diff_text: diff.clone(),
+                        diff_digest: hex::encode(Sha256::digest(diff.as_bytes())),
+                        modified_files: args
+                            .get("path")
+                            .and_then(|p| p.as_str())
+                            .map(|p| vec![p.to_string()])
+                            .unwrap_or_default(),
+                    },
+                )?;
+            }
+            self.set_run_state(run_state::RUNNING_MODEL, "tool finished")?;
+        }
 
         // Step 5: Update state and track modifications
         if let (Some(pre), Some(post)) = (&result.preimage_hash, &result.postimage_hash) {
@@ -460,6 +605,97 @@ impl OrchestrationEngine {
         });
 
         Ok(result)
+    }
+
+    /// One approval: announced, then decided.
+    ///
+    /// With no approver the decision is the rule `vitna run` has always had,
+    /// `by_rule`, and `refused_by_rule` is the refusal it gives. With one, the
+    /// approver decides, and when it asks a person the run waits in
+    /// `waiting_for_approval` with the request's deadline declared. A refusal
+    /// an approver gives is recorded; the rule's is not, so a scripted run's
+    /// journal is what it was.
+    async fn decide(
+        &mut self,
+        tool_call_id: &str,
+        tool_name: &str,
+        action_digest: &str,
+        description: &str,
+        by_rule: bool,
+        refused_by_rule: String,
+    ) -> Result<ApprovalDecision, String> {
+        let approver = self.approver.clone();
+        let asks_a_person = approver.as_ref().is_some_and(|a| a.asks_a_person());
+        // The deadline the request is held to. `codec.ts` reads 0 as "no
+        // deadline given", which is the truth when nobody is waiting.
+        let deadline = if asks_a_person { self.approval_timeout_ms } else { 0 };
+
+        if asks_a_person {
+            self.set_run_state(run_state::WAITING_FOR_APPROVAL, tool_call_id)?;
+        }
+        let approval_id = self.request_approval(tool_call_id, action_digest, description, deadline)?;
+
+        let Some(approver) = approver else {
+            return Ok(if by_rule {
+                ApprovalDecision::Approved
+            } else {
+                ApprovalDecision::Rejected(refused_by_rule)
+            });
+        };
+
+        let decision = approver
+            .decide(&ApprovalRequest {
+                approval_id,
+                tool_call_id: tool_call_id.to_string(),
+                tool_name: tool_name.to_string(),
+                action_digest: action_digest.to_string(),
+                description: description.to_string(),
+                canonical_cwd: self.config.workspace_root.to_string_lossy().into_owned(),
+                timeout_ms: deadline,
+            })
+            .await;
+
+        if let ApprovalDecision::Rejected(reason) = &decision {
+            self.record_event(
+                crate::audit::APPROVAL_REJECTED,
+                &serde_json::json!({
+                    "tool_name": tool_name,
+                    "action_digest": action_digest,
+                    "reason": reason,
+                }),
+            )?;
+        }
+        Ok(decision)
+    }
+
+    fn record_finished(
+        &mut self,
+        tool_call_id: &str,
+        exit_code: i32,
+        started_at_ms: u64,
+        status: &str,
+    ) -> Result<(), String> {
+        self.record_event(
+            vitna_protocol::type_url::event::TOOL_FINISHED,
+            &vitna_protocol::messages::ToolFinished {
+                tool_call_id: tool_call_id.to_string(),
+                exit_code,
+                // The runner holds the real stream digests and does not report
+                // them here yet. Empty means not recorded, never "no output".
+                stdout_digest: String::new(),
+                stderr_digest: String::new(),
+                duration_ms: now_ms().saturating_sub(started_at_ms),
+                status: status.to_string(),
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Closes a model's call that was refused before it started, and hands
+    /// the run back to the model. It ran nothing, so it reports no duration.
+    fn finish_unstarted(&mut self, tool_call_id: &str) -> Result<(), String> {
+        self.record_finished(tool_call_id, 1, now_ms(), tool_status::CANCELLED)?;
+        self.set_run_state(run_state::RUNNING_MODEL, "tool refused")
     }
 
     /// The isolation this run actually had, which is not always the one it was
@@ -531,12 +767,12 @@ impl OrchestrationEngine {
             model_selection: ModelSelectionRecord {
                 provider: self.config.provider_name.clone(),
                 model_sku: self.config.model_sku.clone(),
-                routing_reason: "pinned_profile".to_string(),
+                routing_reason: self.routing_reason.clone(),
                 policy_digest: None,
             },
             event_hash_chain_root: merkle_root,
             isolation_label: self.observed_isolation_label(),
-            completion_state: "completed_with_evidence".to_string(),
+            completion_state: self.completion_state.clone(),
             evidence_items: self.evidence_items.clone(),
             changeset: ChangeSetRecord {
                 files_modified: self.changeset_modifications.clone(),
