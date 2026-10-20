@@ -71,6 +71,13 @@ enum Commands {
         /// still works.
         #[arg(long, alias = "db")]
         store: Option<PathBuf>,
+        /// A vitna-runtime on this machine, such as http://127.0.0.1:8787.
+        /// Turns are refused until it and --lane are given.
+        #[arg(long)]
+        runtime_url: Option<String>,
+        /// The lane every turn asks the runtime for, such as vitna/code.
+        #[arg(long)]
+        lane: Option<String>,
     },
     /// Open a folder in the Vitna Code interface, served from this machine
     ///
@@ -136,8 +143,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Sessions) => {
             run_list_sessions()?;
         }
-        Some(Commands::Serve { endpoint, store }) => {
-            if let Err(e) = serve(endpoint, store).await {
+        Some(Commands::Serve {
+            endpoint,
+            store,
+            runtime_url,
+            lane,
+        }) => {
+            if let Err(e) = serve(endpoint, store, runtime_url, lane).await {
                 // One line naming what failed, as vitna-coded prints it. A
                 // daemon that dies quietly looks, from a client, like one that
                 // was never started.
@@ -182,9 +194,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// listening on local session channel" and bound nothing, so every client that
 /// probed the declared endpoint found no daemon. The release scripts ship
 /// `vitna` and not `vitna-coded`, so for an installed copy this is the door.
-async fn serve(endpoint: Option<String>, store: Option<PathBuf>) -> Result<(), String> {
+async fn serve(
+    endpoint: Option<String>,
+    store: Option<PathBuf>,
+    runtime_url: Option<String>,
+    lane: Option<String>,
+) -> Result<(), String> {
     vitna_daemon::launch::logging();
-    let launch = vitna_daemon::launch::Launch::resolve(endpoint, store)?;
+    let launch = vitna_daemon::launch::Launch::resolve(endpoint, store)?.with_runtime(runtime_url, lane)?;
     let announce = launch.endpoint.clone();
     vitna_daemon::launch::run(&launch, move || {
         // Printed once the endpoint is bound, so it is true when it is read.

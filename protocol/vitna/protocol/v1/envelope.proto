@@ -48,3 +48,13 @@ message ErrorResponse {
   string error_details = 3;
   string action_id = 4;
 }
+
+// The reply to CreateSession: the session the daemon made, sent once on the
+// connection that asked, at control sequence 0. Nothing else in the protocol
+// names a session before its first event, so a client learns session_id
+// here and nowhere else. Added 2026-10-19 (ADR-0007).
+message SessionCreated {
+  string session_id = 1;
+  string workspace_path = 2;
+  string initial_mode = 3;
+}

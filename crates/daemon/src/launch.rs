@@ -14,13 +14,19 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::{ipc, DaemonServer};
+use vitna_providers::{RuntimeLane, RuntimeLaneProvider};
 
-/// Where the daemon listens, and where it keeps its journal.
+use crate::{ipc, DaemonServer, ModelRoute};
+
+/// Where the daemon listens, where it keeps its journal, and which model a
+/// turn reaches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub endpoint: String,
     pub store: PathBuf,
+    /// The vitna-runtime lane turns are served through. `None` starts a
+    /// daemon that refuses `SubmitTurn` and says why.
+    pub route: Option<RuntimeLane>,
 }
 
 impl Launch {
@@ -41,7 +47,33 @@ impl Launch {
             Some(s) => s,
             None => default_store()?,
         };
-        Ok(Launch { endpoint, store })
+        Ok(Launch {
+            endpoint,
+            store,
+            route: None,
+        })
+    }
+
+    /// Serves turns through a vitna-runtime lane: `--runtime-url` and
+    /// `--lane`, both or neither. One without the other is refused rather than
+    /// defaulted, because a default lane is a model nobody chose, and a
+    /// default address is a runtime nobody started.
+    pub fn with_runtime(
+        mut self,
+        runtime_url: Option<String>,
+        lane: Option<String>,
+    ) -> Result<Launch, String> {
+        self.route = match (runtime_url, lane) {
+            (None, None) => None,
+            (Some(url), Some(lane)) => Some(RuntimeLane::new(&url, &lane)?),
+            (Some(_), None) => {
+                return Err("--runtime-url needs --lane, the lane to ask for".to_string())
+            }
+            (None, Some(_)) => {
+                return Err("--lane needs --runtime-url, where the runtime listens".to_string())
+            }
+        };
+        Ok(self)
     }
 }
 
@@ -84,7 +116,21 @@ pub fn logging() {
 /// `on_ready` runs once the endpoint is bound and not before, so a line it
 /// prints is true when it is printed.
 pub async fn run<F: FnOnce()>(launch: &Launch, on_ready: F) -> Result<(), String> {
-    let server = Arc::new(DaemonServer::open_default(&launch.store)?);
+    let mut server = DaemonServer::open_default(&launch.store)?;
+    match &launch.route {
+        Some(lane) => {
+            tracing::info!(runtime = %lane.endpoint, lane = %lane.lane, "turns go to a vitna-runtime lane");
+            server = server.with_route(ModelRoute {
+                provider: Arc::new(RuntimeLaneProvider::new(lane.clone())),
+                model: lane.lane.clone(),
+                routing_reason: format!("runtime_lane:{}", lane.lane),
+            });
+        }
+        None => tracing::info!(
+            "no model route: SubmitTurn is refused until --runtime-url and --lane are given"
+        ),
+    }
+    let server = Arc::new(server);
     tracing::info!(store = %launch.store.display(), "vitna-coded starting");
     ipc::serve(server, &launch.endpoint, on_ready)
         .await
@@ -94,6 +140,36 @@ pub async fn run<F: FnOnce()>(launch: &Launch, on_ready: F) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both or neither. One alone is a route half described, and defaulting
+    /// the other half would pick a model or a runtime nobody named.
+    #[test]
+    fn a_runtime_route_takes_both_flags_or_neither() {
+        let base = || Launch::resolve(Some("e".into()), Some(PathBuf::from("a.db"))).unwrap();
+        assert_eq!(base().with_runtime(None, None).unwrap().route, None);
+        let lane = base()
+            .with_runtime(
+                Some("http://127.0.0.1:8787".into()),
+                Some("vitna/code".into()),
+            )
+            .unwrap()
+            .route
+            .expect("a route");
+        assert_eq!(lane.endpoint, "http://127.0.0.1:8787/v1/chat/completions");
+        assert_eq!(lane.lane, "vitna/code");
+        assert!(base()
+            .with_runtime(Some("http://127.0.0.1:8787".into()), None)
+            .is_err());
+        assert!(base()
+            .with_runtime(None, Some("vitna/code".into()))
+            .is_err());
+        assert!(base()
+            .with_runtime(
+                Some("https://runtime.example.com".into()),
+                Some("vitna/code".into())
+            )
+            .is_err());
+    }
 
     #[test]
     fn what_is_asked_for_is_what_is_used() {

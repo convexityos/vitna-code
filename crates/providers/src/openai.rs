@@ -32,9 +32,46 @@ impl OpenAIProvider {
         }
 
         for msg in &req.messages {
+            if let Some(call_id) = &msg.tool_call_id {
+                // A result rides its own `tool` message, matched by id.
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": msg.content
+                }));
+                continue;
+            }
+
+            if msg.tool_calls.is_empty() {
+                messages.push(json!({
+                    "role": msg.role,
+                    "content": msg.content
+                }));
+                continue;
+            }
+
+            // Arguments travel as a JSON STRING here, not as an object. Raw
+            // text that never parsed is sent back as it came.
+            let calls: Vec<serde_json::Value> = msg
+                .tool_calls
+                .iter()
+                .map(|c| {
+                    let arguments = match &c.arguments {
+                        serde_json::Value::String(raw) => raw.clone(),
+                        other => other.to_string(),
+                    };
+                    json!({
+                        "id": c.id,
+                        "type": "function",
+                        "function": { "name": c.name, "arguments": arguments }
+                    })
+                })
+                .collect();
+
             messages.push(json!({
                 "role": msg.role,
-                "content": msg.content
+                "content": if msg.content.is_empty() { serde_json::Value::Null } else { json!(msg.content) },
+                "tool_calls": calls
             }));
         }
 
@@ -152,10 +189,16 @@ impl Provider for OpenAIProvider {
         let endpoint = self.default_endpoint();
 
         let client = reqwest::Client::new();
-        let resp = client
+        let mut request = client
             .post(&endpoint)
-            .header("Authorization", format!("Bearer {}", self.credentials.api_key))
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        // No key, no header. A vitna-runtime lane on loopback asks for none,
+        // and an `Authorization: Bearer ` with nothing after it is a credential
+        // that says it is one and is not.
+        if !self.credentials.api_key.is_empty() {
+            request = request.header("Authorization", format!("Bearer {}", self.credentials.api_key));
+        }
+        let resp = request
             .json(&payload)
             .send()
             .await
@@ -172,6 +215,14 @@ impl Provider for OpenAIProvider {
             .await
             .map_err(|e| format!("Failed to parse OpenAI response JSON: {}", e))?;
 
+        Ok(parse_completion(&body))
+    }
+}
+
+/// A Chat Completions response body, read into the shape every adapter
+/// returns. Pure, so what a response means is testable without a server.
+pub fn parse_completion(body: &serde_json::Value) -> ProviderResponse {
+    {
         let mut content = String::new();
         let mut tool_calls = Vec::new();
         let mut finish_reason = "stop".to_string();
@@ -197,7 +248,11 @@ impl Provider for OpenAIProvider {
                                 .and_then(|f| f.get("arguments"))
                                 .and_then(|a| a.as_str())
                                 .unwrap_or("{}");
-                            let args_val: serde_json::Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+                            // Text that does not parse stays text, so the tool
+                            // refuses it by name. Reading it as `{}` ran the
+                            // tool on arguments nobody sent.
+                            let args_val: serde_json::Value = serde_json::from_str(args_str)
+                                .unwrap_or_else(|_| serde_json::Value::String(args_str.to_string()));
 
                             tool_calls.push(ProviderToolCall {
                                 id,
@@ -226,12 +281,17 @@ impl Provider for OpenAIProvider {
             .and_then(|t| t.as_u64())
             .unwrap_or(0) as u32;
 
-        Ok(ProviderResponse {
+        ProviderResponse {
             content,
             tool_calls,
             prompt_tokens,
             completion_tokens,
             finish_reason,
-        })
+            model: body
+                .get("model")
+                .and_then(|m| m.as_str())
+                .filter(|m| !m.is_empty())
+                .map(str::to_string),
+        }
     }
 }

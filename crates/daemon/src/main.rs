@@ -36,6 +36,15 @@ struct Args {
     /// directory, so runs from any workspace share one journal.
     #[arg(long)]
     store: Option<std::path::PathBuf>,
+
+    /// A vitna-runtime on this machine, such as http://127.0.0.1:8787. Turns
+    /// are refused until it and --lane are given.
+    #[arg(long)]
+    runtime_url: Option<String>,
+
+    /// The lane every turn asks the runtime for, such as vitna/code.
+    #[arg(long)]
+    lane: Option<String>,
 }
 
 #[tokio::main]
@@ -52,7 +61,8 @@ async fn main() {
 
 async fn run() -> Result<(), String> {
     let args = Args::parse();
-    let launch = Launch::resolve(args.endpoint, args.store)?;
+    let launch =
+        Launch::resolve(args.endpoint, args.store)?.with_runtime(args.runtime_url, args.lane)?;
 
     let announce = launch.endpoint.clone();
     launch::run(&launch, move || {

@@ -65,6 +65,8 @@ pub mod envelope {
     pub const HANDSHAKE_REQUEST: &str = "type.vitna.ai/vitna.protocol.v1.HandshakeRequest";
     pub const HANDSHAKE_RESPONSE: &str = "type.vitna.ai/vitna.protocol.v1.HandshakeResponse";
     pub const ERROR_RESPONSE: &str = "type.vitna.ai/vitna.protocol.v1.ErrorResponse";
+    /// The reply to `CreateSession` (ADR-0007).
+    pub const SESSION_CREATED: &str = "type.vitna.ai/vitna.protocol.v1.SessionCreated";
 }
 
 /// Every command name, for dispatch tables and for the conformance test.
@@ -106,6 +108,7 @@ pub const ENVELOPE_PAYLOADS: &[&str] = &[
     envelope::HANDSHAKE_REQUEST,
     envelope::HANDSHAKE_RESPONSE,
     envelope::ERROR_RESPONSE,
+    envelope::SESSION_CREATED,
 ];
 
 /// The declared message name a `type_url` carries, or `None` when the prefix
