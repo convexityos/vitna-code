@@ -11,6 +11,7 @@
 
 use crate::admission;
 use crate::journal::{self, Effect, Ran};
+use crate::ledger;
 use crate::paths;
 use crate::routines;
 use crate::ui::{self, Reply};
@@ -215,6 +216,8 @@ pub(crate) async fn handle(state: &State, peer: SocketAddr, request: Request<Inc
         "run" => run(state, &token, request).await,
         "receipt" => make_receipt(state, &token, &session_id, request).await,
         "routines" => read_routines(state).await,
+        "ledger" => read_ledger(state).await,
+        "prices" => prices(state, request).await,
         _ => refusal(
             StatusCode::NOT_FOUND,
             "no_route",
@@ -253,7 +256,83 @@ fn hello(state: &State) -> Value {
         "public_key": state.public_key,
         "max_file_bytes": MAX_FILE_BYTES,
         "routines": state.routines.as_ref().map(|(_, name)| name.as_str()),
+        "ledger": state.ledger.as_ref().map(|l| l.name.as_str()),
+        "record": state.ledger.as_ref().and_then(|l| l.record.as_deref()),
     })
+}
+
+fn no_ledger() -> Reply {
+    refusal(
+        StatusCode::NOT_FOUND,
+        "no_ledger",
+        "vitna app was started without --ledger <file>, so it reads no runtime ledger.",
+    )
+}
+
+/// The newest rows of the runtime's ledger (`ledger.rs`), read and never
+/// written, off the server's threads.
+async fn read_ledger(state: &State) -> Reply {
+    let Some(at) = state.ledger.as_ref() else {
+        return no_ledger();
+    };
+    let path = at.path.clone();
+    match tokio::task::spawn_blocking(move || ledger::read(&path)).await {
+        Ok(Ok(read)) => json_reply(StatusCode::OK, read),
+        _ => refusal(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "ledger_unreadable",
+            "vitna app could not read the runtime ledger as text.",
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PricesRequest {
+    slugs: Vec<String>,
+}
+
+/// The record's price history for each slug asked, as it answered. The page
+/// asks only by slug; the origin is the one the operator gave.
+async fn prices(state: &State, request: Request<Incoming>) -> Reply {
+    let Some(at) = state.ledger.as_ref() else {
+        return no_ledger();
+    };
+    let Some(record) = at.record.as_deref() else {
+        return refusal(
+            StatusCode::NOT_FOUND,
+            "no_record",
+            "vitna app was started with --record none, so it asks no record for prices.",
+        );
+    };
+    let asked: PricesRequest = match json_body(request).await {
+        Ok(asked) => asked,
+        Err(reply) => return reply,
+    };
+    let mut slugs: Vec<String> = Vec::new();
+    for slug in asked.slugs {
+        if !ledger::slug(&slug) {
+            return refusal(
+                StatusCode::BAD_REQUEST,
+                "bad_slug",
+                "A slug is a lower-case letter or digit, then lower-case letters, digits, dots and hyphens.",
+            );
+        }
+        if !slugs.contains(&slug) {
+            slugs.push(slug);
+        }
+    }
+    if slugs.len() > ledger::MAX_SLUGS {
+        return refusal(
+            StatusCode::BAD_REQUEST,
+            "too_many_slugs",
+            format!("At most {} slugs are priced at once.", ledger::MAX_SLUGS),
+        );
+    }
+    json_reply(
+        StatusCode::OK,
+        ledger::histories(&at.client, record, slugs).await,
+    )
 }
 
 /// The routine definitions in the folder `--routines` named, each with its
