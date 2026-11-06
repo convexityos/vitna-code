@@ -12,6 +12,7 @@
 use crate::admission;
 use crate::journal::{self, Effect, Ran};
 use crate::paths;
+use crate::routines;
 use crate::ui::{self, Reply};
 use crate::{Commands, Session, State};
 use bytes::Bytes;
@@ -213,6 +214,7 @@ pub(crate) async fn handle(state: &State, peer: SocketAddr, request: Request<Inc
         "fs/remove" => remove(state, &token, &request),
         "run" => run(state, &token, request).await,
         "receipt" => make_receipt(state, &token, &session_id, request).await,
+        "routines" => read_routines(state).await,
         _ => refusal(
             StatusCode::NOT_FOUND,
             "no_route",
@@ -250,7 +252,30 @@ fn hello(state: &State) -> Value {
         "commands": commands,
         "public_key": state.public_key,
         "max_file_bytes": MAX_FILE_BYTES,
+        "routines": state.routines.as_ref().map(|(_, name)| name.as_str()),
     })
+}
+
+/// The routine definitions in the folder `--routines` named, each with its
+/// receipts and lock, read and never written (`routines.rs`). The reading is
+/// done off the server's threads, since a reply can carry tens of megabytes.
+async fn read_routines(state: &State) -> Reply {
+    let Some((dir, _)) = state.routines.as_ref() else {
+        return refusal(
+            StatusCode::NOT_FOUND,
+            "no_routines",
+            "vitna app was started without --routines <folder>, so it reads no routines.",
+        );
+    };
+    let dir = dir.clone();
+    match tokio::task::spawn_blocking(move || routines::read(&dir)).await {
+        Ok(Ok(read)) => json_reply(StatusCode::OK, read),
+        _ => refusal(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "routines_unreadable",
+            "vitna app could not read its routines folder.",
+        ),
+    }
 }
 
 #[derive(Deserialize)]

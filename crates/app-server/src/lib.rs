@@ -14,6 +14,7 @@ mod admission;
 mod api;
 mod journal;
 mod paths;
+mod routines;
 mod ui;
 pub mod window;
 
@@ -43,6 +44,9 @@ pub struct AppConfig {
     /// The operator's decision, made at the terminal, to run commands with no
     /// OS sandbox where the machine has none.
     pub allow_unsandboxed: bool,
+    /// A folder of routine definitions, whose receipts the page's Routines
+    /// place reads, or none, where the page has no Routines to show.
+    pub routines: Option<PathBuf>,
 }
 
 /// How commands are run, decided once when the server starts and told to the
@@ -97,6 +101,8 @@ struct State {
     public_key: String,
     allow_unsandboxed: bool,
     commands: Commands,
+    /// The folder of routine definitions, and its name as the page shows it.
+    routines: Option<(PathBuf, String)>,
     /// One-time codes, each with the instant it stops working.
     launch_codes: Mutex<HashMap<String, Instant>>,
     /// Session tokens, each with its session.
@@ -115,6 +121,13 @@ impl State {
         codes.insert(code.clone(), expires);
         format!("{}/#launch={code}", origin(self.port))
     }
+}
+
+/// A folder's own name, as the page shows it.
+fn name_of(dir: &Path) -> String {
+    dir.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dir.display().to_string())
 }
 
 fn origin(port: u16) -> String {
@@ -162,12 +175,22 @@ impl AppServer {
             ),
             None => None,
         };
+        let routines = match config.routines {
+            Some(dir) => {
+                let dir = std::fs::canonicalize(&dir).map_err(|e| {
+                    format!("cannot open the routines folder {}: {e}", dir.display())
+                })?;
+                if !dir.is_dir() {
+                    return Err(format!("{} is not a folder", dir.display()));
+                }
+                let name = name_of(&dir);
+                Some((dir, name))
+            }
+            None => None,
+        };
         let (listeners, port) = bind_loopback(config.port).await?;
         let commands = Commands::decide(runner.as_ref(), &root, config.allow_unsandboxed);
-        let folder_name = root
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| root.display().to_string());
+        let folder_name = name_of(&root);
         let public_key = hex::encode(signing_key.verifying_key().to_bytes());
         let state = State {
             root,
@@ -180,6 +203,7 @@ impl AppServer {
             public_key,
             allow_unsandboxed: config.allow_unsandboxed,
             commands,
+            routines,
             launch_codes: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             command_slot: tokio::sync::Semaphore::new(1),
@@ -214,6 +238,11 @@ impl AppServer {
 
     pub fn commands(&self) -> &Commands {
         &self.state.commands
+    }
+
+    /// The folder of routine definitions the page reads, if one was given.
+    pub fn routines(&self) -> Option<&Path> {
+        self.state.routines.as_ref().map(|(dir, _)| dir.as_path())
     }
 
     /// The public half of the key receipts are signed with, in hex.
