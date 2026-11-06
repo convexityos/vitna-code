@@ -27,6 +27,12 @@ struct Harness {
 
 impl Harness {
     async fn start(tag: &str) -> Self {
+        Self::start_with(tag, false).await
+    }
+
+    /// As `start`, and with `routines` a folder of routine definitions the
+    /// server reads, at `<base>/routines`.
+    async fn start_with(tag: &str, routines: bool) -> Self {
         let base = std::env::temp_dir().join(format!("vitna_app_{tag}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let folder = base.join("project");
@@ -55,6 +61,9 @@ impl Harness {
         )
         .unwrap();
         std::fs::write(base.join("ui/assets/app.js"), "console.log(1);\n").unwrap();
+        if routines {
+            std::fs::create_dir_all(base.join("routines")).expect("make the routines folder");
+        }
 
         let runner = FakeRunner::new(base.join("runner.journal")).expect("fake runner");
         let key = SigningKey::from_bytes(&[9u8; 32]);
@@ -65,6 +74,7 @@ impl Harness {
                 port: 0,
                 ui: Some(base.join("ui")),
                 allow_unsandboxed: false,
+                routines: routines.then(|| base.join("routines")),
             },
             Arc::new(Mutex::new(runner)),
             key,
@@ -768,4 +778,219 @@ async fn both_loopbacks_are_held_for_the_page_s_name() {
     )
     .await;
     assert_eq!(hello.status, 200, "{}", hello.text());
+}
+
+/// Every file under `dir`, with its size and when it last changed, so a test
+/// can say nothing was written there.
+fn tree(dir: &std::path::Path) -> Vec<(String, u64, std::time::SystemTime)> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at).expect("read a folder") {
+            let entry = entry.unwrap();
+            // The entry's own metadata: on Windows a listing's copy of a
+            // folder's time can lag behind it.
+            let meta = std::fs::metadata(entry.path()).unwrap();
+            if meta.is_dir() {
+                stack.push(entry.path());
+            }
+            found.push((
+                entry.path().display().to_string(),
+                meta.len(),
+                meta.modified().unwrap(),
+            ));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// A routine definition naming `id` and `state` as the runner reads them.
+fn routine(id: &str, state: &str) -> String {
+    serde_json::json!({
+        "version": 1,
+        "id": id,
+        "stateDirectory": state,
+        "gatewayModule": "/opt/gateway.mjs",
+        "maxRuns": 3,
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn routines_are_read_from_the_folder_named_with_their_receipts_and_nothing_is_written() {
+    let h = Harness::start_with("routines", true).await;
+    let token = h.session().await;
+    let t = Some(token.as_str());
+    let hello = h.api(t, "hello", "", b"").await.json();
+    assert_eq!(
+        hello["routines"], "routines",
+        "the page is told the folder's name"
+    );
+
+    let dir = h.base.join("routines");
+    let state = h.base.join("state");
+    let state_text = state.display().to_string();
+    // A routine that has run: two rows, and a third the runner is still
+    // appending, sent as it lies, since the page leaves an unfinished line
+    // for the next read as `run.mjs status` does.
+    let receipts =
+        "{\"status\":\"started\",\"run\":\"r1\"}\n{\"status\":\"completed\",\"run\":\"r1\"}\n{\"status\":\"sta";
+    std::fs::create_dir_all(state.join("brief").join("lock")).unwrap();
+    std::fs::write(state.join("brief").join("receipts.jsonl"), receipts).unwrap();
+    std::fs::write(
+        state.join("brief").join("r1.result.json"),
+        "{\"answer\":\"kept on disk\"}",
+    )
+    .unwrap();
+    std::fs::write(dir.join("a-brief.json"), routine("brief", &state_text)).unwrap();
+    // One that never ran has no receipts yet, which is no rows.
+    std::fs::write(dir.join("b-fresh.json"), routine("fresh", &state_text)).unwrap();
+    std::fs::write(dir.join("c-broken.json"), "{ not json").unwrap();
+    // An id that would climb out of the state folder, and a state folder that
+    // is not absolute, name no receipts the server will look for.
+    std::fs::write(dir.join("d-escape.json"), routine("../brief", &state_text)).unwrap();
+    std::fs::write(dir.join("e-relative.json"), routine("rel", "state")).unwrap();
+    std::fs::write(dir.join("f-large.json"), " ".repeat(256 * 1024 + 1)).unwrap();
+    std::fs::create_dir_all(state.join("huge")).unwrap();
+    std::fs::write(
+        state.join("huge").join("receipts.jsonl"),
+        vec![b'\n'; 12 * 1024 * 1024 + 1],
+    )
+    .unwrap();
+    std::fs::write(dir.join("g-huge.json"), routine("huge", &state_text)).unwrap();
+    std::fs::write(dir.join("notes.txt"), "not a definition").unwrap();
+    std::fs::create_dir_all(dir.join("h-folder.json")).unwrap();
+    let before = (tree(&dir), tree(&state));
+
+    let reply = h.api(t, "routines", "", b"").await;
+    assert_eq!(reply.status, 200, "{}", reply.text());
+    let read = reply.json();
+    assert_eq!(read["left_out"], 0);
+    let rows = read["routines"].as_array().cloned().unwrap();
+    let files: Vec<&str> = rows.iter().map(|r| r["file"].as_str().unwrap()).collect();
+    assert_eq!(
+        files,
+        [
+            "a-brief.json",
+            "b-fresh.json",
+            "c-broken.json",
+            "d-escape.json",
+            "e-relative.json",
+            "f-large.json",
+            "g-huge.json"
+        ],
+        "every *.json file by name, and nothing else"
+    );
+    let problem = |i: usize| {
+        rows[i]["problem"]["error"]
+            .as_str()
+            .unwrap_or("none")
+            .to_string()
+    };
+
+    assert_eq!(
+        rows[0]["definition"],
+        routine("brief", &state_text).as_str()
+    );
+    assert_eq!(
+        rows[0]["receipts"], receipts,
+        "sent as they lie, the unfinished line too"
+    );
+    assert!(
+        rows[0]["locked_at_ms"]
+            .as_u64()
+            .is_some_and(|ms| ms > 1_700_000_000_000),
+        "the lock's time: {}",
+        rows[0]
+    );
+    assert_eq!(problem(0), "none");
+    assert!(
+        !reply.text().contains("kept on disk"),
+        "a run's result is not part of the read"
+    );
+
+    assert_eq!(
+        (
+            rows[1]["receipts"].as_str(),
+            rows[1]["locked_at_ms"].is_null(),
+            problem(1).as_str()
+        ),
+        (Some(""), true, "none")
+    );
+    assert_eq!(
+        (
+            rows[2]["definition"].as_str(),
+            rows[2]["receipts"].is_null(),
+            problem(2).as_str()
+        ),
+        (Some("{ not json"), true, "not_json")
+    );
+    assert_eq!(
+        (rows[3]["receipts"].is_null(), problem(3).as_str()),
+        (true, "no_state")
+    );
+    assert_eq!(
+        (rows[4]["receipts"].is_null(), problem(4).as_str()),
+        (true, "no_state")
+    );
+    assert_eq!(
+        (rows[5]["definition"].is_null(), problem(5).as_str()),
+        (true, "too_large")
+    );
+    assert_eq!(
+        (rows[6]["receipts"].is_null(), problem(6).as_str()),
+        (true, "receipts_too_large")
+    );
+    for row in &rows {
+        if !row["problem"].is_null() {
+            assert!(
+                row["problem"]["message"]
+                    .as_str()
+                    .is_some_and(|m| m.ends_with('.')),
+                "a sentence the page can show: {row}"
+            );
+        }
+    }
+
+    assert_eq!(
+        (tree(&dir), tree(&state)),
+        before,
+        "reading wrote, moved or unlocked nothing"
+    );
+    assert_eq!(
+        h.api(None, "routines", "", b"").await.status,
+        401,
+        "a window with no session reads nothing"
+    );
+}
+
+#[tokio::test]
+async fn past_sixty_four_definitions_the_rest_are_counted_and_without_the_flag_there_are_none() {
+    let h = Harness::start_with("many_routines", true).await;
+    let token = h.session().await;
+    let state = h.base.join("state").display().to_string();
+    for n in 0..66 {
+        std::fs::write(
+            h.base.join("routines").join(format!("r{n:02}.json")),
+            routine(&format!("r{n:02}"), &state),
+        )
+        .unwrap();
+    }
+    let read = h.api(Some(&token), "routines", "", b"").await.json();
+    let rows = read["routines"].as_array().cloned().unwrap();
+    assert_eq!((rows.len(), read["left_out"].as_u64()), (64, Some(2)));
+    assert_eq!(
+        (rows[0]["file"].as_str(), rows[63]["file"].as_str()),
+        (Some("r00.json"), Some("r63.json"))
+    );
+
+    let plain = Harness::start("no_routines").await;
+    let token = plain.session().await;
+    assert!(plain.api(Some(&token), "hello", "", b"").await.json()["routines"].is_null());
+    let refused = plain.api(Some(&token), "routines", "", b"").await;
+    assert_eq!(
+        (refused.status, refused.error().as_str()),
+        (404, "no_routines")
+    );
 }

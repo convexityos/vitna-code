@@ -121,6 +121,15 @@ The page's guards are a courtesy to the person; the server's are the boundary.
 - **What it may connect to.** The build's own Content-Security-Policy allows its own origin and openrouter.ai only.
 - **Who calls the model.** Model calls still go from the page to OpenRouter, on the person's own key. The runner holds no provider key and calls no model.
 
+### 10. Routines are read, never run
+
+`--routines <folder>` names a folder of routine definitions (`platform/connections` in convexityos/vitna). `POST /api/v1/routines` sends the page each `*.json` file in it, by name, with the receipts and lock the routine runner keeps under that definition's `stateDirectory`. The page's Routines place folds them into rows with the same code as `run.mjs status`.
+
+- **Read only.** Nothing is run, written, locked or unlocked, so it can be read while the runner's `watch` runs.
+- **The page names no path.** It asks for the routines, and is sent what the person's own definitions name: a definition, `<stateDirectory>/<id>/receipts.jsonl` and whether `<stateDirectory>/<id>/lock` exists. Each id is held to the runner's own pattern, so it cannot name another folder.
+- **Bounded.** 64 definitions, 256 KiB each, 12 MiB of receipts each, 48 MiB a reply. A file past a bound is named with the reason, never cut.
+- **Without the flag** the route answers `no_routines`, and `hello` says `routines: null`.
+
 ## Consequences
 
 ### Positive

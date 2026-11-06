@@ -97,6 +97,11 @@ enum Commands {
         /// Print each window's address instead of opening it.
         #[arg(long)]
         no_open: bool,
+        /// A folder of routine definitions (`platform/connections` in
+        /// convexityos/vitna), which the page's Routines place lists with
+        /// their receipts. Read only: nothing is run, written or unlocked.
+        #[arg(long)]
+        routines: Option<PathBuf>,
     },
 }
 
@@ -151,8 +156,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui,
             allow_unsandboxed,
             no_open,
+            routines,
         }) => {
-            if let Err(e) = run_app(folder, port, ui, allow_unsandboxed, no_open).await {
+            if let Err(e) = run_app(folder, port, ui, allow_unsandboxed, no_open, routines).await {
                 eprintln!("vitna app: {e}");
                 std::process::exit(1);
             }
@@ -211,6 +217,7 @@ async fn run_app(
     ui: Option<PathBuf>,
     allow_unsandboxed: bool,
     no_open: bool,
+    routines: Option<PathBuf>,
 ) -> Result<(), String> {
     use vitna_app_server::{AppConfig, AppServer, Commands};
 
@@ -237,6 +244,7 @@ async fn run_app(
             port,
             ui,
             allow_unsandboxed,
+            routines,
         },
         std::sync::Arc::new(runner),
         signing_key,
@@ -257,6 +265,12 @@ async fn run_app(
         Commands::NoProcess => println!("Commands are not run."),
     }
     println!("Receipts are signed with the device key {}.", server.public_key());
+    if let Some(dir) = server.routines() {
+        println!(
+            "Routines are read from {}, and never run or written from the page.",
+            shown(dir)
+        );
+    }
     if !has_ui {
         println!(
             "No interface found beside this program. Build one with `npm run chat:build -- --mode runner` in convexityos/vitna and pass --ui."
