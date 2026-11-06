@@ -13,10 +13,13 @@
 mod admission;
 mod api;
 mod journal;
+mod ledger;
 mod paths;
 mod routines;
 mod ui;
 pub mod window;
+
+pub use ledger::DEFAULT_RECORD;
 
 use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
@@ -47,6 +50,22 @@ pub struct AppConfig {
     /// A folder of routine definitions, whose receipts the page's Routines
     /// place reads, or none, where the page has no Routines to show.
     pub routines: Option<PathBuf>,
+    /// The runtime's ledger (`VITNA_LEDGER` in convexityos/vitna), whose rows
+    /// the page's Routines map prices, or none. It need not exist yet: the
+    /// runtime makes it on its first request.
+    pub ledger: Option<PathBuf>,
+    /// The record whose public price histories the page may ask this server
+    /// for, by sku slug, or none, where nothing is priced. Only with a ledger.
+    pub record: Option<String>,
+}
+
+/// Where the runtime's ledger is, and whom prices are asked of.
+struct Ledger {
+    path: PathBuf,
+    /// Its file name, as the page shows it.
+    name: String,
+    record: Option<String>,
+    client: reqwest::Client,
 }
 
 /// How commands are run, decided once when the server starts and told to the
@@ -103,6 +122,8 @@ struct State {
     commands: Commands,
     /// The folder of routine definitions, and its name as the page shows it.
     routines: Option<(PathBuf, String)>,
+    /// The runtime's ledger and the record, where `--ledger` gave one.
+    ledger: Option<Ledger>,
     /// One-time codes, each with the instant it stops working.
     launch_codes: Mutex<HashMap<String, Instant>>,
     /// Session tokens, each with its session.
@@ -188,6 +209,38 @@ impl AppServer {
             }
             None => None,
         };
+        let ledger = match config.ledger {
+            Some(path) => {
+                // Its folder must exist; the file may not yet.
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .ok_or_else(|| format!("{} names no file", path.display()))?;
+                let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+                let parent = std::fs::canonicalize(parent).map_err(|e| {
+                    format!("cannot open the folder of the ledger {}: {e}", path.display())
+                })?;
+                let path = parent.join(&name);
+                if path.exists() && !path.is_file() {
+                    return Err(format!("{} is not a file", path.display()));
+                }
+                let record = config
+                    .record
+                    .as_deref()
+                    .map(ledger::record_origin)
+                    .transpose()?;
+                Some(Ledger {
+                    path,
+                    name,
+                    record,
+                    client: ledger::client()?,
+                })
+            }
+            None if config.record.is_some() => {
+                return Err("--record names whom prices are asked of, so it needs --ledger".into())
+            }
+            None => None,
+        };
         let (listeners, port) = bind_loopback(config.port).await?;
         let commands = Commands::decide(runner.as_ref(), &root, config.allow_unsandboxed);
         let folder_name = name_of(&root);
@@ -204,6 +257,7 @@ impl AppServer {
             allow_unsandboxed: config.allow_unsandboxed,
             commands,
             routines,
+            ledger,
             launch_codes: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             command_slot: tokio::sync::Semaphore::new(1),
@@ -243,6 +297,16 @@ impl AppServer {
     /// The folder of routine definitions the page reads, if one was given.
     pub fn routines(&self) -> Option<&Path> {
         self.state.routines.as_ref().map(|(dir, _)| dir.as_path())
+    }
+
+    /// The runtime ledger the page prices, if one was given.
+    pub fn ledger(&self) -> Option<&Path> {
+        self.state.ledger.as_ref().map(|l| l.path.as_path())
+    }
+
+    /// The record prices are asked of, if any.
+    pub fn record(&self) -> Option<&str> {
+        self.state.ledger.as_ref().and_then(|l| l.record.as_deref())
     }
 
     /// The public half of the key receipts are signed with, in hex.

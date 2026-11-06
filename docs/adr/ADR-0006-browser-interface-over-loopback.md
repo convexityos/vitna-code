@@ -130,6 +130,16 @@ The page's guards are a courtesy to the person; the server's are the boundary.
 - **Bounded.** 64 definitions, 256 KiB each, 12 MiB of receipts each, 48 MiB a reply. A file past a bound is named with the reason, never cut.
 - **Without the flag** the route answers `no_routines`, and `hello` says `routines: null`.
 
+### 11. The runtime ledger is read, and only slugs are priced
+
+`--ledger <file>` names the Vitna runtime's ledger (`VITNA_LEDGER` in convexityos/vitna), which gains a row for every model request the runtime answers, naming the agent and the run that asked. `POST /api/v1/ledger` sends the page its newest rows, and the page's Routines map prices them per agent with the code `agents-run.mjs` uses there.
+
+- **Read only.** The file is opened for reading. It need not exist yet: the runtime makes it on its first request, and until then the ledger is empty.
+- **Bounded.** The newest 32 MiB, cut after a newline so no row arrives without its start, with the bytes left out counted (`left_out_bytes`).
+- **Prices are asked from the machine, by slug alone.** `POST /api/v1/prices` takes up to 64 sku slugs and GETs `<record>/api/v1/skus/<slug>/history` for each, passing on the status and the JSON body (at most 1 MiB, in 10 seconds). Nothing else leaves: no row, token count, agent or run. The page cannot name the record or any other URL; a slug is one path segment of lower-case letters, digits, dots and hyphens, and redirects are not followed.
+- **The record is the operator's.** `--record <origin>` names it: https anywhere, or http on loopback. vitna.ai unless told otherwise, and `--record none` prices nothing, so `prices` answers `no_record`. The page's own Content-Security-Policy is unchanged.
+- **Without the flag** both routes answer `no_ledger`, and `hello` says `ledger: null, record: null`.
+
 ## Consequences
 
 ### Positive

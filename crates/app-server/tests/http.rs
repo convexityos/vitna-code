@@ -75,6 +75,8 @@ impl Harness {
                 ui: Some(base.join("ui")),
                 allow_unsandboxed: false,
                 routines: routines.then(|| base.join("routines")),
+                ledger: None,
+                record: None,
             },
             Arc::new(Mutex::new(runner)),
             key,
