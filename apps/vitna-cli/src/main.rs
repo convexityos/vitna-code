@@ -97,6 +97,20 @@ enum Commands {
         /// Print each window's address instead of opening it.
         #[arg(long)]
         no_open: bool,
+        /// A folder of routine definitions (`platform/connections` in
+        /// convexityos/vitna), which the page's Routines place lists with
+        /// their receipts. Read only: nothing is run, written or unlocked.
+        #[arg(long)]
+        routines: Option<PathBuf>,
+        /// The Vitna runtime's ledger (`VITNA_LEDGER` in convexityos/vitna),
+        /// whose rows the Routines map prices per agent. Read only.
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+        /// Whom the map asks for each model's public price history, by its
+        /// slug alone: an https origin, or `none` to price nothing. Only with
+        /// --ledger.
+        #[arg(long, requires = "ledger")]
+        record: Option<String>,
     },
 }
 
@@ -151,8 +165,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui,
             allow_unsandboxed,
             no_open,
+            routines,
+            ledger,
+            record,
         }) => {
-            if let Err(e) = run_app(folder, port, ui, allow_unsandboxed, no_open).await {
+            // The ledger, and whom its prices are asked of: vitna.ai unless
+            // the operator names another record, or none.
+            let priced = ledger.map(|path| {
+                let record = match record.as_deref() {
+                    Some("none") => None,
+                    Some(origin) => Some(origin.to_string()),
+                    None => Some(vitna_app_server::DEFAULT_RECORD.to_string()),
+                };
+                (path, record)
+            });
+            if let Err(e) = run_app(folder, port, ui, allow_unsandboxed, no_open, routines, priced).await {
                 eprintln!("vitna app: {e}");
                 std::process::exit(1);
             }
@@ -211,6 +238,8 @@ async fn run_app(
     ui: Option<PathBuf>,
     allow_unsandboxed: bool,
     no_open: bool,
+    routines: Option<PathBuf>,
+    priced: Option<(PathBuf, Option<String>)>,
 ) -> Result<(), String> {
     use vitna_app_server::{AppConfig, AppServer, Commands};
 
@@ -237,6 +266,9 @@ async fn run_app(
             port,
             ui,
             allow_unsandboxed,
+            routines,
+            ledger: priced.as_ref().map(|(path, _)| path.clone()),
+            record: priced.and_then(|(_, record)| record),
         },
         std::sync::Arc::new(runner),
         signing_key,
@@ -257,6 +289,24 @@ async fn run_app(
         Commands::NoProcess => println!("Commands are not run."),
     }
     println!("Receipts are signed with the device key {}.", server.public_key());
+    if let Some(dir) = server.routines() {
+        println!(
+            "Routines are read from {}, and never run or written from the page.",
+            shown(dir)
+        );
+    }
+    if let Some(file) = server.ledger() {
+        match server.record() {
+            Some(record) => println!(
+                "The runtime ledger is read from {}. The map asks {record} for each model's price history by its slug alone.",
+                shown(file)
+            ),
+            None => println!(
+                "The runtime ledger is read from {}. Nothing is priced (--record none).",
+                shown(file)
+            ),
+        }
+    }
     if !has_ui {
         println!(
             "No interface found beside this program. Build one with `npm run chat:build -- --mode runner` in convexityos/vitna and pass --ui."

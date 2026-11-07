@@ -121,6 +121,25 @@ The page's guards are a courtesy to the person; the server's are the boundary.
 - **What it may connect to.** The build's own Content-Security-Policy allows its own origin and openrouter.ai only.
 - **Who calls the model.** Model calls still go from the page to OpenRouter, on the person's own key. The runner holds no provider key and calls no model.
 
+### 10. Routines are read, never run
+
+`--routines <folder>` names a folder of routine definitions (`platform/connections` in convexityos/vitna). `POST /api/v1/routines` sends the page each `*.json` file in it, by name, with the receipts and lock the routine runner keeps under that definition's `stateDirectory`. The page's Routines place folds them into rows with the same code as `run.mjs status`.
+
+- **Read only.** Nothing is run, written, locked or unlocked, so it can be read while the runner's `watch` runs.
+- **The page names no path.** It asks for the routines, and is sent what the person's own definitions name: a definition, `<stateDirectory>/<id>/receipts.jsonl` and whether `<stateDirectory>/<id>/lock` exists. Each id is held to the runner's own pattern, so it cannot name another folder.
+- **Bounded.** 64 definitions, 256 KiB each, 12 MiB of receipts each, 48 MiB a reply. A file past a bound is named with the reason, never cut.
+- **Without the flag** the route answers `no_routines`, and `hello` says `routines: null`.
+
+### 11. The runtime ledger is read, and only slugs are priced
+
+`--ledger <file>` names the Vitna runtime's ledger (`VITNA_LEDGER` in convexityos/vitna), which gains a row for every model request the runtime answers, naming the agent and the run that asked. `POST /api/v1/ledger` sends the page its newest rows, and the page's Routines map prices them per agent with the code `agents-run.mjs` uses there.
+
+- **Read only.** The file is opened for reading. It need not exist yet: the runtime makes it on its first request, and until then the ledger is empty.
+- **Bounded.** The newest 32 MiB, cut after a newline so no row arrives without its start, with the bytes left out counted (`left_out_bytes`).
+- **Prices are asked from the machine, by slug alone.** `POST /api/v1/prices` takes up to 64 sku slugs and GETs `<record>/api/v1/skus/<slug>/history` for each, passing on the status and the JSON body (at most 1 MiB, in 10 seconds). Nothing else leaves: no row, token count, agent or run. The page cannot name the record or any other URL; a slug is one path segment of lower-case letters, digits, dots and hyphens, and redirects are not followed.
+- **The record is the operator's.** `--record <origin>` names it: https anywhere, or http on loopback. vitna.ai unless told otherwise, and `--record none` prices nothing, so `prices` answers `no_record`. The page's own Content-Security-Policy is unchanged.
+- **Without the flag** both routes answer `no_ledger`, and `hello` says `ledger: null, record: null`.
+
 ## Consequences
 
 ### Positive
