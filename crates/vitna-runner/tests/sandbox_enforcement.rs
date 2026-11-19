@@ -385,33 +385,33 @@ async fn a_sandboxed_command_can_still_work_in_the_workspace() {
         .expect("nested command runs");
     #[cfg(windows)]
     if nested.exit_code != 0 {
-        let env_probe = runner(&fx)
+        let abs_host = runner(&fx)
             .run_command(CommandRequest::new(
-                "echo COMSPEC=[%COMSPEC%] & echo WINDIR=[%WINDIR%] & echo PATH_LEN_OK",
+                r"C:\Windows\System32\hostname.exe",
                 &fx.workspace,
                 &fx.workspace,
                 30_000,
             ))
             .await;
-        let abs_cmd_probe = runner(&fx)
+        let bare_whoami = runner(&fx)
             .run_command(CommandRequest::new(
-                r"C:\Windows\System32\cmd.exe /d /c echo abs_cmd_ok",
+                "whoami.exe",
                 &fx.workspace,
                 &fx.workspace,
                 30_000,
             ))
             .await;
-        let whoami_probe = runner(&fx)
+        let bare_cmd = runner(&fx)
             .run_command(CommandRequest::new(
-                r"C:\Windows\System32\whoami.exe",
+                "cmd.exe /d /c echo bare_cmd_ok",
                 &fx.workspace,
                 &fx.workspace,
                 30_000,
             ))
             .await;
-        let ps_probe = runner(&fx)
+        let bare_ps = runner(&fx)
             .run_command(CommandRequest::new(
-                r#"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "Write-Output ps_ok""#,
+                r#"powershell.exe -NoProfile -Command "Write-Output bare_ps_ok""#,
                 &fx.workspace,
                 &fx.workspace,
                 30_000,
@@ -419,17 +419,17 @@ async fn a_sandboxed_command_can_still_work_in_the_workspace() {
             .await;
         panic!(
             "nested failed: exit={} stdout={:?} stderr={:?}\n\
-             env_probe={:?}\n\
-             abs_cmd_probe={:?}\n\
-             whoami_probe={:?}\n\
-             ps_probe={:?}",
+             abs_host={:?}\n\
+             bare_whoami={:?}\n\
+             bare_cmd={:?}\n\
+             bare_ps={:?}",
             nested.exit_code,
             nested.stdout,
             nested.stderr,
-            env_probe.map(|o| (o.exit_code, o.stdout, o.stderr)),
-            abs_cmd_probe.map(|o| (o.exit_code, o.stdout, o.stderr)),
-            whoami_probe.map(|o| (o.exit_code, o.stdout, o.stderr)),
-            ps_probe.map(|o| (o.exit_code, o.stdout, o.stderr)),
+            abs_host.map(|o| (o.exit_code, o.stdout, o.stderr)),
+            bare_whoami.map(|o| (o.exit_code, o.stdout, o.stderr)),
+            bare_cmd.map(|o| (o.exit_code, o.stdout, o.stderr)),
+            bare_ps.map(|o| (o.exit_code, o.stdout, o.stderr)),
         );
     }
     assert_eq!(
