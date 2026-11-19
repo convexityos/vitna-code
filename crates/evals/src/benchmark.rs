@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use vitna_orchestration::{TaskGraph, TaskNode};
 use vitna_receipt_verify::ReceiptVerifier;
 use vitna_receipts::{
@@ -19,7 +19,43 @@ pub struct BenchmarkMetric {
 pub struct BenchmarkReport {
     pub suite_version: String,
     pub timestamp_rfc3339: String,
+    pub os: String,
+    pub arch: String,
+    pub build_profile: String,
     pub metrics: Vec<BenchmarkMetric>,
+}
+
+/// Formats `SystemTime::now()` as a UTC RFC 3339 timestamp (`YYYY-MM-DDTHH:MM:SSZ`)
+/// without requiring an external datetime crate.
+pub fn utc_now_rfc3339() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format_unix_secs_rfc3339(secs)
+}
+
+/// Converts Unix epoch seconds (UTC) into `YYYY-MM-DDTHH:MM:SSZ` using Howard
+/// Hinnant's civil-from-days algorithm.
+pub fn format_unix_secs_rfc3339(unix_secs: u64) -> String {
+    let days = (unix_secs / 86_400) as i64;
+    let secs_of_day = unix_secs % 86_400;
+    let hour = secs_of_day / 3_600;
+    let minute = (secs_of_day % 3_600) / 60;
+    let second = secs_of_day % 60;
+
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = y + if m <= 2 { 1 } else { 0 };
+
+    format!("{year:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
 pub struct BenchmarkSuite;
@@ -65,7 +101,11 @@ impl BenchmarkSuite {
         }
         let elapsed = start.elapsed().as_nanos();
         let elapsed_secs = (elapsed as f64) / 1_000_000_000.0;
-        let ops_per_sec = if elapsed_secs > 0.0 { (iterations as f64) / elapsed_secs } else { 0.0 };
+        let ops_per_sec = if elapsed_secs > 0.0 {
+            (iterations as f64) / elapsed_secs
+        } else {
+            0.0
+        };
         let avg_latency_micros = (elapsed as f64) / (iterations as f64) / 1_000.0;
 
         BenchmarkMetric {
@@ -79,9 +119,7 @@ impl BenchmarkSuite {
 
     /// Benchmarks event Merkle root calculation over 1,000 hashes.
     pub fn bench_merkle_root_calculation(iterations: usize) -> BenchmarkMetric {
-        let sample_hashes: Vec<String> = (0..1000)
-            .map(|i| format!("{:064x}", i))
-            .collect();
+        let sample_hashes: Vec<String> = (0..1000).map(|i| format!("{:064x}", i)).collect();
 
         let start = Instant::now();
         for _ in 0..iterations {
@@ -89,7 +127,11 @@ impl BenchmarkSuite {
         }
         let elapsed = start.elapsed().as_nanos();
         let elapsed_secs = (elapsed as f64) / 1_000_000_000.0;
-        let ops_per_sec = if elapsed_secs > 0.0 { (iterations as f64) / elapsed_secs } else { 0.0 };
+        let ops_per_sec = if elapsed_secs > 0.0 {
+            (iterations as f64) / elapsed_secs
+        } else {
+            0.0
+        };
         let avg_latency_micros = (elapsed as f64) / (iterations as f64) / 1_000.0;
 
         BenchmarkMetric {
@@ -121,7 +163,11 @@ impl BenchmarkSuite {
         }
         let elapsed = start.elapsed().as_nanos();
         let elapsed_secs = (elapsed as f64) / 1_000_000_000.0;
-        let ops_per_sec = if elapsed_secs > 0.0 { (iterations as f64) / elapsed_secs } else { 0.0 };
+        let ops_per_sec = if elapsed_secs > 0.0 {
+            (iterations as f64) / elapsed_secs
+        } else {
+            0.0
+        };
         let avg_latency_micros = (elapsed as f64) / (iterations as f64) / 1_000.0;
 
         BenchmarkMetric {
@@ -133,7 +179,8 @@ impl BenchmarkSuite {
         }
     }
 
-    /// Runs all benchmarks and aggregates into a BenchmarkReport.
+    /// Runs all benchmarks and aggregates into a `BenchmarkReport` stamped with
+    /// live UTC time and host/build metadata.
     pub fn run_all() -> BenchmarkReport {
         let metrics = vec![
             Self::bench_receipt_verification(500),
@@ -143,8 +190,34 @@ impl BenchmarkSuite {
 
         BenchmarkReport {
             suite_version: "vitna-benchmark-v1.0.0".to_string(),
-            timestamp_rfc3339: "2026-09-16T22:00:00Z".to_string(),
+            timestamp_rfc3339: utc_now_rfc3339(),
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            build_profile: if cfg!(debug_assertions) {
+                "debug".to_string()
+            } else {
+                "release".to_string()
+            },
             metrics,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_unix_secs_matches_known_dates() {
+        assert_eq!(format_unix_secs_rfc3339(0), "1970-01-01T00:00:00Z");
+        assert_eq!(
+            format_unix_secs_rfc3339(1_700_000_000),
+            "2023-11-14T22:13:20Z"
+        );
+        // Leap day 2024-02-29T12:34:56Z
+        assert_eq!(
+            format_unix_secs_rfc3339(1_709_210_096),
+            "2024-02-29T12:34:56Z"
+        );
     }
 }
