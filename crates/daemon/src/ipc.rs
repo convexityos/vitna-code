@@ -36,9 +36,9 @@ use tokio::sync::mpsc;
 
 use vitna_orchestration::ApprovalDecision;
 use vitna_protocol::messages::{
-    ApproveAction, AttachTerminal, CancelRun, CreateSession, Diagnostic, ErrorCode, ErrorResponse,
-    HandshakeRequest, HandshakeResponse, PauseRun, RejectAction, ResumeRun, SessionCreated,
-    SpawnChild, SteerRun, SubmitTurn, SubscribeEvents, ToolOutput,
+    ApplyChangeSet, ApproveAction, AttachTerminal, CancelRun, CreateSession, Diagnostic,
+    ErrorCode, ErrorResponse, HandshakeRequest, HandshakeResponse, PauseRun, RejectAction,
+    ResumeRun, SessionCreated, SpawnChild, SteerRun, SubmitTurn, SubscribeEvents, ToolOutput,
 };
 use vitna_protocol::{
     type_url, ProtocolEnvelope, MAX_FRAME_SIZE_BYTES, PROTOCOL_VERSION_MAJOR,
@@ -46,7 +46,7 @@ use vitna_protocol::{
 };
 use vitna_runner::PtyEvent;
 
-use crate::{AnswerRefused, DaemonServer, TerminalError};
+use crate::{AnswerRefused, ApplyChangeSetError, DaemonServer, TerminalError};
 
 /// How many frames may wait for the write half before a producer blocks.
 ///
@@ -751,6 +751,69 @@ where
                 }
             }
 
+            type_url::command::APPLY_CHANGE_SET => {
+                let body: ApplyChangeSet = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                match daemon.apply_changeset(&body) {
+                    Ok(applied) => {
+                        let diag = Diagnostic {
+                            level: "info".to_string(),
+                            code: "changeset_applied".to_string(),
+                            message: format!(
+                                "applied changeset {} ({} file(s))",
+                                applied.change_set_id,
+                                applied.merge.applied_files.len()
+                            ),
+                            details: serde_json::json!({
+                                "change_set_id": applied.change_set_id,
+                                "diff_digest": applied.diff_digest,
+                                "applied_files": applied.merge.applied_files,
+                            })
+                            .to_string(),
+                        };
+                        match ProtocolEnvelope::carrying(
+                            type_url::event::DIAGNOSTIC,
+                            applied.session_id,
+                            applied.run_id,
+                            CONTROL_SEQUENCE,
+                            request.idempotency_key.clone(),
+                            &diag,
+                        ) {
+                            Ok(envelope) => out.send(envelope).await,
+                            Err(e) => {
+                                out.send(error_for(&request, ErrorCode::Internal, e.to_string()))
+                                    .await
+                            }
+                        }
+                    }
+                    Err(ApplyChangeSetError::InvalidRequest(msg)) => {
+                        out.send(error_for(&request, ErrorCode::InvalidFrame, msg))
+                            .await
+                    }
+                    Err(ApplyChangeSetError::NotFound(msg)) => {
+                        out.send(error_for(&request, ErrorCode::UnknownCommand, msg))
+                            .await
+                    }
+                    Err(err @ ApplyChangeSetError::CheckoutMismatch(_))
+                    | Err(err @ ApplyChangeSetError::BaseCommitMismatch(_))
+                    | Err(err @ ApplyChangeSetError::Conflict(_)) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, err.to_string()))
+                            .await
+                    }
+                    Err(ApplyChangeSetError::ApplyFailed(msg)) => {
+                        out.send(error_for(&request, ErrorCode::Internal, msg))
+                            .await
+                    }
+                }
+            }
+
             type_url::command::APPROVE_ACTION | type_url::command::REJECT_ACTION => {
                 let approving = request.type_url == type_url::command::APPROVE_ACTION;
                 let parsed = if approving {
@@ -874,26 +937,37 @@ where
 }
 
 #[cfg(windows)]
+fn create_owner_only_pipe(
+    endpoint: &str,
+    first_instance: bool,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let mut opts = ServerOptions::new();
+    opts.first_pipe_instance(first_instance)
+        .reject_remote_clients(true);
+    crate::key::windows_acl::with_owner_only_pipe_security_attributes(|attrs| {
+        // SAFETY: `attrs` points to a live `SECURITY_ATTRIBUTES` populated with
+        // an owner-only protected DACL for the duration of this call.
+        unsafe { opts.create_with_security_attributes_raw(endpoint, attrs) }
+    })
+}
+
+#[cfg(windows)]
 pub async fn serve<F>(daemon: Arc<DaemonServer>, endpoint: &str, on_ready: F) -> std::io::Result<()>
 where
     F: FnOnce(),
 {
-    use tokio::net::windows::named_pipe::ServerOptions;
-
-    // first_pipe_instance stops another process from squatting the name we
-    // publish. What it does NOT do is tighten the DACL, which is the system
-    // default here: restricting it to the owner needs windows-sys and is not
-    // done yet. Stated rather than implied, because a reader would otherwise
-    // take this line as the access control.
-    let mut server = ServerOptions::new()
-        .first_pipe_instance(true)
-        .create(endpoint)?;
+    // Both first_pipe_instance (preventing name squatting) and a protected
+    // owner-only DACL (D:P(A;;GA;;;{user_sid})) with reject_remote_clients(true)
+    // are applied atomically at pipe creation.
+    let mut server = create_owner_only_pipe(endpoint, true)?;
     on_ready();
 
     loop {
         server.connect().await?;
         let connected = server;
-        server = ServerOptions::new().create(endpoint)?;
+        server = create_owner_only_pipe(endpoint, false)?;
 
         let daemon = Arc::clone(&daemon);
         tokio::spawn(async move {

@@ -59,6 +59,8 @@ pub struct DaemonServer {
     pub telemetry: Arc<TelemetryCollector>,
     /// Active interactive PTY sessions keyed by session_id.
     pub terminals: Arc<Mutex<HashMap<String, Arc<vitna_runner::PtySession>>>>,
+    /// Staged isolated child-workspace changesets awaiting ApplyChangeSet.
+    pub pending_changesets: Arc<Mutex<HashMap<String, crate::changesets::StagedChangeSet>>>,
 }
 
 impl DaemonServer {
@@ -130,6 +132,7 @@ impl DaemonServer {
             run_depths: Arc::new(Mutex::new(HashMap::new())),
             telemetry: Arc::new(TelemetryCollector::new()),
             terminals: Arc::new(Mutex::new(HashMap::new())),
+            pending_changesets: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

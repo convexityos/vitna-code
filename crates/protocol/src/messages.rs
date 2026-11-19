@@ -468,6 +468,19 @@ pub struct AttachTerminal {
     pub terminal_rows: u32,
 }
 
+/// `commands.proto`: apply a staged, preimage-verified changeset into a target checkout.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplyChangeSet {
+    #[serde(default)]
+    pub change_set_id: String,
+    #[serde(default)]
+    pub target_checkout_path: String,
+    #[serde(default)]
+    pub expected_base_commit: String,
+    #[serde(default)]
+    pub idempotency_key: String,
+}
+
 /// `events.proto`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {

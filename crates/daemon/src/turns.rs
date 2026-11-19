@@ -14,13 +14,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
-use vitna_git_workspaces::AgentWorkspaceManager;
+use vitna_git_broker::GitBroker;
+use vitna_git_workspaces::{AgentWorkspace, AgentWorkspaceManager};
 use vitna_orchestration::{
     ApprovalDecision, ApprovalRequest, Approver, OrchestrationConfig, OrchestrationEngine,
     RunControl, MAX_ROUNDS,
 };
 use vitna_protocol::messages::{
-    run_state, AgentCompleted, AgentSpawned, Diagnostic, SpawnChild,
+    run_state, AgentCompleted, AgentSpawned, Diagnostic, DiffChanged, SpawnChild,
 };
 use vitna_protocol::type_url;
 use vitna_providers::{Provider, ProviderMessage};
@@ -411,9 +412,10 @@ impl DaemonServer {
         let daemon = self.clone();
         let goal = req.goal.clone();
         let child_id_task = child_run_id.clone();
+        let session_id_task = session.session_id.clone();
         tokio::spawn(async move {
             daemon
-                .drive_child_turn(engine, route, child_id_task, goal)
+                .drive_child_turn(engine, route, session_id_task, child_id_task, goal, isolated)
                 .await;
         });
 
@@ -424,8 +426,10 @@ impl DaemonServer {
         &self,
         mut engine: OrchestrationEngine,
         route: ModelRoute,
+        session_id: String,
         child_run_id: String,
         goal: String,
+        isolated: AgentWorkspace,
     ) {
         let outcome = engine
             .run_agent_turn(route.provider.as_ref(), &[], &goal, MAX_ROUNDS)
@@ -502,6 +506,62 @@ impl DaemonServer {
                     )
                 }
             };
+
+        // Inspect the isolated child workspace and stage any changeset for explicit
+        // operator promotion via ApplyChangeSet (never mutating the primary checkout
+        // automatically).
+        if final_state == run_state::COMPLETED {
+            match GitBroker::inspect_changes(&isolated) {
+                Ok(cs) if !cs.files.is_empty() => {
+                    let modified_files: Vec<String> =
+                        cs.files.iter().map(|f| f.path.clone()).collect();
+                    let _ = engine.record_event(
+                        type_url::event::DIFF_CHANGED,
+                        &DiffChanged {
+                            agent_workspace_id: child_run_id.clone(),
+                            diff_text: cs.combined_diff.clone(),
+                            diff_digest: cs.diff_digest.clone(),
+                            modified_files: modified_files.clone(),
+                        },
+                    );
+                    let cs_id = cs.changeset_id.clone();
+                    let base_commit_sha = cs.base_commit_sha.clone();
+                    let diff_digest = cs.diff_digest.clone();
+                    if self
+                        .stage_changeset(session_id, child_run_id.clone(), cs, isolated)
+                        .is_ok()
+                    {
+                        let _ = engine.record_event(
+                            type_url::event::DIAGNOSTIC,
+                            &Diagnostic {
+                                level: "info".to_string(),
+                                code: "changeset_staged".to_string(),
+                                message: format!("staged changeset {cs_id} for ApplyChangeSet"),
+                                details: serde_json::json!({
+                                    "change_set_id": cs_id,
+                                    "base_commit_sha": base_commit_sha,
+                                    "diff_digest": diff_digest,
+                                    "modified_files": modified_files,
+                                })
+                                .to_string(),
+                            },
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(why) => {
+                    let _ = engine.record_event(
+                        type_url::event::DIAGNOSTIC,
+                        &Diagnostic {
+                            level: "warn".to_string(),
+                            code: "changeset_inspect_failed".to_string(),
+                            message: format!("could not inspect child workspace changes: {why}"),
+                            details: String::new(),
+                        },
+                    );
+                }
+            }
+        }
 
         let _ = engine.record_event(
             type_url::event::AGENT_COMPLETED,

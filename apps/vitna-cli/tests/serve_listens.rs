@@ -18,15 +18,19 @@ use tokio::process::Child;
 use vitna_protocol::messages::{HandshakeRequest, HandshakeResponse};
 use vitna_protocol::{type_url, ProtocolEnvelope, PROTOCOL_VERSION_MAJOR};
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 const PATIENCE: Duration = Duration::from_secs(30);
 const READY: &str = "Vitna daemon listening on";
+static UNIQUE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn unique(tag: &str) -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
-    format!("{tag}-{}-{nanos}", std::process::id())
+    let seq = UNIQUE_SEQ.fetch_add(1, Ordering::SeqCst);
+    format!("{tag}-{}-{nanos}-{seq}", std::process::id())
 }
 
 #[cfg(windows)]

@@ -20,9 +20,9 @@ use tokio::io::{
 };
 use vitna_daemon::{ipc, DaemonServer, ModelRoute};
 use vitna_protocol::messages::{
-    AgentCompleted, AgentSpawned, ApprovalRequested, AttachTerminal, Diagnostic, ErrorCode,
-    ErrorResponse, HandshakeRequest, RunStateChanged, SessionCreated, SpawnChild, ToolFinished,
-    ToolOutput,
+    AgentCompleted, AgentSpawned, ApplyChangeSet, ApprovalRequested, AttachTerminal, Diagnostic,
+    DiffChanged, ErrorCode, ErrorResponse, HandshakeRequest, RunStateChanged, SessionCreated,
+    SpawnChild, ToolFinished, ToolOutput,
 };
 use vitna_protocol::{type_url, ProtocolEnvelope, PROTOCOL_VERSION_MAJOR};
 use vitna_providers::{
@@ -1121,6 +1121,270 @@ async fn attach_terminal_rejects_unknown_session_and_oversized_dimensions() {
     let err: ErrorResponse = err_frame.payload_as().expect("ErrorResponse");
     assert_eq!(err.code, ErrorCode::InvalidFrame);
     assert!(err.message.contains("maximum"), "{}", err.message);
+
+    let _ = std::fs::remove_dir_all(&wire.root);
+}
+
+#[tokio::test]
+async fn spawn_child_stages_changeset_and_apply_changeset_merges_with_preimage_check() {
+    // 1 parent reply + 2 child replies (write_file + Done).
+    let mut script = vec![say("Parent done.")];
+    script.extend(write_then_done("child_feature.txt"));
+    let mut wire = connect("apply_cs", Some(script), None).await;
+    let session = wire.open_session().await;
+    wire.send(
+        type_url::command::SUBSCRIBE_EVENTS,
+        &session,
+        &json!({ "session_id": session, "resume_after_sequence": 0 }),
+    )
+    .await;
+
+    // Complete a parent turn to obtain parent_run_id.
+    wire.send(
+        type_url::command::SUBMIT_TURN,
+        &session,
+        &json!({ "session_id": session, "prompt": "Start parent" }),
+    )
+    .await;
+    let (parent_done, _) = wire
+        .until(|f| {
+            f.type_url == type_url::event::RUN_STATE_CHANGED
+                && f.payload_as::<RunStateChanged>()
+                    .is_ok_and(|s| s.new_state == "completed")
+        })
+        .await;
+    let parent_run_id = parent_done.run_id.clone();
+
+    // Spawn child that writes child_feature.txt inside its isolated workspace.
+    wire.send(
+        type_url::command::SPAWN_CHILD,
+        &session,
+        &SpawnChild {
+            parent_run_id,
+            goal: "Create child_feature.txt".into(),
+            requested_mode: "build".into(),
+            token_budget: 2000,
+            max_nesting_depth: 2,
+            idempotency_key: "sc-apply-1".into(),
+        },
+    )
+    .await;
+
+    // Approve child's write_file tool call over the wire.
+    let (req_frame, _) = wire
+        .until(|f| f.type_url == type_url::event::APPROVAL_REQUESTED)
+        .await;
+    let approval: ApprovalRequested = req_frame.payload_as().expect("ApprovalRequested");
+    wire.send(
+        type_url::command::APPROVE_ACTION,
+        &session,
+        &json!({
+            "approval_id": approval.approval_id,
+            "action_digest": approval.action_digest,
+            "scope": "once"
+        }),
+    )
+    .await;
+
+    // Wait for DiffChanged and changeset_staged Diagnostic.
+    let (diff_frame, _) = wire
+        .until(|f| f.type_url == type_url::event::DIFF_CHANGED)
+        .await;
+    let diff: DiffChanged = diff_frame.payload_as().expect("DiffChanged");
+    assert_eq!(diff.modified_files, vec!["child_feature.txt"]);
+
+    let (staged_frame, _) = wire
+        .until(|f| {
+            f.type_url == type_url::event::DIAGNOSTIC
+                && f.payload_as::<Diagnostic>()
+                    .is_ok_and(|d| d.code == "changeset_staged")
+        })
+        .await;
+    let staged_diag: Diagnostic = staged_frame.payload_as().expect("Diagnostic");
+    let staged_details: serde_json::Value =
+        serde_json::from_str(&staged_diag.details).expect("staged details");
+    let change_set_id = staged_details["change_set_id"]
+        .as_str()
+        .expect("change_set_id")
+        .to_string();
+    let base_commit_sha = staged_details["base_commit_sha"]
+        .as_str()
+        .expect("base_commit_sha")
+        .to_string();
+
+    // Primary checkout must STILL be untouched until ApplyChangeSet runs (Invariant 8).
+    assert!(!wire.root.join("child_feature.txt").exists());
+
+    // Wrong expected_base_commit is refused.
+    wire.send(
+        type_url::command::APPLY_CHANGE_SET,
+        &session,
+        &ApplyChangeSet {
+            change_set_id: change_set_id.clone(),
+            target_checkout_path: wire.root.to_string_lossy().into_owned(),
+            expected_base_commit: "deadbeef00000000".into(),
+            idempotency_key: "apply-wrong-base".into(),
+        },
+    )
+    .await;
+    let (err_frame, _) = wire
+        .until(|f| f.type_url == type_url::envelope::ERROR_RESPONSE)
+        .await;
+    let err: ErrorResponse = err_frame.payload_as().expect("ErrorResponse");
+    assert_eq!(err.code, ErrorCode::PolicyDenied);
+    assert!(!wire.root.join("child_feature.txt").exists());
+
+    // Valid ApplyChangeSet promotes the verified file into the primary checkout.
+    wire.send(
+        type_url::command::APPLY_CHANGE_SET,
+        &session,
+        &ApplyChangeSet {
+            change_set_id: change_set_id.clone(),
+            target_checkout_path: wire.root.to_string_lossy().into_owned(),
+            expected_base_commit: base_commit_sha,
+            idempotency_key: "apply-ok".into(),
+        },
+    )
+    .await;
+    let (applied_frame, _) = wire
+        .until(|f| {
+            f.type_url == type_url::event::DIAGNOSTIC
+                && f.payload_as::<Diagnostic>()
+                    .is_ok_and(|d| d.code == "changeset_applied")
+        })
+        .await;
+    let applied_diag: Diagnostic = applied_frame.payload_as().expect("Diagnostic");
+    let applied_details: serde_json::Value =
+        serde_json::from_str(&applied_diag.details).expect("applied details");
+    assert_eq!(applied_details["change_set_id"], change_set_id);
+    assert_eq!(
+        std::fs::read_to_string(wire.root.join("child_feature.txt")).expect("merged file"),
+        "written\n"
+    );
+
+    // Re-applying the already-promoted changeset returns UnknownCommand.
+    wire.send(
+        type_url::command::APPLY_CHANGE_SET,
+        &session,
+        &ApplyChangeSet {
+            change_set_id,
+            target_checkout_path: wire.root.to_string_lossy().into_owned(),
+            expected_base_commit: String::new(),
+            idempotency_key: "apply-replay".into(),
+        },
+    )
+    .await;
+    let (err_frame, _) = wire
+        .until(|f| f.type_url == type_url::envelope::ERROR_RESPONSE)
+        .await;
+    let err: ErrorResponse = err_frame.payload_as().expect("ErrorResponse");
+    assert_eq!(err.code, ErrorCode::UnknownCommand);
+
+    let _ = std::fs::remove_dir_all(&wire.root);
+}
+
+#[tokio::test]
+async fn apply_changeset_refuses_preimage_conflict_when_primary_diverges() {
+    let mut script = vec![say("Parent done.")];
+    script.extend(write_then_done("README.md"));
+    let mut wire = connect("apply_conflict", Some(script), None).await;
+    let session = wire.open_session().await;
+    wire.send(
+        type_url::command::SUBSCRIBE_EVENTS,
+        &session,
+        &json!({ "session_id": session, "resume_after_sequence": 0 }),
+    )
+    .await;
+
+    wire.send(
+        type_url::command::SUBMIT_TURN,
+        &session,
+        &json!({ "session_id": session, "prompt": "Start parent" }),
+    )
+    .await;
+    let (parent_done, _) = wire
+        .until(|f| {
+            f.type_url == type_url::event::RUN_STATE_CHANGED
+                && f.payload_as::<RunStateChanged>()
+                    .is_ok_and(|s| s.new_state == "completed")
+        })
+        .await;
+
+    wire.send(
+        type_url::command::SPAWN_CHILD,
+        &session,
+        &SpawnChild {
+            parent_run_id: parent_done.run_id,
+            goal: "Update README.md".into(),
+            requested_mode: "build".into(),
+            token_budget: 2000,
+            max_nesting_depth: 2,
+            idempotency_key: "sc-conflict".into(),
+        },
+    )
+    .await;
+
+    let (req_frame, _) = wire
+        .until(|f| f.type_url == type_url::event::APPROVAL_REQUESTED)
+        .await;
+    let approval: ApprovalRequested = req_frame.payload_as().expect("ApprovalRequested");
+    wire.send(
+        type_url::command::APPROVE_ACTION,
+        &session,
+        &json!({
+            "approval_id": approval.approval_id,
+            "action_digest": approval.action_digest,
+            "scope": "once"
+        }),
+    )
+    .await;
+
+    let (staged_frame, _) = wire
+        .until(|f| {
+            f.type_url == type_url::event::DIAGNOSTIC
+                && f.payload_as::<Diagnostic>()
+                    .is_ok_and(|d| d.code == "changeset_staged")
+        })
+        .await;
+    let staged_diag: Diagnostic = staged_frame.payload_as().expect("Diagnostic");
+    let staged_details: serde_json::Value =
+        serde_json::from_str(&staged_diag.details).expect("staged details");
+    let change_set_id = staged_details["change_set_id"]
+        .as_str()
+        .expect("change_set_id")
+        .to_string();
+
+    // Mutate README.md in the primary checkout out from under the staged changeset.
+    std::fs::write(wire.root.join("README.md"), "operator concurrent edit\n")
+        .expect("mutate primary");
+
+    wire.send(
+        type_url::command::APPLY_CHANGE_SET,
+        &session,
+        &ApplyChangeSet {
+            change_set_id,
+            target_checkout_path: wire.root.to_string_lossy().into_owned(),
+            expected_base_commit: String::new(),
+            idempotency_key: "apply-conflict".into(),
+        },
+    )
+    .await;
+
+    let (err_frame, _) = wire
+        .until(|f| f.type_url == type_url::envelope::ERROR_RESPONSE)
+        .await;
+    let err: ErrorResponse = err_frame.payload_as().expect("ErrorResponse");
+    assert_eq!(err.code, ErrorCode::PolicyDenied);
+    assert!(
+        err.message.contains("conflict"),
+        "expected conflict refusal, got: {}",
+        err.message
+    );
+    // Primary edit must remain intact.
+    assert_eq!(
+        std::fs::read_to_string(wire.root.join("README.md")).expect("primary preserved"),
+        "operator concurrent edit\n"
+    );
 
     let _ = std::fs::remove_dir_all(&wire.root);
 }
