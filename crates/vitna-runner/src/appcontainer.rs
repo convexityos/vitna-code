@@ -20,21 +20,20 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSidToSidW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
-    DENY_ACCESS, EXPLICIT_ACCESS_W, GRANT_ACCESS, REVOKE_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID,
+    EXPLICIT_ACCESS_W, GRANT_ACCESS, REVOKE_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID,
     TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
-    FreeSid, ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PSECURITY_DESCRIPTOR, PSID,
-    SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
-    SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+    FreeSid, ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PROTECTED_DACL_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES,
+    SUB_CONTAINERS_AND_OBJECTS_INHERIT, UNPROTECTED_DACL_SECURITY_INFORMATION,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_EXECUTE,
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, OPEN_EXISTING, WRITE_DAC, WRITE_OWNER,
+    CreateFileW, ReadFile, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
+    FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
@@ -223,13 +222,16 @@ fn ensure_appcontainer_sid(profile_name: &str) -> Result<OwnedAppSid, String> {
 }
 
 /// Modifies the DACL on `path` for `sid` with the given `access_mode`
-/// (`GRANT_ACCESS`, `DENY_ACCESS`, or `REVOKE_ACCESS`).
+/// (`GRANT_ACCESS` or `REVOKE_ACCESS`) and `security_info` flags (for example
+/// `DACL_SECURITY_INFORMATION`, optionally OR'd with
+/// `PROTECTED_DACL_SECURITY_INFORMATION` or `UNPROTECTED_DACL_SECURITY_INFORMATION`).
 fn update_path_dacl(
     path: &Path,
     sid: PSID,
     permissions: u32,
     access_mode: i32,
     inheritance: u32,
+    security_info: u32,
 ) -> Result<(), String> {
     let w_path = wide_null(path.as_os_str());
     let mut old_dacl: *mut ACL = null_mut();
@@ -285,7 +287,7 @@ fn update_path_dacl(
         SetNamedSecurityInfoW(
             w_path.as_ptr(),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
+            security_info,
             null_mut(),
             null_mut(),
             new_dacl,
@@ -313,11 +315,14 @@ fn update_path_dacl(
     Ok(())
 }
 
-/// RAII guard that grants workspace access and applies protected-subpath deny
-/// ACEs for the AppContainer SID, revoking those ACEs when the action finishes.
+/// RAII guard that shields protected `.git/*` and `.vitna` subpaths with
+/// protected read-only DACLs before granting workspace access to the
+/// AppContainer SID, then revokes all added ACEs and restores inheritance on
+/// drop.
 struct AclGuard {
     sid: PSID,
-    touched_paths: Vec<PathBuf>,
+    workspace_root: Option<PathBuf>,
+    protected_paths: Vec<PathBuf>,
 }
 
 impl AclGuard {
@@ -329,38 +334,19 @@ impl AclGuard {
     ) -> Result<Self, String> {
         let mut guard = Self {
             sid,
-            touched_paths: Vec::new(),
+            workspace_root: None,
+            protected_paths: Vec::new(),
         };
 
-        let ws_perms = if writable {
-            FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE
-        } else {
-            FILE_GENERIC_READ | FILE_GENERIC_EXECUTE
-        };
-        update_path_dacl(
-            workspace_root,
-            sid,
-            ws_perms,
-            GRANT_ACCESS,
-            SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-        )?;
-        guard.touched_paths.push(workspace_root.to_path_buf());
+        let ro_perms = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+        let protected_dacl = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
 
-        let write_deny_mask = FILE_WRITE_DATA
-            | FILE_APPEND_DATA
-            | FILE_WRITE_EA
-            | FILE_WRITE_ATTRIBUTES
-            | DELETE
-            | WRITE_DAC
-            | WRITE_OWNER;
-
-        // Prevent renaming or deleting `.git` itself to bypass protected subpaths.
-        let git_dir = workspace_root.join(".git");
-        if git_dir.is_dir() {
-            update_path_dacl(&git_dir, sid, DELETE, DENY_ACCESS, NO_INHERITANCE)?;
-            guard.touched_paths.push(git_dir);
-        }
-
+        // Protect `.git/*` and `.vitna` FIRST, before `workspace_root` receives
+        // an inheritable write ACE. Because `PROTECTED_DACL_SECURITY_INFORMATION`
+        // blocks parent inheritance, the subsequent workspace grant never leaks
+        // write or delete permissions onto these paths, and AppContainer Pass-2
+        // access checks strictly enforce read-only access without relying on
+        // DENY ACE ordering (which `REVOKE_ACCESS` also cannot cleanly remove).
         for path in protected {
             if !path.exists() {
                 continue;
@@ -370,9 +356,62 @@ impl AclGuard {
             } else {
                 NO_INHERITANCE
             };
-            update_path_dacl(path, sid, write_deny_mask, DENY_ACCESS, inherit)?;
-            guard.touched_paths.push(path.clone());
+            // Ensure no stale ACE for `sid` lingers from a previous interrupted run.
+            let _ = update_path_dacl(
+                path,
+                sid,
+                0,
+                REVOKE_ACCESS,
+                NO_INHERITANCE,
+                DACL_SECURITY_INFORMATION,
+            );
+            update_path_dacl(path, sid, ro_perms, GRANT_ACCESS, inherit, protected_dacl)?;
+            guard.protected_paths.push(path.clone());
         }
+
+        // Prevent renaming or deleting `.git` itself to bypass protected subpaths:
+        // keep normal git metadata writable inside `.git` when workspace is writable,
+        // but omit `DELETE` and `FILE_DELETE_CHILD` and break inheritance from `ws`.
+        let git_dir = workspace_root.join(".git");
+        if git_dir.is_dir() {
+            let git_perms = if writable {
+                FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE
+            } else {
+                ro_perms
+            };
+            let _ = update_path_dacl(
+                &git_dir,
+                sid,
+                0,
+                REVOKE_ACCESS,
+                NO_INHERITANCE,
+                DACL_SECURITY_INFORMATION,
+            );
+            update_path_dacl(
+                &git_dir,
+                sid,
+                git_perms,
+                GRANT_ACCESS,
+                SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+                protected_dacl,
+            )?;
+            guard.protected_paths.push(git_dir);
+        }
+
+        let ws_perms = if writable {
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE
+        } else {
+            ro_perms
+        };
+        update_path_dacl(
+            workspace_root,
+            sid,
+            ws_perms,
+            GRANT_ACCESS,
+            SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+            DACL_SECURITY_INFORMATION,
+        )?;
+        guard.workspace_root = Some(workspace_root.to_path_buf());
 
         Ok(guard)
     }
@@ -380,10 +419,31 @@ impl AclGuard {
 
 impl Drop for AclGuard {
     fn drop(&mut self) {
-        // Revoke in reverse order (protected subpaths first, then workspace root).
-        for path in self.touched_paths.iter().rev() {
+        // Revoke workspace grant first so unprotecting subpaths below does not
+        // re-inherit any AppContainer ACE.
+        if let Some(ref ws) = self.workspace_root {
+            if ws.exists() {
+                let _ = update_path_dacl(
+                    ws,
+                    self.sid,
+                    0,
+                    REVOKE_ACCESS,
+                    NO_INHERITANCE,
+                    DACL_SECURITY_INFORMATION,
+                );
+            }
+        }
+        let restore_dacl = DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION;
+        for path in self.protected_paths.iter().rev() {
             if path.exists() {
-                let _ = update_path_dacl(path, self.sid, 0, REVOKE_ACCESS, NO_INHERITANCE);
+                let _ = update_path_dacl(
+                    path,
+                    self.sid,
+                    0,
+                    REVOKE_ACCESS,
+                    NO_INHERITANCE,
+                    restore_dacl,
+                );
             }
         }
     }

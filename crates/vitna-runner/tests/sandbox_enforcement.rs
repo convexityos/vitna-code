@@ -99,10 +99,15 @@ fn sleep_then_mark(fx: &Fixture, marker: &Path) -> String {
     let m = marker.to_string_lossy().replace('\\', "/");
     if cfg!(windows) {
         let script = fx.workspace.join("grandchild.bat");
-        let win_marker = marker.to_string_lossy().replace('/', "\\");
+        let marker_name = marker
+            .file_name()
+            .expect("marker has file name")
+            .to_string_lossy();
         // Pure cmd.exe built-in clock loop: needs no external binaries and no
         // network/ICMP access, so it runs identically inside a zero-network
-        // AppContainer and unsandboxed.
+        // AppContainer and unsandboxed. Relative paths avoid 8.3 short-path
+        // expansion (`RUNNER~1`) against parent directories denied to the
+        // AppContainer.
         fs::write(
             &script,
             format!(
@@ -114,13 +119,13 @@ fn sleep_then_mark(fx: &Fixture, marker: &Path) -> String {
                  set /a \"diff=now-start\"\r\n\
                  if !diff! lss 0 set /a \"diff+=86400\"\r\n\
                  if !diff! lss 5 goto wait\r\n\
-                 echo done> \"{win_marker}\"\r\n"
+                 echo done> \"{marker_name}\"\r\n"
             ),
         )
         .expect("write helper script");
-        // The inner `cmd /c` is a grandchild. Confirmed by hand: killing only
-        // the outer cmd.exe leaves it running and the marker still appears.
-        format!("cmd /c \"{}\"", script.to_string_lossy().replace('\\', "/"))
+        // The inner `%COMSPEC% /c` is a grandchild. Confirmed by hand: killing
+        // only the outer cmd.exe leaves it running and the marker still appears.
+        "%COMSPEC% /c grandchild.bat".to_string()
     } else {
         format!("sh -c 'sleep 5; echo done > \"{}\"'", m)
     }
