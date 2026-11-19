@@ -98,10 +98,24 @@ fn backend_or_skip(workspace: &Path, case: &str) -> Option<String> {
 fn sleep_then_mark(fx: &Fixture, marker: &Path) -> String {
     let m = marker.to_string_lossy().replace('\\', "/");
     if cfg!(windows) {
-        let script = fx.root.join("grandchild.bat");
+        let script = fx.workspace.join("grandchild.bat");
+        let win_marker = marker.to_string_lossy().replace('/', "\\");
+        // Pure cmd.exe built-in clock loop: needs no external binaries and no
+        // network/ICMP access, so it runs identically inside a zero-network
+        // AppContainer and unsandboxed.
         fs::write(
             &script,
-            format!("@echo off\r\nping -n 6 127.0.0.1 >nul\r\necho done> \"{}\"\r\n", m),
+            format!(
+                "@echo off\r\n\
+                 setlocal enabledelayedexpansion\r\n\
+                 for /f \"tokens=1-3 delims=:.,\" %%a in (\"%TIME: =0%\") do set /a \"start=(((1%%a-100)*60+(1%%b-100))*60+(1%%c-100))\"\r\n\
+                 :wait\r\n\
+                 for /f \"tokens=1-3 delims=:.,\" %%a in (\"%TIME: =0%\") do set /a \"now=(((1%%a-100)*60+(1%%b-100))*60+(1%%c-100))\"\r\n\
+                 set /a \"diff=now-start\"\r\n\
+                 if !diff! lss 0 set /a \"diff+=86400\"\r\n\
+                 if !diff! lss 5 goto wait\r\n\
+                 echo done> \"{win_marker}\"\r\n"
+            ),
         )
         .expect("write helper script");
         // The inner `cmd /c` is a grandchild. Confirmed by hand: killing only
@@ -199,7 +213,10 @@ async fn a_refused_action_is_journalled_as_refused() {
 #[tokio::test]
 async fn a_timed_out_command_does_not_outlive_the_action() {
     let fx = fixture("timeout");
-    let marker = fx.root.join("SURVIVED");
+    // Placed inside the workspace where the sandboxed child HAS write
+    // permission, so the marker staying absent genuinely proves process-tree
+    // teardown killed the grandchild rather than the sandbox blocking a write.
+    let marker = fx.workspace.join("SURVIVED");
 
     let mut request = CommandRequest::new(
         sleep_then_mark(&fx, &marker),

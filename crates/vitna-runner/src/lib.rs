@@ -5,6 +5,8 @@
 //! actually applied, and terminates the whole process tree when a command runs
 //! out of time.
 
+#[cfg(windows)]
+mod appcontainer;
 pub mod fake;
 pub mod journal;
 pub mod pty;
@@ -269,6 +271,104 @@ impl Runner for ProcessRunner {
         }
 
         let start_time = Instant::now();
+
+        #[cfg(windows)]
+        if backend == vitna_sandbox::SandboxBackend::AppContainer.as_str() {
+            let profile_name = config.generate_windows_appcontainer_name();
+            let workspace_root = request.workspace_root.clone();
+            let working_dir = request.working_dir.clone();
+            let protected = vitna_sandbox::protected_subpaths(&request.workspace_root);
+            let command_text = request.command.clone();
+            let mut env_pairs = base_environment(&plan_env);
+            env_pairs.push(("VITNA_SANDBOX".to_string(), backend.clone()));
+            env_pairs.push(("VITNA_SANDBOX_ENFORCEMENT".to_string(), enforcement.clone()));
+            let writable = config.guarantee != SandboxGuarantee::ReadOnly;
+            let allow_network = request.allow_network;
+            let timeout_dur = Duration::from_millis(request.timeout_ms);
+
+            let res = tokio::task::spawn_blocking(move || {
+                appcontainer::run_in_appcontainer(
+                    &profile_name,
+                    &workspace_root,
+                    &working_dir,
+                    &protected,
+                    &command_text,
+                    &env_pairs,
+                    writable,
+                    allow_network,
+                    timeout_dur,
+                )
+            })
+            .await
+            .map_err(|e| format!("AppContainer runner task panicked: {e}"))?;
+
+            let out = match res {
+                Ok(out) => out,
+                Err(e) => {
+                    let mut j = self.journal.lock().map_err(|e| e.to_string())?;
+                    j.record_refused(&action_id, "spawn_failed", now_ms)
+                        .map_err(|e| format!("Journal error on spawn failure: {}", e))?;
+                    return Err(format!("AppContainer spawn failed: {e}"));
+                }
+            };
+
+            let duration_ms = start_time.elapsed().as_millis() as u64;
+            if out.timed_out {
+                let teardown = out.teardown.unwrap_or(tree::Teardown::Failed);
+                {
+                    let mut j = self.journal.lock().map_err(|e| e.to_string())?;
+                    j.record_interrupted(
+                        &action_id,
+                        "timeout",
+                        teardown.as_str(),
+                        now_ms + duration_ms,
+                    )
+                    .map_err(|e| format!("Journal error on timeout: {}", e))?;
+                }
+                return Err(format!(
+                    "Command timed out after {} ms ({})",
+                    request.timeout_ms,
+                    teardown.as_str()
+                ));
+            }
+
+            let statement_digest = compute_statement_digest(
+                &action_id,
+                &request.command,
+                out.exit_code,
+                &out.stdout,
+                &out.stderr,
+                &backend,
+                &enforcement,
+            );
+            {
+                let mut j = self.journal.lock().map_err(|e| e.to_string())?;
+                j.record_finished(
+                    &action_id,
+                    out.exit_code,
+                    hex::encode(Sha256::digest(out.stdout.as_bytes())),
+                    hex::encode(Sha256::digest(out.stderr.as_bytes())),
+                    now_ms + duration_ms,
+                )
+                .map_err(|e| format!("Journal error on finished: {}", e))?;
+            }
+            {
+                let mut j = self.journal.lock().map_err(|e| e.to_string())?;
+                j.record_acknowledged(&action_id)
+                    .map_err(|e| format!("Journal error on acknowledged: {}", e))?;
+            }
+
+            return Ok(ExecutionOutput {
+                action_id,
+                exit_code: out.exit_code,
+                stdout: out.stdout,
+                stderr: out.stderr,
+                duration_ms,
+                statement_digest,
+                sandbox_backend: backend,
+                sandbox_enforcement: enforcement,
+            });
+        }
 
         let mut cmd = tokio::process::Command::new(&program);
 
