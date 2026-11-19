@@ -505,3 +505,199 @@ fn apply_enforces_preimages_and_applies_verified_postimages() {
 
     let _ = fs::remove_dir_all(&base);
 }
+
+#[test]
+fn skills_list_and_verify_round_trip_and_tamper_detection() {
+    let base = temp_dir("skills_cli");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    let skill_dir = ws.join(".vitna").join("skills").join("audit");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&skill_dir).unwrap();
+
+    let skill_path = skill_dir.join("SKILL.md");
+    let original = "---\nname: audit\ndescription: Review diffs for security regressions\nversion: 1.0.0\n---\nCheck every file modification preimage.\n";
+    fs::write(&skill_path, original).unwrap();
+
+    // 1. `vitna skills list --json` discovers the valid skill.
+    let list_out = run_vitna(
+        &["skills", "list", "--workspace", ws.to_str().unwrap(), "--json"],
+        &home,
+        &ws,
+    );
+    assert!(
+        list_out.status.success(),
+        "skills list failed: {}",
+        String::from_utf8_lossy(&list_out.stderr)
+    );
+    let listed: Value = serde_json::from_slice(&list_out.stdout).expect("skills list json");
+    let skills = listed["skills"].as_array().expect("skills array");
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0]["name"].as_str(), Some("audit"));
+    assert_eq!(skills[0]["version"].as_str(), Some("1.0.0"));
+    assert!(listed["refused"].as_array().unwrap().is_empty());
+
+    // 2. `vitna skills verify --write-lock` writes `.vitna/skills.lock.json`.
+    let write_lock = run_vitna(
+        &[
+            "skills",
+            "verify",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--write-lock",
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        write_lock.status.success(),
+        "skills verify --write-lock failed: {}",
+        String::from_utf8_lossy(&write_lock.stderr)
+    );
+    let lock_json: Value = serde_json::from_slice(&write_lock.stdout).unwrap();
+    assert_eq!(lock_json["skills_locked"].as_u64(), Some(1));
+    assert!(ws.join(".vitna/skills.lock.json").exists());
+
+    // 3. `vitna skills verify` passes against the written lockfile.
+    let verified = run_vitna(
+        &[
+            "skills",
+            "verify",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        verified.status.success(),
+        "skills verify failed: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let verified_json: Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(verified_json["verified"].as_bool(), Some(true));
+
+    // 4. Tampering with the skill file causes fail-closed digest mismatch.
+    fs::write(
+        &skill_path,
+        "---\nname: audit\ndescription: Review diffs for security regressions\n---\nTAMPERED\n",
+    )
+    .unwrap();
+    let tampered = run_vitna(
+        &["skills", "verify", "--workspace", ws.to_str().unwrap()],
+        &home,
+        &ws,
+    );
+    assert!(!tampered.status.success());
+    let stderr = String::from_utf8_lossy(&tampered.stderr);
+    assert!(
+        stderr.contains("digest mismatch"),
+        "expected digest mismatch in stderr, got: {stderr}"
+    );
+
+    // 5. Restore valid skill and add a malformed skill; list reports refused and verify fails closed.
+    fs::write(&skill_path, original).unwrap();
+    let broken_dir = ws.join(".vitna").join("skills").join("broken");
+    fs::create_dir_all(&broken_dir).unwrap();
+    fs::write(broken_dir.join("SKILL.md"), "missing frontmatter").unwrap();
+
+    let list_with_broken = run_vitna(
+        &["skills", "list", "--workspace", ws.to_str().unwrap(), "--json"],
+        &home,
+        &ws,
+    );
+    assert!(list_with_broken.status.success());
+    let broken_json: Value = serde_json::from_slice(&list_with_broken.stdout).unwrap();
+    assert_eq!(broken_json["refused"].as_array().unwrap().len(), 1);
+
+    let verify_with_broken = run_vitna(
+        &["skills", "verify", "--workspace", ws.to_str().unwrap()],
+        &home,
+        &ws,
+    );
+    assert!(!verify_with_broken.status.success());
+    assert!(String::from_utf8_lossy(&verify_with_broken.stderr).contains("refused"));
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn auth_and_serve_flag_validation_fail_closed() {
+    use std::process::Stdio;
+
+    let base = temp_dir("auth_serve_flags");
+    let home = base.join("home");
+    fs::create_dir_all(&home).unwrap();
+
+    // 1. `vitna auth status --json` always reports ambient_env_scanning: false.
+    let status_out = Command::new(vitna_bin())
+        .args(["auth", "status", "--json"])
+        .current_dir(&base)
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .output()
+        .expect("spawn vitna auth status");
+    assert!(
+        status_out.status.success(),
+        "auth status failed: {}",
+        String::from_utf8_lossy(&status_out.stderr)
+    );
+    let status_json: Value = serde_json::from_slice(&status_out.stdout).unwrap();
+    assert_eq!(status_json["ambient_env_scanning"].as_bool(), Some(false));
+    assert_eq!(status_json["providers"].as_array().unwrap().len(), 2);
+
+    // 2. Unknown provider is refused before touching keychain or stdin.
+    let bad_provider = run_vitna(&["auth", "set", "bogus-provider"], &home, &base);
+    assert!(!bad_provider.status.success());
+    assert!(String::from_utf8_lossy(&bad_provider.stderr).contains("unknown provider"));
+
+    // 3. Empty stdin to `vitna auth set anthropic` is refused cleanly.
+    let mut child = Command::new(vitna_bin())
+        .args(["auth", "set", "anthropic"])
+        .current_dir(&base)
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn vitna auth set");
+    drop(child.stdin.take());
+    let empty_out = child.wait_with_output().expect("wait vitna auth set");
+    assert!(!empty_out.status.success());
+    assert!(String::from_utf8_lossy(&empty_out.stderr).contains("invalid API key"));
+
+    // 4. `vitna serve --provider anthropic` without `--model` is refused cleanly.
+    let missing_model = run_vitna(&["serve", "--provider", "anthropic"], &home, &base);
+    assert!(!missing_model.status.success());
+    assert!(String::from_utf8_lossy(&missing_model.stderr).contains("--provider needs --model"));
+
+    // 5. Mixing `--runtime-url/--lane` with `--provider/--model` is refused.
+    let mixed_routes = run_vitna(
+        &[
+            "serve",
+            "--runtime-url",
+            "http://127.0.0.1:8787",
+            "--lane",
+            "vitna/code",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-5",
+        ],
+        &home,
+        &base,
+    );
+    assert!(!mixed_routes.status.success());
+    assert!(String::from_utf8_lossy(&mixed_routes.stderr).contains("cannot combine"));
+
+    // 6. Malformed `--mcp-http` spec is refused.
+    let bad_mcp = run_vitna(&["serve", "--mcp-http", "broken-no-equals"], &home, &base);
+    assert!(!bad_mcp.status.success());
+    assert!(String::from_utf8_lossy(&bad_mcp.stderr).contains("<name>=<url>"));
+
+    let _ = fs::remove_dir_all(&base);
+}
+

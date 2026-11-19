@@ -1172,3 +1172,304 @@ async fn read_envelope<S: AsyncRead + Unpin>(
         .map_err(|e| format!("failed to read frame body: {e}"))?;
     serde_json::from_slice(&buf).map_err(|e| format!("invalid daemon envelope: {e}"))
 }
+
+fn parse_provider_id(raw: &str) -> Result<vitna_providers::ProviderId, String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    vitna_providers::ProviderId::from_name(&normalized).ok_or_else(|| {
+        format!(
+            "unknown provider '{}': expected 'anthropic' or 'openai'",
+            sanitize_public_id(raw)
+        )
+    })
+}
+
+/// `vitna auth status [--json]`
+pub fn run_auth_status(as_json: bool) -> Result<(), String> {
+    use vitna_providers::{CredentialError, CredentialResolver, KeyringStore, ProviderId};
+
+    let (store_name, rows) = match KeyringStore::open() {
+        Ok(store) => {
+            let resolver = CredentialResolver::new(Arc::new(store));
+            let name = resolver.source_name().to_string();
+            let mut rows = Vec::new();
+            for provider in ProviderId::ALL {
+                let (state, detail) = match resolver.check(provider) {
+                    Ok(()) => ("configured".to_string(), None),
+                    Err(CredentialError::AuthenticationRequired { .. }) => {
+                        ("not_configured".to_string(), None)
+                    }
+                    Err(e) => ("unavailable".to_string(), Some(e.to_string())),
+                };
+                rows.push(json!({
+                    "provider": provider.as_str(),
+                    "status": state,
+                    "detail": detail,
+                }));
+            }
+            (name, rows)
+        }
+        Err(open_err) => {
+            let detail = open_err.to_string();
+            let rows = ProviderId::ALL
+                .into_iter()
+                .map(|provider| {
+                    json!({
+                        "provider": provider.as_str(),
+                        "status": "unavailable",
+                        "detail": detail,
+                    })
+                })
+                .collect();
+            ("os-keychain (unavailable)".to_string(), rows)
+        }
+    };
+
+    if as_json {
+        let out = json!({
+            "store": store_name,
+            "ambient_env_scanning": false,
+            "providers": rows,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
+    println!("Vitna Provider Credentials ({store_name})");
+    println!("------------------------------------------");
+    for row in &rows {
+        let provider = row["provider"].as_str().unwrap_or("");
+        let status = row["status"].as_str().unwrap_or("");
+        match row["detail"].as_str() {
+            Some(detail) => println!("  - {provider}: {status} ({detail})"),
+            None => println!("  - {provider}: {status}"),
+        }
+    }
+    println!("Note: Vitna never scans environment variables for API keys. Use `vitna auth set <provider>` via stdin.");
+    Ok(())
+}
+
+/// `vitna auth set <provider>`
+///
+/// Reads the API key strictly from stdin (never CLI argv, so it does not leak
+/// into process listings) and writes it to the OS keychain without logging or
+/// echoing any part of the secret.
+pub fn run_auth_set(provider_name: &str) -> Result<(), String> {
+    use std::io::Read;
+    use vitna_providers::{ApiKey, CredentialSource, CredentialStore, KeyringStore};
+
+    let provider = parse_provider_id(provider_name)?;
+    let mut raw = String::new();
+    let mut handle = std::io::stdin().lock().take(8 * 1024);
+    handle
+        .read_to_string(&mut raw)
+        .map_err(|e| format!("failed to read API key from stdin: {e}"))?;
+
+    let parsed = ApiKey::parse(&raw);
+    drop(raw);
+    let key = parsed.map_err(|e| {
+        format!(
+            "invalid API key for {}: {}",
+            provider.as_str(),
+            e.reason()
+        )
+    })?;
+
+    let store = KeyringStore::open()
+        .map_err(|e| format!("OS keychain unavailable for {}: {e}", provider.as_str()))?;
+    store
+        .set_api_key(provider, &key)
+        .map_err(|e| format!("could not store key for {}: {e}", provider.as_str()))?;
+    drop(key);
+
+    println!("Stored API key for {} in {}.", provider.as_str(), store.name());
+    Ok(())
+}
+
+/// `vitna auth clear <provider>`
+pub fn run_auth_clear(provider_name: &str) -> Result<(), String> {
+    use vitna_providers::{CredentialSource, CredentialStore, KeyringStore};
+
+    let provider = parse_provider_id(provider_name)?;
+    let store = KeyringStore::open()
+        .map_err(|e| format!("OS keychain unavailable for {}: {e}", provider.as_str()))?;
+    let removed = store
+        .delete_api_key(provider)
+        .map_err(|e| format!("could not remove key for {}: {e}", provider.as_str()))?;
+    if removed {
+        println!(
+            "Removed stored API key for {} from {}.",
+            provider.as_str(),
+            store.name()
+        );
+    } else {
+        println!(
+            "No stored API key found for {} in {}.",
+            provider.as_str(),
+            store.name()
+        );
+    }
+    Ok(())
+}
+
+/// `vitna skills list [--workspace <path>] [--json]`
+pub fn run_skills_list(workspace: &Path, as_json: bool) -> Result<(), String> {
+    use vitna_skills::SkillRegistry;
+
+    let registry = SkillRegistry::discover_in_workspace(workspace)
+        .map_err(|e| format!("failed to discover skills in {}: {e}", workspace.display()))?;
+
+    if as_json {
+        let out = json!({
+            "workspace": workspace.display().to_string(),
+            "skills": registry.skills().iter().map(|s| json!({
+                "name": s.name,
+                "description": s.description,
+                "version": s.version,
+                "source_path": s.source_path,
+                "sha256_digest": s.sha256_digest,
+            })).collect::<Vec<_>>(),
+            "refused": registry.refused(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
+    println!("Vitna Workspace Skills ({})", workspace.display());
+    println!("------------------------------------------");
+    if registry.skills().is_empty() && registry.refused().is_empty() {
+        println!("No workspace skills found under .vitna/skills.");
+        return Ok(());
+    }
+    for skill in registry.skills() {
+        let ver = skill
+            .version
+            .as_deref()
+            .map(|v| format!(" v{v}"))
+            .unwrap_or_default();
+        println!(
+            "  - {}{} ({}) [sha256:{}] - {}",
+            skill.name,
+            ver,
+            skill.source_path,
+            short_hash(&skill.sha256_digest),
+            skill.description
+        );
+    }
+    if !registry.refused().is_empty() {
+        println!("Refused skill paths:");
+        for r in registry.refused() {
+            println!("  ! {}: {}", r.path, r.reason);
+        }
+    }
+    Ok(())
+}
+
+/// `vitna skills verify [--workspace <path>] [--lock <file>] [--write-lock] [--json]`
+pub fn run_skills_verify(
+    workspace: &Path,
+    lock_arg: Option<&Path>,
+    write_lock: bool,
+    as_json: bool,
+) -> Result<(), String> {
+    use vitna_skills::{SkillLock, SkillRegistry};
+
+    let registry = SkillRegistry::discover_in_workspace(workspace)
+        .map_err(|e| format!("failed to discover skills in {}: {e}", workspace.display()))?;
+
+    if !registry.refused().is_empty() {
+        let reasons: Vec<String> = registry
+            .refused()
+            .iter()
+            .map(|r| format!("{}: {}", r.path, r.reason))
+            .collect();
+        return Err(format!(
+            "skill discovery refused {} path(s): {}",
+            reasons.len(),
+            reasons.join("; ")
+        ));
+    }
+
+    let lock_path = lock_arg
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace.join(".vitna").join("skills.lock.json"));
+
+    if write_lock {
+        let lock = SkillLock::from_manifests(registry.skills());
+        if let Some(parent) = lock_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+            }
+        }
+        let body = serde_json::to_string_pretty(&lock).map_err(|e| e.to_string())?;
+        fs::write(&lock_path, body)
+            .map_err(|e| format!("could not write lockfile {}: {e}", lock_path.display()))?;
+
+        if as_json {
+            let out = json!({
+                "action": "write_lock",
+                "lock_path": lock_path.display().to_string(),
+                "skills_locked": lock.entries.len(),
+                "entries": lock.entries,
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+            );
+        } else {
+            println!(
+                "Wrote skill lockfile {} ({} skill(s) pinned).",
+                lock_path.display(),
+                lock.entries.len()
+            );
+        }
+        return Ok(());
+    }
+
+    let raw = fs::read_to_string(&lock_path).map_err(|e| {
+        format!(
+            "could not read skill lockfile {} ({e}). Generate one with `vitna skills verify --write-lock`.",
+            lock_path.display()
+        )
+    })?;
+    let lock: SkillLock = serde_json::from_str(&raw)
+        .map_err(|e| format!("invalid skill lockfile {}: {e}", lock_path.display()))?;
+
+    lock.verify_all(registry.skills())
+        .map_err(|e| format!("skill lock verification failed: {e}"))?;
+
+    // Also fail closed if any pinned skill in the lockfile is missing from disk.
+    for locked_name in lock.entries.keys() {
+        if registry.get(locked_name).is_none() {
+            return Err(format!(
+                "skill lock verification failed: locked skill '{locked_name}' is missing from workspace"
+            ));
+        }
+    }
+
+    if as_json {
+        let out = json!({
+            "verified": true,
+            "lock_path": lock_path.display().to_string(),
+            "skills_verified": registry.skills().len(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!(
+            "Verified {} workspace skill(s) against {}.",
+            registry.skills().len(),
+            lock_path.display()
+        );
+    }
+    Ok(())
+}
+

@@ -11,12 +11,25 @@
 //! Both binaries now resolve their endpoint and journal here and start through
 //! [`run`], so the two cannot drift apart again.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use vitna_providers::{RuntimeLane, RuntimeLaneProvider};
+use vitna_providers::{
+    AnthropicProvider, CredentialResolver, KeyringStore, OpenAIProvider, Provider, ProviderId,
+    RuntimeLane, RuntimeLaneProvider,
+};
 
-use crate::{ipc, DaemonServer, ModelRoute};
+use crate::{ipc, DaemonServer, McpServerSpec, ModelRoute};
+
+/// A direct customer-held provider route whose API key is resolved strictly
+/// from the OS keychain (`KeyringStore`), never from environment variables.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectProvider {
+    pub provider: ProviderId,
+    pub model: String,
+    pub base_url: Option<String>,
+}
 
 /// Where the daemon listens, where it keeps its journal, and which model a
 /// turn reaches.
@@ -24,9 +37,12 @@ use crate::{ipc, DaemonServer, ModelRoute};
 pub struct Launch {
     pub endpoint: String,
     pub store: PathBuf,
-    /// The vitna-runtime lane turns are served through. `None` starts a
-    /// daemon that refuses `SubmitTurn` and says why.
+    /// The vitna-runtime lane turns are served through.
     pub route: Option<RuntimeLane>,
+    /// Direct OS-keychain provider route (`anthropic` or `openai`).
+    pub direct: Option<DirectProvider>,
+    /// External MCP servers attached at startup before serving IPC.
+    pub mcp_servers: Vec<McpServerSpec>,
 }
 
 impl Launch {
@@ -51,6 +67,8 @@ impl Launch {
             endpoint,
             store,
             route: None,
+            direct: None,
+            mcp_servers: Vec::new(),
         })
     }
 
@@ -65,7 +83,15 @@ impl Launch {
     ) -> Result<Launch, String> {
         self.route = match (runtime_url, lane) {
             (None, None) => None,
-            (Some(url), Some(lane)) => Some(RuntimeLane::new(&url, &lane)?),
+            (Some(url), Some(lane)) => {
+                if self.direct.is_some() {
+                    return Err(
+                        "cannot combine --runtime-url/--lane with --provider/--model; pick one model route"
+                            .to_string(),
+                    );
+                }
+                Some(RuntimeLane::new(&url, &lane)?)
+            }
             (Some(_), None) => {
                 return Err("--runtime-url needs --lane, the lane to ask for".to_string())
             }
@@ -73,6 +99,91 @@ impl Launch {
                 return Err("--lane needs --runtime-url, where the runtime listens".to_string())
             }
         };
+        Ok(self)
+    }
+
+    /// Serves turns directly against Anthropic or OpenAI using a customer-held
+    /// API key stored in the OS keychain (`vitna auth set <provider>`).
+    pub fn with_direct_provider(
+        mut self,
+        provider: Option<String>,
+        model: Option<String>,
+        base_url: Option<String>,
+    ) -> Result<Launch, String> {
+        match (provider, model, base_url) {
+            (None, None, None) => Ok(self),
+            (None, None, Some(_)) => {
+                Err("--base-url requires both --provider and --model".to_string())
+            }
+            (Some(_), None, _) => {
+                Err("--provider needs --model, the model SKU to request".to_string())
+            }
+            (None, Some(_), _) => {
+                Err("--model needs --provider (anthropic or openai)".to_string())
+            }
+            (Some(prov), Some(model), base_url) => {
+                if self.route.is_some() {
+                    return Err(
+                        "cannot combine --provider/--model with --runtime-url/--lane; pick one model route"
+                            .to_string(),
+                    );
+                }
+                let normalized = prov.trim().to_ascii_lowercase();
+                let provider_id = ProviderId::from_name(&normalized).ok_or_else(|| {
+                    format!(
+                        "unknown provider '{prov}': expected 'anthropic' or 'openai'"
+                    )
+                })?;
+                let model = model.trim().to_string();
+                if model.is_empty() {
+                    return Err("--model must be non-empty".to_string());
+                }
+                let validated_base = match base_url {
+                    Some(raw) => {
+                        let trimmed = raw.trim();
+                        if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+                            return Err(format!(
+                                "invalid --base-url '{trimmed}': expected an http:// or https:// URL"
+                            ));
+                        }
+                        Some(trimmed.to_string())
+                    }
+                    None => None,
+                };
+                self.direct = Some(DirectProvider {
+                    provider: provider_id,
+                    model,
+                    base_url: validated_base,
+                });
+                Ok(self)
+            }
+        }
+    }
+
+    /// Attaches external MCP servers declared via `--mcp-http` and `--mcp-stdio`.
+    pub fn with_mcp_servers(
+        mut self,
+        http_specs: Vec<String>,
+        stdio_specs: Vec<String>,
+    ) -> Result<Launch, String> {
+        let mut seen = HashSet::new();
+        for existing in &self.mcp_servers {
+            seen.insert(existing.name().to_string());
+        }
+        for raw in http_specs {
+            let spec = McpServerSpec::parse_http(&raw)?;
+            if !seen.insert(spec.name().to_string()) {
+                return Err(format!("duplicate MCP server name '{}'", spec.name()));
+            }
+            self.mcp_servers.push(spec);
+        }
+        for raw in stdio_specs {
+            let spec = McpServerSpec::parse_stdio(&raw)?;
+            if !seen.insert(spec.name().to_string()) {
+                return Err(format!("duplicate MCP server name '{}'", spec.name()));
+            }
+            self.mcp_servers.push(spec);
+        }
         Ok(self)
     }
 }
@@ -117,22 +228,60 @@ pub fn logging() {
 /// prints is true when it is printed.
 pub async fn run<F: FnOnce()>(launch: &Launch, on_ready: F) -> Result<(), String> {
     let mut server = DaemonServer::open_default(&launch.store)?;
-    match &launch.route {
-        Some(lane) => {
-            tracing::info!(runtime = %lane.endpoint, lane = %lane.lane, "turns go to a vitna-runtime lane");
-            let telemetry = server.telemetry();
-            server = server.with_route(ModelRoute {
-                provider: Arc::new(
-                    RuntimeLaneProvider::new(lane.clone()).with_telemetry(telemetry),
-                ),
-                model: lane.lane.clone(),
-                routing_reason: format!("runtime_lane:{}", lane.lane),
-            });
-        }
-        None => tracing::info!(
-            "no model route: SubmitTurn is refused until --runtime-url and --lane are given"
-        ),
+    if let Some(lane) = &launch.route {
+        tracing::info!(runtime = %lane.endpoint, lane = %lane.lane, "turns go to a vitna-runtime lane");
+        let telemetry = server.telemetry();
+        server = server.with_route(ModelRoute {
+            provider: Arc::new(RuntimeLaneProvider::new(lane.clone()).with_telemetry(telemetry)),
+            model: lane.lane.clone(),
+            routing_reason: format!("runtime_lane:{}", lane.lane),
+        });
+    } else if let Some(direct) = &launch.direct {
+        let provider_id = direct.provider;
+        let mut creds = tokio::task::spawn_blocking(move || {
+            let store = KeyringStore::open()?;
+            let resolver = CredentialResolver::new(Arc::new(store));
+            resolver.resolve(provider_id)
+        })
+        .await
+        .map_err(|e| format!("keychain lookup task failed: {e}"))?
+        .map_err(|e| {
+            format!(
+                "{e}. Store a key with `vitna auth set {}`",
+                provider_id.as_str()
+            )
+        })?;
+        creds.base_url = direct.base_url.clone();
+        let telemetry = server.telemetry();
+        let adapter: Arc<dyn Provider> = match provider_id {
+            ProviderId::Anthropic => Arc::new(AnthropicProvider::new(creds).with_telemetry(telemetry)),
+            ProviderId::OpenAi => Arc::new(OpenAIProvider::new(creds).with_telemetry(telemetry)),
+        };
+        tracing::info!(
+            provider = provider_id.as_str(),
+            model = %direct.model,
+            "turns go directly to customer-held provider via OS keychain"
+        );
+        server = server.with_route(ModelRoute {
+            provider: adapter,
+            model: direct.model.clone(),
+            routing_reason: format!("direct_keychain:{}", provider_id.as_str()),
+        });
+    } else {
+        tracing::info!(
+            "no model route: SubmitTurn is refused until --runtime-url/--lane or --provider/--model are given"
+        );
     }
+
+    for spec in &launch.mcp_servers {
+        let tools = server.attach_mcp_server(spec).await?;
+        tracing::info!(
+            server = spec.name(),
+            tool_count = tools.len(),
+            "attached external MCP server"
+        );
+    }
+
     let server = Arc::new(server);
     tracing::info!(store = %launch.store.display(), "vitna-coded starting");
     ipc::serve(server, &launch.endpoint, on_ready)
@@ -170,6 +319,72 @@ mod tests {
             .with_runtime(
                 Some("https://runtime.example.com".into()),
                 Some("vitna/code".into())
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn direct_provider_route_validates_flags_and_rejects_ambiguous_runtime_mix() {
+        let base = || Launch::resolve(Some("e".into()), Some(PathBuf::from("a.db"))).unwrap();
+
+        let direct = base()
+            .with_direct_provider(
+                Some("anthropic".into()),
+                Some("claude-sonnet-4-20250514".into()),
+                Some("https://api.anthropic.com/v1/messages".into()),
+            )
+            .unwrap()
+            .direct
+            .expect("direct route");
+        assert_eq!(direct.provider, ProviderId::Anthropic);
+        assert_eq!(direct.model, "claude-sonnet-4-20250514");
+
+        // Half-specified or unknown provider rejected.
+        assert!(base()
+            .with_direct_provider(Some("openai".into()), None, None)
+            .is_err());
+        assert!(base()
+            .with_direct_provider(None, Some("gpt-4o".into()), None)
+            .is_err());
+        assert!(base()
+            .with_direct_provider(Some("unknown".into()), Some("m".into()), None)
+            .is_err());
+        assert!(base()
+            .with_direct_provider(
+                Some("openai".into()),
+                Some("gpt-4o".into()),
+                Some("ftp://bad".into()),
+            )
+            .is_err());
+
+        // Combining runtime lane and direct provider is refused.
+        let with_rt = base()
+            .with_runtime(
+                Some("http://127.0.0.1:8787".into()),
+                Some("vitna/code".into()),
+            )
+            .unwrap();
+        assert!(with_rt
+            .with_direct_provider(Some("openai".into()), Some("gpt-4o".into()), None)
+            .is_err());
+    }
+
+    #[test]
+    fn mcp_server_flags_parse_and_reject_duplicate_names() {
+        let base = Launch::resolve(Some("e".into()), Some(PathBuf::from("a.db"))).unwrap();
+        let configured = base
+            .clone()
+            .with_mcp_servers(
+                vec!["docs=http://127.0.0.1:9000/mcp".into()],
+                vec!["tools=my-mcp --flag".into()],
+            )
+            .unwrap();
+        assert_eq!(configured.mcp_servers.len(), 2);
+
+        assert!(base
+            .with_mcp_servers(
+                vec!["dup=http://127.0.0.1:9000/mcp".into()],
+                vec!["dup=my-mcp".into()],
             )
             .is_err());
     }

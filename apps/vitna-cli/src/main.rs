@@ -122,12 +122,38 @@ enum Commands {
         #[arg(long, alias = "db")]
         store: Option<PathBuf>,
         /// A vitna-runtime on this machine, such as http://127.0.0.1:8787.
-        /// Turns are refused until it and --lane are given.
+        /// Turns are refused until it and --lane (or --provider/--model) are given.
         #[arg(long)]
         runtime_url: Option<String>,
         /// The lane every turn asks the runtime for, such as vitna/code.
         #[arg(long)]
         lane: Option<String>,
+        /// Direct model provider backed by an OS-keychain API key (`anthropic` or `openai`).
+        /// Requires --model and cannot be combined with --runtime-url/--lane.
+        #[arg(long)]
+        provider: Option<String>,
+        /// Model SKU for a direct provider route (for example `claude-sonnet-4-5` or `gpt-5`).
+        #[arg(long)]
+        model: Option<String>,
+        /// Optional explicit http:// or https:// endpoint override for --provider/--model.
+        #[arg(long)]
+        base_url: Option<String>,
+        /// Attach a Streamable HTTP MCP server at startup (`NAME=URL`). Repeatable.
+        #[arg(long = "mcp-http", value_name = "NAME=URL")]
+        mcp_http: Vec<String>,
+        /// Attach a stdio MCP server at startup (`NAME=COMMAND [ARGS...]`). Repeatable.
+        #[arg(long = "mcp-stdio", value_name = "NAME=CMD")]
+        mcp_stdio: Vec<String>,
+    },
+    /// Manage customer-held provider credentials in the OS keychain (never scans env vars)
+    Auth {
+        #[command(subcommand)]
+        sub: AuthCommands,
+    },
+    /// Inspect and verify workspace agent skills (.vitna/skills)
+    Skills {
+        #[command(subcommand)]
+        sub: SkillsCommands,
     },
     /// Open a folder in the Vitna Code interface, served from this machine
     ///
@@ -168,6 +194,52 @@ enum Commands {
         /// --ledger.
         #[arg(long, requires = "ledger")]
         record: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AuthCommands {
+    /// Show OS-keychain credential readiness for supported providers
+    Status {
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Store a provider API key in the OS keychain (reads the key from stdin, never CLI argv)
+    Set {
+        /// Provider name: anthropic or openai
+        provider: String,
+    },
+    /// Remove a provider API key from the OS keychain
+    Clear {
+        /// Provider name: anthropic or openai
+        provider: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SkillsCommands {
+    /// List discovered workspace skills and any refused paths
+    List {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify workspace skills against a SHA-256 lockfile, or write/update one
+    Verify {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Path to the skill lock JSON file (defaults to <workspace>/.vitna/skills.lock.json).
+        #[arg(long)]
+        lock: Option<PathBuf>,
+        /// Write or update the lockfile from currently valid discovered skills.
+        #[arg(long)]
+        write_lock: bool,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -306,8 +378,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             store,
             runtime_url,
             lane,
+            provider,
+            model,
+            base_url,
+            mcp_http,
+            mcp_stdio,
         }) => {
-            if let Err(e) = serve(endpoint, store, runtime_url, lane).await {
+            if let Err(e) = serve(
+                endpoint,
+                store,
+                runtime_url,
+                lane,
+                provider,
+                model,
+                base_url,
+                mcp_http,
+                mcp_stdio,
+            )
+            .await
+            {
                 // One line naming what failed, as vitna-coded prints it. A
                 // daemon that dies quietly looks, from a client, like one that
                 // was never started.
@@ -315,6 +404,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
+        Some(Commands::Auth { sub }) => match sub {
+            AuthCommands::Status { json } => {
+                if let Err(e) = commands::run_auth_status(json) {
+                    eprintln!("vitna auth status: {e}");
+                    std::process::exit(1);
+                }
+            }
+            AuthCommands::Set { provider } => {
+                if let Err(e) = commands::run_auth_set(&provider) {
+                    eprintln!("vitna auth set: {e}");
+                    std::process::exit(1);
+                }
+            }
+            AuthCommands::Clear { provider } => {
+                if let Err(e) = commands::run_auth_clear(&provider) {
+                    eprintln!("vitna auth clear: {e}");
+                    std::process::exit(1);
+                }
+            }
+        },
+        Some(Commands::Skills { sub }) => match sub {
+            SkillsCommands::List { workspace, json } => {
+                if let Err(e) = commands::run_skills_list(&workspace, json) {
+                    eprintln!("vitna skills list: {e}");
+                    std::process::exit(1);
+                }
+            }
+            SkillsCommands::Verify {
+                workspace,
+                lock,
+                write_lock,
+                json,
+            } => {
+                if let Err(e) =
+                    commands::run_skills_verify(&workspace, lock.as_deref(), write_lock, json)
+                {
+                    eprintln!("vitna skills verify: {e}");
+                    std::process::exit(1);
+                }
+            }
+        },
         Some(Commands::App {
             folder,
             port,
@@ -387,14 +517,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// listening on local session channel" and bound nothing, so every client that
 /// probed the declared endpoint found no daemon. The release scripts ship
 /// `vitna` and not `vitna-coded`, so for an installed copy this is the door.
+#[allow(clippy::too_many_arguments)]
 async fn serve(
     endpoint: Option<String>,
     store: Option<PathBuf>,
     runtime_url: Option<String>,
     lane: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+    mcp_http: Vec<String>,
+    mcp_stdio: Vec<String>,
 ) -> Result<(), String> {
     vitna_daemon::launch::logging();
-    let launch = vitna_daemon::launch::Launch::resolve(endpoint, store)?.with_runtime(runtime_url, lane)?;
+    let launch = vitna_daemon::launch::Launch::resolve(endpoint, store)?
+        .with_runtime(runtime_url, lane)?
+        .with_direct_provider(provider, model, base_url)?
+        .with_mcp_servers(mcp_http, mcp_stdio)?;
     let announce = launch.endpoint.clone();
     vitna_daemon::launch::run(&launch, move || {
         // Printed once the endpoint is bound, so it is true when it is read.
