@@ -45,6 +45,22 @@ enum Commands {
         /// The vitna-runtime lane alias (e.g. vitna/code). Requires --runtime-url.
         #[arg(long)]
         lane: Option<String>,
+        /// Direct model provider backed by an OS-keychain API key (`anthropic` or `openai`).
+        /// Requires --model and cannot be combined with --runtime-url/--lane.
+        #[arg(long)]
+        provider: Option<String>,
+        /// Model SKU for a direct provider route (for example `claude-sonnet-4-5` or `gpt-5`).
+        #[arg(long)]
+        model: Option<String>,
+        /// Optional explicit http:// or https:// endpoint override for --provider/--model.
+        #[arg(long)]
+        base_url: Option<String>,
+        /// Attach a Streamable HTTP MCP server for this run (`NAME=URL`). Repeatable.
+        #[arg(long = "mcp-http", value_name = "NAME=URL")]
+        mcp_http: Vec<String>,
+        /// Attach a stdio MCP server for this run (`NAME=COMMAND [ARGS...]`). Repeatable.
+        #[arg(long = "mcp-stdio", value_name = "NAME=CMD")]
+        mcp_stdio: Vec<String>,
         /// Optional SQLite store path (defaults to <workspace>/.vitna/store.db).
         #[arg(long)]
         store: Option<PathBuf>,
@@ -288,16 +304,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             allow_unsandboxed,
             runtime_url,
             lane,
+            provider,
+            model,
+            base_url,
+            mcp_http,
+            mcp_stdio,
             store,
             ..
-        }) => match (runtime_url, lane) {
-            (Some(url), Some(lane_name)) => {
-                if let Err(e) = commands::run_live_runtime_turn(commands::LiveRunOptions {
+        }) => {
+            let has_live_flags = runtime_url.is_some()
+                || lane.is_some()
+                || provider.is_some()
+                || model.is_some()
+                || base_url.is_some();
+            if has_live_flags {
+                if let Err(e) = commands::run_live_turn(commands::LiveRunOptions {
                     task: &task,
                     workspace: &workspace,
                     store_arg: store.as_deref(),
-                    runtime_url: &url,
-                    lane_name: &lane_name,
+                    runtime_url,
+                    lane,
+                    provider,
+                    model,
+                    base_url,
+                    mcp_http,
+                    mcp_stdio,
                     auto_approve,
                     verify_cmd,
                     allow_unsandboxed,
@@ -307,12 +338,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("vitna run: {e}");
                     std::process::exit(1);
                 }
-            }
-            (Some(_), None) | (None, Some(_)) => {
-                eprintln!("vitna run: --runtime-url and --lane must be provided together.");
+            } else if !mcp_http.is_empty() || !mcp_stdio.is_empty() {
+                eprintln!(
+                    "vitna run: --mcp-http/--mcp-stdio require a model route (--runtime-url/--lane or --provider/--model)."
+                );
                 std::process::exit(1);
-            }
-            (None, None) => {
+            } else {
                 run_task_cli(
                     &task,
                     &workspace,
@@ -323,7 +354,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .await?;
             }
-        },
+        }
         Some(Commands::Sessions { store, json }) => {
             if let Err(e) = commands::run_list_sessions(store.as_deref(), json) {
                 eprintln!("vitna sessions: {e}");

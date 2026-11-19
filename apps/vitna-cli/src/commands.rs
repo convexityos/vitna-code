@@ -18,7 +18,7 @@ use vitna_protocol::messages::{
     SubmitTurn, SubscribeEvents,
 };
 use vitna_protocol::{type_url, ProtocolEnvelope, MAX_FRAME_SIZE_BYTES};
-use vitna_providers::{RuntimeLane, RuntimeLaneProvider, RUNTIME_PROVIDER_NAME};
+use vitna_providers::{RuntimeLaneProvider, RUNTIME_PROVIDER_NAME};
 use vitna_receipt_verify::ReceiptVerifier;
 use vitna_receipts::VitnaRunReceiptV1;
 use vitna_runner::ProcessRunner;
@@ -794,23 +794,41 @@ pub fn run_apply(
     Ok(())
 }
 
-/// Options for `vitna run --runtime-url <url> --lane <lane>`.
+/// Options for `vitna run` with a live model route (`--runtime-url`/`--lane` or
+/// OS-keychain `--provider`/`--model`) and optional MCP servers.
 pub struct LiveRunOptions<'a> {
     pub task: &'a str,
     pub workspace: &'a Path,
     pub store_arg: Option<&'a Path>,
-    pub runtime_url: &'a str,
-    pub lane_name: &'a str,
+    pub runtime_url: Option<String>,
+    pub lane: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub mcp_http: Vec<String>,
+    pub mcp_stdio: Vec<String>,
     pub auto_approve: bool,
     pub verify_cmd: Option<String>,
     pub allow_unsandboxed: bool,
 }
 
-/// Runs a live model-driven agent turn via `vitna-runtime` when `--runtime-url`
-/// and `--lane` are passed to `vitna run`.
-pub async fn run_live_runtime_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
-    let lane = RuntimeLane::new(opts.runtime_url, opts.lane_name)?;
-    let provider = RuntimeLaneProvider::new(lane.clone());
+/// Runs a live model-driven agent turn via either a local `vitna-runtime` lane
+/// or a direct OS-keychain provider route (`anthropic` / `openai`), wiring
+/// Trust Level 5 workspace skills and any attached MCP servers.
+pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
+    use vitna_providers::{
+        AnthropicProvider, CredentialResolver, KeyringStore, OpenAIProvider, Provider, ProviderId,
+    };
+
+    // Reuse Launch's exact route and MCP server validation so `vitna run`,
+    // `vitna serve`, and `vitna-coded` never drift on flag rules.
+    let launch = vitna_daemon::launch::Launch::resolve(
+        Some("vitna-run".to_string()),
+        Some(PathBuf::from("vitna-run.db")),
+    )?
+    .with_runtime(opts.runtime_url, opts.lane)?
+    .with_direct_provider(opts.provider, opts.model, opts.base_url)?
+    .with_mcp_servers(opts.mcp_http, opts.mcp_stdio)?;
 
     let db_path = match opts.store_arg {
         Some(p) => p.to_path_buf(),
@@ -821,6 +839,63 @@ pub async fn run_live_runtime_turn(opts: LiveRunOptions<'_>) -> Result<(), Strin
         .map_err(|e| format!("could not create {}: {e}", home.display()))?;
     let signing_key = vitna_daemon::key::load_or_create(&home)?;
     let daemon = DaemonServer::open_with_key_in(&db_path, &home)?;
+
+    let telemetry = daemon.telemetry();
+    let (provider, model_sku, provider_name, routing_reason, route_label): (
+        Arc<dyn Provider>,
+        String,
+        String,
+        String,
+        String,
+    ) = if let Some(lane) = &launch.route {
+        let p: Arc<dyn Provider> =
+            Arc::new(RuntimeLaneProvider::new(lane.clone()).with_telemetry(telemetry));
+        (
+            p,
+            lane.lane.clone(),
+            RUNTIME_PROVIDER_NAME.to_string(),
+            format!("runtime_lane:{}", lane.lane),
+            format!("{} (lane: {})", lane.endpoint, lane.lane),
+        )
+    } else if let Some(direct) = &launch.direct {
+        let provider_id = direct.provider;
+        let mut creds = tokio::task::spawn_blocking(move || {
+            let store = KeyringStore::open()?;
+            let resolver = CredentialResolver::new(Arc::new(store));
+            resolver.resolve(provider_id)
+        })
+        .await
+        .map_err(|e| format!("keychain lookup task failed: {e}"))?
+        .map_err(|e| {
+            format!(
+                "{e}. Store a key with `vitna auth set {}`",
+                provider_id.as_str()
+            )
+        })?;
+        creds.base_url = direct.base_url.clone();
+        let p: Arc<dyn Provider> = match provider_id {
+            ProviderId::Anthropic => Arc::new(AnthropicProvider::new(creds).with_telemetry(telemetry)),
+            ProviderId::OpenAi => Arc::new(OpenAIProvider::new(creds).with_telemetry(telemetry)),
+        };
+        (
+            p,
+            direct.model.clone(),
+            provider_id.as_str().to_string(),
+            format!("direct_keychain:{}", provider_id.as_str()),
+            format!("{} ({})", provider_id.as_str(), direct.model),
+        )
+    } else {
+        return Err(
+            "no model route specified: pass --runtime-url/--lane or --provider/--model".to_string(),
+        );
+    };
+
+    for spec in &launch.mcp_servers {
+        daemon.attach_mcp_server(spec).await?;
+    }
+    let extra_tools = daemon.mcp_tools();
+    let mcp_tool_count = extra_tools.len();
+
     let session = daemon.create_session(opts.workspace)?;
 
     let now_ms = SystemTime::now()
@@ -845,8 +920,8 @@ pub async fn run_live_runtime_turn(opts: LiveRunOptions<'_>) -> Result<(), Strin
         run_id: run_id.clone(),
         workspace_root: opts.workspace.to_path_buf(),
         auto_approve: opts.auto_approve,
-        model_sku: lane.lane.clone(),
-        provider_name: RUNTIME_PROVIDER_NAME.to_string(),
+        model_sku,
+        provider_name,
         sandbox_guarantee: "guarded".to_string(),
         verification_command: opts.verify_cmd,
         allow_unsandboxed: opts.allow_unsandboxed,
@@ -858,21 +933,40 @@ pub async fn run_live_runtime_turn(opts: LiveRunOptions<'_>) -> Result<(), Strin
         Arc::new(runner),
         signing_key,
     )
-    .continuing_at(next_seq);
-    engine.routing_reason = format!("runtime_lane:{}", lane.lane);
+    .continuing_at(next_seq)
+    .with_extra_tools(extra_tools);
+    engine.routing_reason = routing_reason;
+
+    let mut loaded_skill_names = Vec::new();
+    if let Ok(registry) = vitna_skills::SkillRegistry::discover_in_workspace(opts.workspace) {
+        if let Some(block) = registry.render_untrusted_prompt_block() {
+            loaded_skill_names = registry
+                .skills()
+                .iter()
+                .map(|s| s.name.clone())
+                .collect();
+            engine = engine.with_skill_instructions(block, loaded_skill_names.clone());
+        }
+    }
 
     println!("Vitna Code Live Agent Run");
     println!("-------------------------");
-    println!("Task:      {}", opts.task);
-    println!("Workspace: {}", opts.workspace.display());
+    println!("Task:       {}", opts.task);
+    println!("Workspace:  {}", opts.workspace.display());
     write_stdout_line(&format!(
-        "Session:   {}",
+        "Session:    {}",
         sanitize_public_id(&session.session_id)
     ));
-    println!("Runtime:   {} (lane: {})", lane.endpoint, lane.lane);
+    println!("Route:      {route_label}");
+    if mcp_tool_count > 0 {
+        println!("MCP Tools:  {mcp_tool_count} attached");
+    }
+    if !loaded_skill_names.is_empty() {
+        println!("Skills:     {}", loaded_skill_names.join(", "));
+    }
 
     let turn = engine
-        .run_agent_turn(&provider, &[], opts.task, MAX_ROUNDS)
+        .run_agent_turn(provider.as_ref(), &[], opts.task, MAX_ROUNDS)
         .await?;
     let receipt = engine.finalize_run().await?;
 
