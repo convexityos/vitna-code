@@ -89,14 +89,39 @@ impl ReceiptVerifier {
         // 5. Signature check (if public key provided)
         let mut signature_verified = false;
         if let Some(pub_hex) = public_key_hex {
-            let key_bytes = hex::decode(pub_hex)?;
+            let trimmed_pub = pub_hex.trim();
+            let key_bytes = hex::decode(trimmed_pub)?;
             let verifying_key = VerifyingKey::from_bytes(
                 key_bytes.as_slice().try_into().map_err(|_| "invalid key length")?
             )?;
 
+            let key_mismatch = receipt
+                .device_public_key
+                .as_deref()
+                .map(|embedded| !embedded.trim().eq_ignore_ascii_case(trimmed_pub))
+                .unwrap_or(false);
+
             match receipt.verify_signature(&verifying_key) {
-                Ok(true) => signature_verified = true,
-                Ok(false) => errors.push("Device signature mismatch or payload tampered".to_string()),
+                Ok(true) => {
+                    if key_mismatch {
+                        errors.push(
+                            "Receipt was signed by a different device key (embedded key does not match supplied public key)"
+                                .to_string(),
+                        );
+                    } else {
+                        signature_verified = true;
+                    }
+                }
+                Ok(false) => {
+                    if key_mismatch {
+                        errors.push(
+                            "Receipt was signed by a different device key (embedded key does not match supplied public key)"
+                                .to_string(),
+                        );
+                    } else {
+                        errors.push("Device signature mismatch or payload tampered".to_string());
+                    }
+                }
                 Err(e) => errors.push(format!("Signature verification error: {}", e)),
             }
         }
@@ -119,14 +144,11 @@ impl ReceiptVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::Signer;
     use vitna_receipts::*;
 
-    #[test]
-    fn test_verifier_report() {
-        let key = generate_signing_key();
-        let pub_hex = hex::encode(key.verifying_key().to_bytes());
-
-        let mut receipt = VitnaRunReceiptV1 {
+    fn sample_receipt() -> VitnaRunReceiptV1 {
+        VitnaRunReceiptV1 {
             schema_version: "vitna-run-receipt-v1".to_string(),
             run_id: "run-099".to_string(),
             session_id: "sess-099".to_string(),
@@ -148,13 +170,81 @@ mod tests {
             },
             runner_execution_statements: vec![],
             child_receipt_roots: vec![],
+            device_public_key: None,
             device_signature: String::new(),
-        };
+        }
+    }
 
+    #[test]
+    fn test_verifier_report() {
+        let key = generate_signing_key();
+        let pub_hex = hex::encode(key.verifying_key().to_bytes());
+
+        let mut receipt = sample_receipt();
         receipt.sign(&key).expect("signing");
+        assert_eq!(receipt.device_public_key.as_deref(), Some(pub_hex.as_str()));
 
         let report = ReceiptVerifier::verify_receipt(&receipt, Some(&pub_hex)).expect("verify");
         assert!(report.is_valid);
+        assert!(report.signature_verified);
         assert_eq!(report.errors.len(), 0);
+    }
+
+    #[test]
+    fn test_verifier_distinguishes_wrong_key_from_tampered_payload() {
+        let signing_key = generate_signing_key();
+        let pub_hex = hex::encode(signing_key.verifying_key().to_bytes());
+        let other_key = generate_signing_key();
+        let other_pub_hex = hex::encode(other_key.verifying_key().to_bytes());
+
+        let mut receipt = sample_receipt();
+        receipt.sign(&signing_key).expect("signing");
+
+        // Wrong key: distinct error naming different device key.
+        let wrong_key_report =
+            ReceiptVerifier::verify_receipt(&receipt, Some(&other_pub_hex)).expect("verify");
+        assert!(!wrong_key_report.is_valid);
+        assert!(!wrong_key_report.signature_verified);
+        assert!(
+            wrong_key_report
+                .errors
+                .iter()
+                .any(|e| e.contains("different device key")),
+            "expected wrong-key diagnostic, got {:?}",
+            wrong_key_report.errors
+        );
+
+        // Matching key, tampered payload: reports signature mismatch / payload tampered.
+        receipt.changeset.diff_digest = "tampered".to_string();
+        let tampered_report =
+            ReceiptVerifier::verify_receipt(&receipt, Some(&pub_hex)).expect("verify");
+        assert!(!tampered_report.is_valid);
+        assert!(!tampered_report.signature_verified);
+        assert!(
+            tampered_report
+                .errors
+                .iter()
+                .any(|e| e.contains("payload tampered")),
+            "expected tamper diagnostic, got {:?}",
+            tampered_report.errors
+        );
+    }
+
+    #[test]
+    fn test_legacy_receipt_without_device_public_key_still_verifies() {
+        let key = generate_signing_key();
+        let pub_hex = hex::encode(key.verifying_key().to_bytes());
+
+        let mut receipt = sample_receipt();
+        let bytes = receipt.to_canonical_bytes().expect("canonical");
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("device_public_key"),
+            "legacy receipt without device_public_key must omit it from canonical bytes"
+        );
+        receipt.device_signature = hex::encode(key.sign(&bytes).to_bytes());
+
+        let report = ReceiptVerifier::verify_receipt(&receipt, Some(&pub_hex)).expect("verify");
+        assert!(report.is_valid);
+        assert!(report.signature_verified);
     }
 }

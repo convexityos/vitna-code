@@ -70,6 +70,8 @@ export interface RunnerStatement {
   action_id: string;
   statement_digest: string;
   signature: string;
+  sandbox_backend: string | null;
+  sandbox_enforcement: string | null;
 }
 
 export interface Receipt {
@@ -86,6 +88,7 @@ export interface Receipt {
   changeset: ChangeSet;
   runner_execution_statements: RunnerStatement[];
   child_receipt_roots: string[];
+  device_public_key: string | null;
   device_signature: string;
 }
 
@@ -187,7 +190,7 @@ const MODEL_KEYS = ['provider', 'model_sku', 'routing_reason', 'policy_digest'] 
 const EVIDENCE_KEYS = ['evidence_id', 'grade', 'description', 'artifact_digest'] as const;
 const FILE_KEYS = ['path', 'preimage_hash', 'postimage_hash'] as const;
 const CHANGESET_KEYS = ['files_modified', 'diff_digest'] as const;
-const STATEMENT_KEYS = ['action_id', 'statement_digest', 'signature'] as const;
+const STATEMENT_KEYS = ['action_id', 'statement_digest', 'signature', 'sandbox_backend', 'sandbox_enforcement'] as const;
 const RECEIPT_KEYS = [
   'schema_version',
   'run_id',
@@ -202,6 +205,7 @@ const RECEIPT_KEYS = [
   'changeset',
   'runner_execution_statements',
   'child_receipt_roots',
+  'device_public_key',
   'device_signature',
 ] as const;
 
@@ -308,6 +312,8 @@ export function readReceipt(text: string): ReceiptReading {
       action_id: readString(r, value, 'action_id', path, both),
       statement_digest: readString(r, value, 'statement_digest', path, both),
       signature: readString(r, value, 'signature', path, both),
+      sandbox_backend: readOptionalString(r, value, 'sandbox_backend', path),
+      sandbox_enforcement: readOptionalString(r, value, 'sandbox_enforcement', path),
     };
   });
 
@@ -333,6 +339,7 @@ export function readReceipt(text: string): ReceiptReading {
     changeset,
     runner_execution_statements,
     child_receipt_roots,
+    device_public_key: readOptionalString(r, o, 'device_public_key', ''),
     // The schema requires it; the struct defaults it to empty.
     device_signature: readString(r, o, 'device_signature', '', { schemaRequired: true, rustRequired: false }),
   };
@@ -380,14 +387,20 @@ export function signedValue(receipt: Receipt): Json {
       })),
       diff_digest: receipt.changeset.diff_digest,
     },
-    runner_execution_statements: receipt.runner_execution_statements.map((s) => ({
-      action_id: s.action_id,
-      statement_digest: s.statement_digest,
-      signature: s.signature,
-    })),
+    runner_execution_statements: receipt.runner_execution_statements.map((s) => {
+      const out: { [key: string]: Json } = {
+        action_id: s.action_id,
+        statement_digest: s.statement_digest,
+        signature: s.signature,
+      };
+      if (s.sandbox_backend !== null) out.sandbox_backend = s.sandbox_backend;
+      if (s.sandbox_enforcement !== null) out.sandbox_enforcement = s.sandbox_enforcement;
+      return out;
+    }),
     device_signature: '',
   };
   if (receipt.child_receipt_roots.length > 0) value.child_receipt_roots = [...receipt.child_receipt_roots];
+  if (receipt.device_public_key !== null) value.device_public_key = receipt.device_public_key;
   return value;
 }
 

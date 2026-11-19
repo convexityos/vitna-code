@@ -69,6 +69,11 @@ pub struct VitnaRunReceiptV1 {
     pub runner_execution_statements: Vec<RunnerExecutionStatementRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub child_receipt_roots: Vec<String>,
+    /// Hex-encoded 32-byte Ed25519 verifying key that signed this receipt.
+    /// Omitted on legacy receipts written before this field existed so their
+    /// canonical bytes remain unchanged and continue to verify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_public_key: Option<String>,
     #[serde(default)]
     pub device_signature: String,
 }
@@ -118,6 +123,7 @@ impl VitnaRunReceiptV1 {
 
     /// Signs the receipt with an Ed25519 signing key.
     pub fn sign(&mut self, key: &SigningKey) -> Result<(), serde_json::Error> {
+        self.device_public_key = Some(hex::encode(key.verifying_key().to_bytes()));
         let bytes = self.to_canonical_bytes()?;
         let signature = key.sign(&bytes);
         self.device_signature = hex::encode(signature.to_bytes());
@@ -212,11 +218,19 @@ mod tests {
                 sandbox_enforcement: None,
             }],
             child_receipt_roots: Vec::new(),
+            device_public_key: None,
             device_signature: String::new(),
         };
 
+        let legacy_canonical = String::from_utf8(receipt.to_canonical_bytes().unwrap()).unwrap();
+        assert!(!legacy_canonical.contains("device_public_key"));
+
         receipt.sign(&key).expect("signing must succeed");
         assert!(!receipt.device_signature.is_empty());
+        assert_eq!(
+            receipt.device_public_key.as_deref(),
+            Some(hex::encode(verifying_key.to_bytes()).as_str())
+        );
 
         let is_valid = receipt.verify_signature(&verifying_key).expect("verification check");
         assert!(is_valid);

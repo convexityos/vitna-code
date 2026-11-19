@@ -129,6 +129,10 @@
         "type": "string"
       }
     },
+    "device_public_key": {
+      "type": "string",
+      "description": "Hex-encoded 32-byte Ed25519 verifying key that signed this receipt. Optional for backwards compatibility with legacy receipts."
+    },
     "device_signature": {
       "type": "string"
     }

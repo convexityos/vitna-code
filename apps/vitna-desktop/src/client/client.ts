@@ -22,6 +22,8 @@ import {
   type ClientCommand,
   type HandshakeResponse,
   type ProtocolEnvelope,
+  type SessionCreated,
+  type SessionMode,
 } from '../protocol/types';
 import type { EventMeta } from '../run/model';
 import type { LinkState, Transport } from '../transport/types';
@@ -56,6 +58,11 @@ export class VitnaClient {
   private connected = false;
   private pendingHandshake: {
     resolve: (response: HandshakeResponse) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+  private pendingCreateSession: {
+    resolve: (created: SessionCreated) => void;
     reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout>;
   } | null = null;
@@ -123,7 +130,55 @@ export class VitnaClient {
       clearTimeout(this.pendingHandshake.timer);
       this.pendingHandshake = null;
     }
+    if (this.pendingCreateSession) {
+      clearTimeout(this.pendingCreateSession.timer);
+      this.pendingCreateSession.reject(new Error('This window has closed its connection.'));
+      this.pendingCreateSession = null;
+    }
     this.transport.close();
+  }
+
+  /**
+   * Sends CreateSession, awaits the control-plane SessionCreated reply, and
+   * subscribes to the new session's event stream starting from sequence 0.
+   */
+  async createSession(
+    workspacePath: string,
+    initialMode: SessionMode = 'build',
+    title = '',
+  ): Promise<SessionCreated> {
+    if (this.stopped) throw new Error('This window has closed its connection.');
+    if (!this.connected) throw new Error('This window is not connected to the daemon.');
+    if (this.pendingCreateSession) {
+      throw new Error('A session creation request is already waiting for the daemon.');
+    }
+
+    const created = await new Promise<SessionCreated>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCreateSession = null;
+        reject(new Error('The daemon did not answer CreateSession.'));
+      }, this.options.handshakeTimeoutMs);
+      this.pendingCreateSession = { resolve, reject, timer };
+      this.send(
+        {
+          kind: 'CreateSession',
+          body: {
+            workspace_path: workspacePath,
+            initial_mode: initialMode,
+            title,
+            idempotency_key: this.options.newKey(),
+          },
+        },
+        { sessionId: '' },
+      ).catch((error: unknown) => {
+        clearTimeout(timer);
+        this.pendingCreateSession = null;
+        reject(new Error(`CreateSession could not be sent: ${messageOf(error)}`));
+      });
+    });
+
+    await this.subscribe(created.session_id, 0);
+    return created;
   }
 
   /** Asks for every event after `afterSequence`. Also the recovery path after a sequence gap. */
@@ -185,6 +240,22 @@ export class VitnaClient {
       return;
     }
     if (!this.connected) return;
+    if (decoded.ok && decoded.event.kind === 'SessionCreated') {
+      const pending = this.pendingCreateSession;
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.pendingCreateSession = null;
+        pending.resolve(decoded.event.body);
+      }
+      return;
+    }
+    if (decoded.ok && decoded.event.kind === 'ErrorResponse' && this.pendingCreateSession && !decoded.event.body.action_id) {
+      const pending = this.pendingCreateSession;
+      clearTimeout(pending.timer);
+      this.pendingCreateSession = null;
+      pending.reject(new Error(decoded.event.body.message || 'The daemon refused CreateSession.'));
+      return;
+    }
     this.listener.onEnvelope(
       {
         sequence: envelope.sequence,
@@ -211,6 +282,11 @@ export class VitnaClient {
       clearTimeout(this.pendingHandshake.timer);
       this.pendingHandshake.reject(new Error(reason));
       this.pendingHandshake = null;
+    }
+    if (this.pendingCreateSession) {
+      clearTimeout(this.pendingCreateSession.timer);
+      this.pendingCreateSession.reject(new Error(reason));
+      this.pendingCreateSession = null;
     }
     this.listener.onLink({ status: 'lost', reason });
   }

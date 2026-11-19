@@ -74,6 +74,23 @@ describe('checkDeviceSignature', () => {
     expect((await check(signedText, 'abcd')).status).toBe('bad_key');
     expect((await check(signedText, 'zz'.repeat(32))).status).toBe('bad_key');
   });
+  it('distinguishes a wrong key from a tampered payload when device_public_key is embedded', async () => {
+    const withKeyBase = { ...base, device_public_key: publicKeyHex };
+    const receipt = readReceipt(JSON.stringify(withKeyBase)).receipt as Receipt;
+    const signature = new Uint8Array(
+      await crypto.subtle.sign({ name: 'Ed25519' }, keys.privateKey, canonicalBytes(receipt)),
+    );
+    const withKeySigned = JSON.stringify({ ...withKeyBase, device_signature: bytesToHex(signature) });
+
+    expect(await check(withKeySigned, publicKeyHex)).toEqual({ status: 'valid' });
+
+    const other = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair;
+    const otherHex = bytesToHex(new Uint8Array(await crypto.subtle.exportKey('raw', other.publicKey)));
+    expect(await check(withKeySigned, otherHex)).toEqual({ status: 'wrong_key', embeddedKey: publicKeyHex });
+
+    const tampered = withKeySigned.replace('"diff_digest":"d"', '"diff_digest":"tampered"');
+    expect(await check(tampered, publicKeyHex)).toEqual({ status: 'invalid' });
+  });
 });
 
 describe('hex helpers', () => {

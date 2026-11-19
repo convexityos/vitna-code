@@ -26,6 +26,7 @@
 
 import { TERMINAL_RUN_STATES, type DaemonEvent, type ErrorResponse } from '../protocol/types';
 import {
+  emptySession,
   MAX_TOOL_OUTPUT_BYTES,
   OPEN_APPROVAL_STATUSES,
   type ApprovalView,
@@ -104,6 +105,8 @@ export function sessionReducer(state: SessionView, action: SessionAction): Sessi
         message: action.message,
         details: action.details,
       });
+    case 'session/bound':
+      return emptySession(action.sessionId);
     case 'gap/resubscribed':
       return state;
   }

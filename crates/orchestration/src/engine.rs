@@ -815,6 +815,7 @@ impl OrchestrationEngine {
             },
             runner_execution_statements: self.runner_statements.clone(),
             child_receipt_roots: Vec::new(),
+            device_public_key: None,
             device_signature: String::new(),
         };
 

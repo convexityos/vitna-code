@@ -183,6 +183,7 @@ export type SessionAction =
   | { type: 'approval/sent'; approvalId: string }
   | { type: 'approval/send-failed'; approvalId: string; message: string }
   | { type: 'client/diagnostic'; level: string; code: string; message: string; details: string }
+  | { type: 'session/bound'; sessionId: string }
   | { type: 'gap/resubscribed' };
 
 export function emptySession(sessionId: string): SessionView {

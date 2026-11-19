@@ -62,6 +62,9 @@ export async function buildSampleReceipt(): Promise<SampleReceipt> {
   const leaves = await Promise.all(events.map((event) => sha256Hex(event)));
   const commit = new Uint8Array(await subtle.digest('SHA-1', new TextEncoder().encode(SERVICE_BEFORE)));
 
+  const publicKey = new Uint8Array(await subtle.exportKey('raw', keys.publicKey));
+  const publicKeyHex = bytesToHex(publicKey);
+
   const receipt: Receipt = {
     schema_version: 'vitna-run-receipt-v1',
     run_id: 'run-sample-1',
@@ -105,13 +108,13 @@ export async function buildSampleReceipt(): Promise<SampleReceipt> {
     // leaves them out rather than inventing one.
     runner_execution_statements: [],
     child_receipt_roots: [],
+    device_public_key: publicKeyHex,
     device_signature: '',
   };
 
   const signature = new Uint8Array(await subtle.sign({ name: 'Ed25519' }, keys.privateKey, canonicalBytes(receipt)));
-  const publicKey = new Uint8Array(await subtle.exportKey('raw', keys.publicKey));
 
   const value = signedValue(receipt) as Record<string, unknown>;
   value.device_signature = bytesToHex(signature);
-  return { ok: true, json: JSON.stringify(value, null, 2), publicKeyHex: bytesToHex(publicKey) };
+  return { ok: true, json: JSON.stringify(value, null, 2), publicKeyHex };
 }

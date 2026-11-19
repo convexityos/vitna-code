@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import type { ApprovalScope } from '../protocol/types';
+import type { ApprovalScope, SessionMode } from '../protocol/types';
 import { emptySession, type SessionView } from '../run/model';
 import { sessionReducer } from '../run/reducer';
 import type { HostCapabilities, HostSession, LinkState, Transport } from '../transport/types';
 import { VitnaClient } from './client';
 
 export interface SessionActions {
+  createSession(workspacePath: string, initialMode?: SessionMode, title?: string): Promise<HostSession | null>;
   submitTurn(prompt: string, attachedFilePaths: string[]): Promise<boolean>;
   approve(approvalId: string, scope: ApprovalScope): Promise<void>;
   reject(approvalId: string, reason: string): Promise<void>;
@@ -37,15 +38,19 @@ const NO_HOST: HostCapabilities = {};
 
 export function useSession(transport: Transport | null): SessionHandle {
   const [link, setLink] = useState<LinkState>(transport ? { status: 'idle' } : { status: 'no_bridge' });
+  const [activeSession, setActiveSession] = useState<HostSession | null>(transport?.session ?? null);
   const [view, dispatch] = useReducer(sessionReducer, transport?.session?.id ?? '', emptySession);
   const clientRef = useRef<VitnaClient | null>(null);
   const viewRef = useRef(view);
   viewRef.current = view;
+  const sessionRef = useRef(activeSession);
+  sessionRef.current = activeSession;
   // Approvals with a decision on its way. A ref, not state, so a second key
   // press in the same frame cannot see a stale "pending" and send again.
   const inFlight = useRef(new Set<string>());
 
   useEffect(() => {
+    setActiveSession(transport?.session ?? null);
     if (!transport) return undefined;
     const client = new VitnaClient(transport, {
       onLink: setLink,
@@ -66,7 +71,7 @@ export function useSession(transport: Transport | null): SessionHandle {
   const gapAfter = view.gap?.after;
   useEffect(() => {
     const client = clientRef.current;
-    const session = transport?.session;
+    const session = activeSession;
     if (gapAfter === undefined || !client || !session || !client.isConnected) return;
     client.subscribe(session.id, gapAfter).catch((error: unknown) => {
       dispatch({
@@ -77,7 +82,7 @@ export function useSession(transport: Transport | null): SessionHandle {
         details: messageOf(error),
       });
     });
-  }, [gapAfter, transport]);
+  }, [gapAfter, activeSession]);
 
   const runCommand = useCallback(
     async (label: string, send: (client: VitnaClient, runId: string) => Promise<void>): Promise<boolean> => {
@@ -113,7 +118,7 @@ export function useSession(transport: Transport | null): SessionHandle {
 
       dispatch({ type: 'approval/sending', approvalId, choice, scope: choice === 'approve' ? scope : null, reason });
       const { action_digest } = approval.request;
-      const route = { runId: approval.runId };
+      const route = { sessionId: sessionRef.current?.id, runId: approval.runId };
       try {
         if (choice === 'approve') {
           await client.send({ kind: 'ApproveAction', body: { approval_id: approvalId, action_digest, scope } }, route);
@@ -132,16 +137,44 @@ export function useSession(transport: Transport | null): SessionHandle {
 
   const actions = useMemo<SessionActions>(
     () => ({
+      async createSession(workspacePath, initialMode = 'build', title = '') {
+        const client = clientRef.current;
+        if (!client || !client.isConnected) return null;
+        try {
+          const created = await client.createSession(workspacePath, initialMode, title);
+          const next: HostSession = {
+            id: created.session_id,
+            workspacePath: created.workspace_path,
+            title,
+            mode: created.initial_mode,
+          };
+          setActiveSession(next);
+          dispatch({ type: 'session/bound', sessionId: next.id });
+          return next;
+        } catch (error) {
+          dispatch({
+            type: 'client/diagnostic',
+            level: 'error',
+            code: 'create_session_failed',
+            message: 'The session could not be created.',
+            details: messageOf(error),
+          });
+          return null;
+        }
+      },
       async submitTurn(prompt, attachedFilePaths) {
         const client = clientRef.current;
-        const session = transport?.session;
+        const session = sessionRef.current;
         if (!client || !client.isConnected || !session) return false;
         const id = globalThis.crypto.randomUUID();
         try {
-          await client.send({
-            kind: 'SubmitTurn',
-            body: { session_id: session.id, prompt, attached_file_paths: attachedFilePaths, idempotency_key: id },
-          });
+          await client.send(
+            {
+              kind: 'SubmitTurn',
+              body: { session_id: session.id, prompt, attached_file_paths: attachedFilePaths, idempotency_key: id },
+            },
+            { sessionId: session.id },
+          );
           dispatch({ type: 'turn/sent', id, prompt, sentAt: Date.now() });
           return true;
         } catch (error) {
@@ -161,28 +194,36 @@ export function useSession(transport: Transport | null): SessionHandle {
         runCommand('The steer', (client, runId) =>
           client.send(
             { kind: 'SteerRun', body: { run_id: runId, feedback, idempotency_key: globalThis.crypto.randomUUID() } },
-            { runId },
+            { sessionId: sessionRef.current?.id, runId },
           ),
         ),
       pause: () =>
         runCommand('Pause', (client, runId) =>
-          client.send({ kind: 'PauseRun', body: { run_id: runId, reason: 'paused from the desktop window' } }, { runId }),
+          client.send(
+            { kind: 'PauseRun', body: { run_id: runId, reason: 'paused from the desktop window' } },
+            { sessionId: sessionRef.current?.id, runId },
+          ),
         ),
       resume: () =>
-        runCommand('Resume', (client, runId) => client.send({ kind: 'ResumeRun', body: { run_id: runId } }, { runId })),
+        runCommand('Resume', (client, runId) =>
+          client.send({ kind: 'ResumeRun', body: { run_id: runId } }, { sessionId: sessionRef.current?.id, runId }),
+        ),
       cancel: () =>
         runCommand('Cancel', (client, runId) =>
-          client.send({ kind: 'CancelRun', body: { run_id: runId, reason: 'cancelled from the desktop window' } }, { runId }),
+          client.send(
+            { kind: 'CancelRun', body: { run_id: runId, reason: 'cancelled from the desktop window' } },
+            { sessionId: sessionRef.current?.id, runId },
+          ),
         ),
     }),
-    [decide, runCommand, transport],
+    [decide, runCommand],
   );
 
   return {
     kind: transport?.kind ?? null,
     link,
     view,
-    session: transport?.session ?? null,
+    session: activeSession,
     host: transport?.host ?? NO_HOST,
     actions,
   };
