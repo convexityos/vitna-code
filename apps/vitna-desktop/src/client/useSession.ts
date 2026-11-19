@@ -14,6 +14,8 @@ export interface SessionActions {
   pause(): Promise<boolean>;
   resume(): Promise<boolean>;
   cancel(): Promise<boolean>;
+  spawnChild(goal: string): Promise<boolean>;
+  applyChangeSet(changeSetId: string, expectedBaseCommit?: string): Promise<boolean>;
 }
 
 export interface SessionHandle {
@@ -215,6 +217,52 @@ export function useSession(transport: Transport | null): SessionHandle {
             { sessionId: sessionRef.current?.id, runId },
           ),
         ),
+      spawnChild: (goal) =>
+        runCommand('Spawn child', (client, runId) =>
+          client.send(
+            {
+              kind: 'SpawnChild',
+              body: {
+                parent_run_id: runId,
+                goal,
+                requested_mode: 'build',
+                token_budget: 0,
+                max_nesting_depth: 0,
+                idempotency_key: globalThis.crypto.randomUUID(),
+              },
+            },
+            { sessionId: sessionRef.current?.id, runId },
+          ),
+        ),
+      async applyChangeSet(changeSetId, expectedBaseCommit = '') {
+        const client = clientRef.current;
+        const session = sessionRef.current;
+        if (!client || !client.isConnected || !session) return false;
+        try {
+          await client.send(
+            {
+              kind: 'ApplyChangeSet',
+              body: {
+                change_set_id: changeSetId,
+                target_checkout_path: session.workspacePath,
+                expected_base_commit: expectedBaseCommit,
+                idempotency_key: globalThis.crypto.randomUUID(),
+              },
+            },
+            { sessionId: session.id },
+          );
+          return true;
+        } catch (error) {
+          dispatch({
+            type: 'client/diagnostic',
+            level: 'error',
+            code: 'send_failed',
+            message: 'Apply changeset could not be sent.',
+            details: messageOf(error),
+          });
+          return false;
+        }
+      },
     }),
     [decide, runCommand],
   );

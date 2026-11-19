@@ -10,6 +10,8 @@ export const COMMANDS = [
   { name: 'pause', hint: 'Pause the run', argument: null },
   { name: 'resume', hint: 'Resume a paused run', argument: null },
   { name: 'cancel', hint: 'Cancel the run', argument: null },
+  { name: 'spawn', hint: 'Spawn an isolated child agent for a sub-goal', argument: 'goal for child agent' },
+  { name: 'apply', hint: 'Apply a verified changeset to the primary checkout', argument: 'changeset id' },
   { name: 'receipt', hint: 'Open the receipt reader', argument: null },
   { name: 'providers', hint: 'See the model providers the host offers', argument: null },
 ] as const;

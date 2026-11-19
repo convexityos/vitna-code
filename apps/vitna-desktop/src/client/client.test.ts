@@ -359,4 +359,69 @@ describe('VitnaClient failure paths', () => {
     await client.start();
     await expect(client.createSession('/nonexistent')).rejects.toThrow('workspace path does not exist');
   });
+
+  it('encodes SpawnChild and ApplyChangeSet with declared command fields', async () => {
+    const { decodeCommandPayload, encodeEvent } = await import('../protocol/codec');
+    const transport = new Scripted((envelope) => {
+      const { kind } = decodeCommandPayload(envelope);
+      if (kind === 'HandshakeRequest') {
+        return encodeEvent(
+          {
+            kind: 'HandshakeResponse',
+            body: {
+              selected_version_major: 1,
+              selected_version_minor: 0,
+              daemon_build_commit: 'test',
+              accepted: true,
+              rejection_reason: '',
+            },
+          },
+          { session_id: '', run_id: '', sequence: 0, idempotency_key: '' },
+        );
+      }
+      return null;
+    });
+
+    const client = new VitnaClient(transport, { onLink: () => {}, onEnvelope: () => {} }, { newKey: () => 'k-fixed' });
+    await client.start();
+    await client.send(
+      {
+        kind: 'SpawnChild',
+        body: {
+          parent_run_id: 'run-parent-1',
+          goal: 'write integration tests',
+          requested_mode: 'build',
+          token_budget: 0,
+          max_nesting_depth: 0,
+          idempotency_key: 'k-spawn',
+        },
+      },
+      { sessionId: 's', runId: 'run-parent-1' },
+    );
+    await client.send(
+      {
+        kind: 'ApplyChangeSet',
+        body: {
+          change_set_id: 'cs-7',
+          target_checkout_path: '/w',
+          expected_base_commit: 'abc123',
+          idempotency_key: 'k-apply',
+        },
+      },
+      { sessionId: 's' },
+    );
+
+    const kinds = transport.sent.map((e) => decodeCommandPayload(e).kind);
+    expect(kinds).toEqual(['HandshakeRequest', 'SubscribeEvents', 'SpawnChild', 'ApplyChangeSet']);
+    expect(decodeCommandPayload(transport.sent[2]!).body).toMatchObject({
+      parent_run_id: 'run-parent-1',
+      goal: 'write integration tests',
+    });
+    expect(decodeCommandPayload(transport.sent[3]!).body).toMatchObject({
+      change_set_id: 'cs-7',
+      target_checkout_path: '/w',
+      expected_base_commit: 'abc123',
+    });
+  });
 });
+
