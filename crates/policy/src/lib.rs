@@ -1,5 +1,7 @@
 //! Execution policy engine, exact-action digests, capability checks, and signed model policies.
 
+pub mod mandate;
+
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};

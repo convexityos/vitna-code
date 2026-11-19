@@ -89,6 +89,7 @@ impl BenchmarkSuite {
             runner_execution_statements: Vec::new(),
             child_receipt_roots: Vec::new(),
             device_public_key: None,
+            mandate_provenance: None,
             device_signature: String::new(),
         };
 

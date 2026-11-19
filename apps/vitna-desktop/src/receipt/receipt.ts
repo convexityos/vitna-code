@@ -74,6 +74,16 @@ export interface RunnerStatement {
   sandbox_enforcement: string | null;
 }
 
+export interface MandateProvenance {
+  chain_hash: string;
+  root_jti: string;
+  path: string[];
+  ledger: string;
+  currency: string;
+  total_spent: string;
+  spend_digests: string[];
+}
+
 export interface Receipt {
   schema_version: string;
   run_id: string;
@@ -89,6 +99,7 @@ export interface Receipt {
   runner_execution_statements: RunnerStatement[];
   child_receipt_roots: string[];
   device_public_key: string | null;
+  mandate_provenance?: MandateProvenance | null;
   device_signature: string;
 }
 
@@ -191,6 +202,15 @@ const EVIDENCE_KEYS = ['evidence_id', 'grade', 'description', 'artifact_digest']
 const FILE_KEYS = ['path', 'preimage_hash', 'postimage_hash'] as const;
 const CHANGESET_KEYS = ['files_modified', 'diff_digest'] as const;
 const STATEMENT_KEYS = ['action_id', 'statement_digest', 'signature', 'sandbox_backend', 'sandbox_enforcement'] as const;
+const MANDATE_PROVENANCE_KEYS = [
+  'chain_hash',
+  'root_jti',
+  'path',
+  'ledger',
+  'currency',
+  'total_spent',
+  'spend_digests',
+] as const;
 const RECEIPT_KEYS = [
   'schema_version',
   'run_id',
@@ -206,6 +226,7 @@ const RECEIPT_KEYS = [
   'runner_execution_statements',
   'child_receipt_roots',
   'device_public_key',
+  'mandate_provenance',
   'device_signature',
 ] as const;
 
@@ -325,6 +346,37 @@ export function readReceipt(text: string): ReceiptReading {
     return value;
   });
 
+  let mandate_provenance: MandateProvenance | null = null;
+  if (o.mandate_provenance !== undefined && o.mandate_provenance !== null) {
+    if (!isObj(o.mandate_provenance)) {
+      r.schemaErrors.push('mandate_provenance must be an object');
+    } else {
+      const mp = o.mandate_provenance;
+      noteUncovered(r, mp, MANDATE_PROVENANCE_KEYS, 'mandate_provenance.');
+      mandate_provenance = {
+        chain_hash: readString(r, mp, 'chain_hash', 'mandate_provenance.', both),
+        root_jti: readString(r, mp, 'root_jti', 'mandate_provenance.', both),
+        path: readList(r, mp, 'path', 'mandate_provenance.', true, (value, path) => {
+          if (typeof value !== 'string') {
+            r.schemaErrors.push(`${path.slice(0, -1)} must be a string`);
+            return null;
+          }
+          return value;
+        }),
+        ledger: readString(r, mp, 'ledger', 'mandate_provenance.', both),
+        currency: readString(r, mp, 'currency', 'mandate_provenance.', both),
+        total_spent: readString(r, mp, 'total_spent', 'mandate_provenance.', both),
+        spend_digests: readList(r, mp, 'spend_digests', 'mandate_provenance.', true, (value, path) => {
+          if (typeof value !== 'string') {
+            r.schemaErrors.push(`${path.slice(0, -1)} must be a string`);
+            return null;
+          }
+          return value;
+        }),
+      };
+    }
+  }
+
   const receipt: Receipt = {
     schema_version,
     run_id: readString(r, o, 'run_id', '', both),
@@ -340,6 +392,7 @@ export function readReceipt(text: string): ReceiptReading {
     runner_execution_statements,
     child_receipt_roots,
     device_public_key: readOptionalString(r, o, 'device_public_key', ''),
+    ...(mandate_provenance !== null ? { mandate_provenance } : {}),
     // The schema requires it; the struct defaults it to empty.
     device_signature: readString(r, o, 'device_signature', '', { schemaRequired: true, rustRequired: false }),
   };
@@ -401,6 +454,17 @@ export function signedValue(receipt: Receipt): Json {
   };
   if (receipt.child_receipt_roots.length > 0) value.child_receipt_roots = [...receipt.child_receipt_roots];
   if (receipt.device_public_key !== null) value.device_public_key = receipt.device_public_key;
+  if (receipt.mandate_provenance !== undefined && receipt.mandate_provenance !== null) {
+    value.mandate_provenance = {
+      chain_hash: receipt.mandate_provenance.chain_hash,
+      root_jti: receipt.mandate_provenance.root_jti,
+      path: [...receipt.mandate_provenance.path],
+      ledger: receipt.mandate_provenance.ledger,
+      currency: receipt.mandate_provenance.currency,
+      total_spent: receipt.mandate_provenance.total_spent,
+      spend_digests: [...receipt.mandate_provenance.spend_digests],
+    };
+  }
   return value;
 }
 

@@ -4,6 +4,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+pub use vitna_policy::mandate::MandateProvenanceRecord;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelSelectionRecord {
@@ -74,6 +75,12 @@ pub struct VitnaRunReceiptV1 {
     /// canonical bytes remain unchanged and continue to verify.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_public_key: Option<String>,
+    /// Optional `am/1` Agent Mandate provenance for mandated autonomous runs.
+    ///
+    /// Omitted when absent so receipts without mandates produce identical
+    /// canonical bytes and existing fixtures continue to verify unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mandate_provenance: Option<MandateProvenanceRecord>,
     #[serde(default)]
     pub device_signature: String,
 }
@@ -219,11 +226,13 @@ mod tests {
             }],
             child_receipt_roots: Vec::new(),
             device_public_key: None,
+            mandate_provenance: None,
             device_signature: String::new(),
         };
 
         let legacy_canonical = String::from_utf8(receipt.to_canonical_bytes().unwrap()).unwrap();
         assert!(!legacy_canonical.contains("device_public_key"));
+        assert!(!legacy_canonical.contains("mandate_provenance"));
 
         receipt.sign(&key).expect("signing must succeed");
         assert!(!receipt.device_signature.is_empty());
@@ -239,5 +248,53 @@ mod tests {
         receipt.changeset.diff_digest = "tampered-digest".to_string();
         let is_tampered_valid = receipt.verify_signature(&verifying_key).unwrap_or(false);
         assert!(!is_tampered_valid);
+    }
+
+    #[test]
+    fn test_receipt_mandate_provenance_signing_and_tamper_detection() {
+        let key = generate_signing_key();
+        let verifying_key = key.verifying_key();
+
+        let mut receipt = VitnaRunReceiptV1 {
+            schema_version: "vitna-run-receipt-v1".to_string(),
+            run_id: "run-mandated-01".to_string(),
+            session_id: "sess-mandated-01".to_string(),
+            workspace_fingerprint: "ws-fp-mandated".to_string(),
+            base_commit_sha: "abcd1234abcd1234abcd1234abcd1234abcd1234".to_string(),
+            model_selection: ModelSelectionRecord {
+                provider: "anthropic".to_string(),
+                model_sku: "claude-3-7-sonnet".to_string(),
+                routing_reason: "pinned_profile".to_string(),
+                policy_digest: None,
+            },
+            event_hash_chain_root: "merkle-root-mandated".to_string(),
+            isolation_label: "strong".to_string(),
+            completion_state: "completed_with_evidence".to_string(),
+            evidence_items: Vec::new(),
+            changeset: ChangeSetRecord {
+                files_modified: Vec::new(),
+                diff_digest: "diff-mandated".to_string(),
+            },
+            runner_execution_statements: Vec::new(),
+            child_receipt_roots: Vec::new(),
+            device_public_key: None,
+            mandate_provenance: Some(MandateProvenanceRecord {
+                chain_hash: "sha256:abc123".to_string(),
+                root_jti: "mnd_root".to_string(),
+                path: vec!["mnd_root".to_string(), "mnd_child".to_string()],
+                ledger: "https://ledger.convexityos.com".to_string(),
+                currency: "USD".to_string(),
+                total_spent: "0.45".to_string(),
+                spend_digests: vec!["sha256:spend1".to_string(), "sha256:spend2".to_string()],
+            }),
+            device_signature: String::new(),
+        };
+
+        receipt.sign(&key).expect("signing mandated receipt succeeds");
+        assert!(receipt.verify_signature(&verifying_key).expect("verify succeeds"));
+
+        // Tampering with total_spent must invalidate the signature.
+        receipt.mandate_provenance.as_mut().unwrap().total_spent = "0.01".to_string();
+        assert!(!receipt.verify_signature(&verifying_key).unwrap_or(false));
     }
 }

@@ -2,11 +2,13 @@
 
 pub mod broker;
 pub mod client;
+pub mod mandate;
 pub mod protocol;
 pub mod transport;
 
 pub use broker::{discover_and_bridge_tools, namespaced_tool_name, McpToolBridge};
 pub use client::McpClient;
+pub use mandate::{MandatedToolBridge, ToolCatalogEntry, ToolPriceSpec, ToolPricingCatalog, ToolPricingCatalogFile};
 pub use protocol::{
     JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpContentItem,
     McpToolCallResult, McpToolDescriptor, McpToolsListResult,
