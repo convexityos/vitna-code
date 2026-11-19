@@ -85,7 +85,7 @@ export function Workbench({ transport, initialPrompt, onOpenSample, sampleError 
         case 'unknown_command':
           setNotice({
             tone: 'rust',
-            text: `There is no /${intent.name} command. The commands are /steer, /pause, /resume, /cancel, /receipt and /providers.`,
+            text: `There is no /${intent.name} command. The commands are /steer, /pause, /resume, /cancel, /spawn, /apply, /receipt and /providers.`,
           });
           return false;
         case 'prompt': {
@@ -106,6 +106,26 @@ export function Workbench({ transport, initialPrompt, onOpenSample, sampleError 
             openProviders();
             return true;
           }
+          if (intent.name === 'spawn') {
+            if (!intent.argument) {
+              setNotice({ tone: 'plain', text: 'Write the child agent goal after /spawn.' });
+              return false;
+            }
+            if (!view.currentRunId) {
+              setNotice({ tone: 'plain', text: 'Start a parent run before using /spawn.' });
+              return false;
+            }
+            return actions.spawnChild(intent.argument);
+          }
+          if (intent.name === 'apply') {
+            const parts = intent.argument.split(/\s+/).filter(Boolean);
+            const changeSetId = parts[0] ?? '';
+            if (!changeSetId) {
+              setNotice({ tone: 'plain', text: 'Write the changeset id after /apply.' });
+              return false;
+            }
+            return actions.applyChangeSet(changeSetId, parts[1] ?? '');
+          }
           if (!runActive) {
             setNotice({ tone: 'plain', text: `There is no run going, so /${intent.name} has nothing to act on.` });
             return false;
@@ -123,7 +143,7 @@ export function Workbench({ transport, initialPrompt, onOpenSample, sampleError 
         }
       }
     },
-    [actions, openProviders, openReceipt, runActive],
+    [actions, openProviders, openReceipt, runActive, view.currentRunId],
   );
 
   const composer = (variant: 'hero' | 'dock') => (

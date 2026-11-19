@@ -7,8 +7,9 @@ use std::time::Instant;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::mpsc::UnboundedSender;
 use vitna_protocol::messages::{
-    run_state, tool_status, ApprovalRequested, Diagnostic, DiffChanged, ErrorResponse,
-    MessageDelta, RunStateChanged, ToolFinished, ToolOutput, ToolProposed, ToolStarted,
+    run_state, tool_status, AgentCompleted, AgentSpawned, ApprovalRequested, Diagnostic,
+    DiffChanged, ErrorResponse, MessageDelta, RunStateChanged, ToolFinished, ToolOutput,
+    ToolProposed, ToolStarted, UsageUpdated,
 };
 use vitna_protocol::{type_url, ProtocolEnvelope};
 
@@ -64,6 +65,8 @@ pub struct App {
     pub active_run_id: Option<String>,
     /// True while a turn is in flight on the daemon.
     pub run_active: bool,
+    /// Latest token and cost accounting reported by the daemon for the active run.
+    pub usage: Option<UsageUpdated>,
     /// Channel to send outbound protocol commands to the daemon connection task.
     pub cmd_tx: Option<UnboundedSender<OutboundCmd>>,
     /// None until the receipts directory has been read once.
@@ -99,6 +102,7 @@ impl App {
             session_id: None,
             active_run_id: None,
             run_active: false,
+            usage: None,
             cmd_tx: None,
             ledger: None,
             turn: Vec::new(),
@@ -356,6 +360,50 @@ impl App {
                         tone,
                         text: clean(&diag.message),
                     });
+                }
+                false
+            }
+            type_url::event::AGENT_SPAWNED => {
+                if let Ok(spawned) = env.payload_as::<AgentSpawned>() {
+                    self.last_model_message_id = None;
+                    let goal = clean(&spawned.goal);
+                    let child = clean(&spawned.child_run_id);
+                    let text = if goal.is_empty() {
+                        format!("Child agent {child} spawned.")
+                    } else {
+                        format!("Child agent {child} spawned: {goal}")
+                    };
+                    self.turn.push(turn::Entry::Note {
+                        tone: theme::FAINT,
+                        text,
+                    });
+                }
+                false
+            }
+            type_url::event::AGENT_COMPLETED => {
+                if let Ok(done) = env.payload_as::<AgentCompleted>() {
+                    self.last_model_message_id = None;
+                    let child = clean(&done.child_run_id);
+                    let state = clean(&done.completion_state);
+                    let digest = clean(&done.result_artifact_digest);
+                    let tone = if state.contains("fail") || state.contains("cancel") {
+                        theme::RUST
+                    } else {
+                        theme::FAINT
+                    };
+                    let text = if digest.is_empty() {
+                        format!("Child agent {child} {state}.")
+                    } else {
+                        format!("Child agent {child} {state} (digest: {digest}).")
+                    };
+                    self.turn.push(turn::Entry::Note { tone, text });
+                    return true;
+                }
+                false
+            }
+            type_url::event::USAGE_UPDATED => {
+                if let Ok(usage) = env.payload_as::<UsageUpdated>() {
+                    self.usage = Some(usage);
                 }
                 false
             }
@@ -687,29 +735,164 @@ impl App {
     }
 
     /// Enter, with something typed. When connected with an open daemon session,
-    /// dispatches `SubmitTurn` over the wire. Otherwise keeps the draft intact
-    /// and states why it was not sent.
+    /// dispatches slash commands (`/steer`, `/pause`, `/resume`, `/cancel`,
+    /// `/spawn`, `/apply`) or `SubmitTurn` (with `@path` workspace file
+    /// attachments) over the wire. Otherwise keeps the draft intact and states
+    /// why it was not sent.
     fn submit(&mut self) {
         if matches!(self.link, Link::Open { .. }) && self.session_id.is_some() {
-            if self.run_active {
-                self.notice = Some("Not sent. A turn is already running.".to_string());
+            let raw: String = self.draft.iter().collect();
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
                 return;
             }
-            if let Some(tx) = &self.cmd_tx {
-                let prompt: String = self.draft.iter().collect();
-                if tx
-                    .send(OutboundCmd::SubmitTurn {
-                        prompt: prompt.trim().to_string(),
-                    })
-                    .is_ok()
-                {
-                    self.draft.clear();
-                    self.cursor = 0;
-                    self.scroll = 0;
-                    self.run_active = true;
-                    self.active_run_id = None;
-                    self.notice = None;
+
+            if trimmed.starts_with('/') && !trimmed.starts_with("//") {
+                let mut parts = trimmed[1..].splitn(2, char::is_whitespace);
+                let cmd_name = parts.next().unwrap_or("").to_ascii_lowercase();
+                let arg = parts.next().unwrap_or("").trim();
+
+                let outbound = match cmd_name.as_str() {
+                    "steer" => {
+                        if !self.run_active {
+                            self.notice = Some("No active run to steer.".to_string());
+                            return;
+                        }
+                        if arg.is_empty() {
+                            self.notice = Some("Write feedback after /steer.".to_string());
+                            return;
+                        }
+                        let Some(run_id) = self.active_run_id.clone() else {
+                            self.notice = Some("Waiting for run id before steering.".to_string());
+                            return;
+                        };
+                        OutboundCmd::SteerRun {
+                            run_id,
+                            feedback: arg.to_string(),
+                        }
+                    }
+                    "pause" => {
+                        if !self.run_active {
+                            self.notice = Some("No active run to pause.".to_string());
+                            return;
+                        }
+                        let Some(run_id) = self.active_run_id.clone() else {
+                            self.notice = Some("Waiting for run id before pausing.".to_string());
+                            return;
+                        };
+                        OutboundCmd::PauseRun {
+                            run_id,
+                            reason: if arg.is_empty() {
+                                "paused from vitna-tui".to_string()
+                            } else {
+                                arg.to_string()
+                            },
+                        }
+                    }
+                    "resume" => {
+                        if !self.run_active {
+                            self.notice = Some("No active run to resume.".to_string());
+                            return;
+                        }
+                        let Some(run_id) = self.active_run_id.clone() else {
+                            self.notice = Some("Waiting for run id before resuming.".to_string());
+                            return;
+                        };
+                        OutboundCmd::ResumeRun { run_id }
+                    }
+                    "cancel" => {
+                        if !self.run_active {
+                            self.notice = Some("No active run to cancel.".to_string());
+                            return;
+                        }
+                        let Some(run_id) = self.active_run_id.clone() else {
+                            self.notice = Some("Waiting for run id before cancelling.".to_string());
+                            return;
+                        };
+                        OutboundCmd::CancelRun {
+                            run_id,
+                            reason: if arg.is_empty() {
+                                "cancelled from vitna-tui".to_string()
+                            } else {
+                                arg.to_string()
+                            },
+                        }
+                    }
+                    "spawn" => {
+                        if arg.is_empty() {
+                            self.notice = Some("Write a goal after /spawn.".to_string());
+                            return;
+                        }
+                        let Some(parent_run_id) = self.active_run_id.clone() else {
+                            self.notice =
+                                Some("Run a parent turn first before /spawn.".to_string());
+                            return;
+                        };
+                        OutboundCmd::SpawnChild {
+                            parent_run_id,
+                            goal: arg.to_string(),
+                        }
+                    }
+                    "apply" => {
+                        let mut tokens = arg.split_whitespace();
+                        let Some(change_set_id) = tokens.next() else {
+                            self.notice =
+                                Some("Write a changeset id after /apply.".to_string());
+                            return;
+                        };
+                        let expected_base_commit = tokens.next().unwrap_or("").to_string();
+                        OutboundCmd::ApplyChangeSet {
+                            change_set_id: change_set_id.to_string(),
+                            target_checkout_path: self.root.to_string_lossy().into_owned(),
+                            expected_base_commit,
+                        }
+                    }
+                    other => {
+                        self.notice = Some(format!(
+                            "Unknown command /{other}. Commands: /steer, /pause, /resume, /cancel, /spawn, /apply."
+                        ));
+                        return;
+                    }
+                };
+
+                if let Some(tx) = &self.cmd_tx {
+                    if tx.send(outbound).is_ok() {
+                        self.draft.clear();
+                        self.cursor = 0;
+                        self.notice = None;
+                        return;
+                    }
+                }
+            } else {
+                if self.run_active {
+                    self.notice = Some(
+                        "Not sent. A turn is already running. Use /steer, /pause, /resume, or /cancel."
+                            .to_string(),
+                    );
                     return;
+                }
+                if let Some(tx) = &self.cmd_tx {
+                    let prompt = if let Some(rest) = trimmed.strip_prefix("//") {
+                        format!("/{rest}")
+                    } else {
+                        trimmed.to_string()
+                    };
+                    let attached_file_paths = parse_attachments(&prompt);
+                    if tx
+                        .send(OutboundCmd::SubmitTurn {
+                            prompt,
+                            attached_file_paths,
+                        })
+                        .is_ok()
+                    {
+                        self.draft.clear();
+                        self.cursor = 0;
+                        self.scroll = 0;
+                        self.run_active = true;
+                        self.active_run_id = None;
+                        self.notice = None;
+                        return;
+                    }
                 }
             }
         }
@@ -728,6 +911,25 @@ impl App {
             .to_string(),
         );
     }
+}
+
+/// Extracts deduplicated `@path` workspace file attachments from a prompt,
+/// matching the desktop client's `composerInput.ts` rules.
+pub fn parse_attachments(prompt: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for token in prompt.split_whitespace() {
+        let Some(rest) = token.strip_prefix('@') else {
+            continue;
+        };
+        if rest.is_empty() || rest.contains('@') {
+            continue;
+        }
+        let cleaned = rest.trim_end_matches([')', ',', '.', ';', ':', '!', '?']);
+        if !cleaned.is_empty() && !out.iter().any(|existing| existing == cleaned) {
+            out.push(cleaned.to_string());
+        }
+    }
+    out
 }
 
 fn extract_target(raw_args: &[u8]) -> Option<String> {
@@ -975,5 +1177,149 @@ mod tests {
             other => panic!("expected fresh Model entry, got {other:?}"),
         }
     }
+
+    #[test]
+    fn parse_attachments_and_slash_commands_dispatch_expected_protocol_commands() {
+        assert_eq!(
+            parse_attachments("inspect @src/lib.rs, @README.md! and @src/lib.rs"),
+            vec!["src/lib.rs".to_string(), "README.md".to_string()]
+        );
+        assert!(parse_attachments("contact user@example.com").is_empty());
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut a = app();
+        a.link = Link::Open {
+            version: "1.0".into(),
+        };
+        a.session_id = Some("sess-1".into());
+        a.cmd_tx = Some(tx);
+
+        // Plain prompt with @path attaches file and starts run.
+        typed(&mut a, "check @README.md.");
+        a.key(press(KeyCode::Enter));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            OutboundCmd::SubmitTurn {
+                prompt: "check @README.md.".into(),
+                attached_file_paths: vec!["README.md".into()],
+            }
+        );
+
+        // Active run slash commands: /steer, /pause, /resume, /cancel.
+        a.active_run_id = Some("run-42".into());
+        typed(&mut a, "/steer keep tests fast");
+        a.key(press(KeyCode::Enter));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            OutboundCmd::SteerRun {
+                run_id: "run-42".into(),
+                feedback: "keep tests fast".into(),
+            }
+        );
+
+        typed(&mut a, "/pause checking diff");
+        a.key(press(KeyCode::Enter));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            OutboundCmd::PauseRun {
+                run_id: "run-42".into(),
+                reason: "checking diff".into(),
+            }
+        );
+
+        typed(&mut a, "/resume");
+        a.key(press(KeyCode::Enter));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            OutboundCmd::ResumeRun {
+                run_id: "run-42".into(),
+            }
+        );
+
+        typed(&mut a, "/spawn audit tests");
+        a.key(press(KeyCode::Enter));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            OutboundCmd::SpawnChild {
+                parent_run_id: "run-42".into(),
+                goal: "audit tests".into(),
+            }
+        );
+
+        typed(&mut a, "/apply cs-99 abcdef");
+        a.key(press(KeyCode::Enter));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            OutboundCmd::ApplyChangeSet {
+                change_set_id: "cs-99".into(),
+                target_checkout_path: a.root.to_string_lossy().into_owned(),
+                expected_base_commit: "abcdef".into(),
+            }
+        );
+
+        // Unknown slash command keeps draft intact and reports valid commands.
+        typed(&mut a, "/bogus");
+        a.key(press(KeyCode::Enter));
+        assert_eq!(a.draft.iter().collect::<String>(), "/bogus");
+        assert!(a.notice.as_deref().is_some_and(|n| n.contains("Unknown command")));
+    }
+
+    #[test]
+    fn child_agent_and_usage_events_update_app_state() {
+        let mut a = app();
+        let spawned = ProtocolEnvelope::carrying(
+            type_url::event::AGENT_SPAWNED,
+            "sess-1",
+            "run-1",
+            1,
+            "",
+            &AgentSpawned {
+                child_run_id: "child-1".into(),
+                parent_run_id: "run-1".into(),
+                goal: "write unit tests".into(),
+                agent_workspace_path: "/tmp/ws-child".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(a.apply_update(Update::Wire(spawned)), Ask::Nothing);
+
+        let completed = ProtocolEnvelope::carrying(
+            type_url::event::AGENT_COMPLETED,
+            "sess-1",
+            "run-1",
+            2,
+            "",
+            &AgentCompleted {
+                child_run_id: "child-1".into(),
+                completion_state: "completed".into(),
+                result_artifact_digest: "deadbeef".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(a.apply_update(Update::Wire(completed)), Ask::RefreshLedger);
+        assert_eq!(a.turn.len(), 2);
+
+        let usage = ProtocolEnvelope::carrying(
+            type_url::event::USAGE_UPDATED,
+            "sess-1",
+            "run-1",
+            3,
+            "",
+            &UsageUpdated {
+                run_id: "run-1".into(),
+                provider: "anthropic".into(),
+                model_sku: "claude-sonnet-4-5".into(),
+                prompt_tokens: 120,
+                completion_tokens: 45,
+                cached_tokens: 10,
+                cost_known: false,
+                cost_usd: 0.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(a.apply_update(Update::Wire(usage)), Ask::Nothing);
+        assert_eq!(a.usage.as_ref().map(|u| u.prompt_tokens), Some(120));
+    }
 }
+
 

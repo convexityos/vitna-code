@@ -698,6 +698,233 @@ fn auth_and_serve_flag_validation_fail_closed() {
     assert!(!bad_mcp.status.success());
     assert!(String::from_utf8_lossy(&bad_mcp.stderr).contains("<name>=<url>"));
 
+    // 7. `vitna run` refuses partial/mixed route flags and orphan MCP flags.
+    let run_missing_model = run_vitna(
+        &["run", "hello", "--provider", "anthropic"],
+        &home,
+        &base,
+    );
+    assert!(!run_missing_model.status.success());
+    assert!(String::from_utf8_lossy(&run_missing_model.stderr).contains("--provider needs --model"));
+
+    let run_orphan_mcp = run_vitna(
+        &["run", "hello", "--mcp-http", "ops=http://127.0.0.1:9999/mcp"],
+        &home,
+        &base,
+    );
+    assert!(!run_orphan_mcp.status.success());
+    assert!(String::from_utf8_lossy(&run_orphan_mcp.stderr).contains("require a model route"));
+
     let _ = fs::remove_dir_all(&base);
 }
+
+/// Minimal HTTP/1.1 reader for loopback test servers (reads headers + exact Content-Length body).
+fn read_http_request(stream: &mut std::net::TcpStream) -> Option<(String, String)> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    let header_end = loop {
+        let n = stream.read(&mut tmp).ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos + 4;
+        }
+    };
+    let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+    let content_len = head
+        .lines()
+        .find_map(|line| {
+            let (k, v) = line.split_once(':')?;
+            k.eq_ignore_ascii_case("content-length")
+                .then(|| v.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    while buf.len() < header_end + content_len {
+        let n = stream.read(&mut tmp).ok()?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..n]);
+    }
+    let body = String::from_utf8_lossy(&buf[header_end..header_end + content_len]).to_string();
+    Some((head, body))
+}
+
+fn write_http_response(
+    stream: &mut std::net::TcpStream,
+    content_type: &str,
+    body: &str,
+) {
+    use std::io::Write;
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(resp.as_bytes());
+    let _ = stream.flush();
+}
+
+#[test]
+fn vitna_run_live_turn_executes_mcp_tool_and_injects_workspace_skill() {
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    let base = temp_dir("live_run_mcp_skills");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    let skill_dir = ws.join(".vitna").join("skills").join("ops-check");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: ops-check\ndescription: Verify service liveness via ops ping\n---\nAlways cite SKILL-MARKER-99.\n",
+    )
+    .unwrap();
+
+    // 1. Spawn a loopback Streamable HTTP JSON-RPC MCP server.
+    let mcp_listener = TcpListener::bind("127.0.0.1:0").expect("bind mcp");
+    let mcp_addr = mcp_listener.local_addr().unwrap();
+    let mcp_calls = Arc::new(Mutex::new(Vec::<String>::new()));
+    let mcp_calls_bg = mcp_calls.clone();
+    std::thread::spawn(move || {
+        for stream in mcp_listener.incoming().flatten() {
+            let mut stream = stream;
+            let Some((_head, body)) = read_http_request(&mut stream) else {
+                continue;
+            };
+            let req: Value = match serde_json::from_str(&body) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let id = req.get("id").cloned().unwrap_or(Value::Null);
+            let method = req["method"].as_str().unwrap_or("");
+            let result = match method {
+                "initialize" => serde_json::json!({
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "ops-mcp", "version": "1.0.0" }
+                }),
+                "tools/list" => serde_json::json!({
+                    "tools": [{
+                        "name": "ping",
+                        "description": "Check ops liveness",
+                        "inputSchema": { "type": "object", "properties": { "target": { "type": "string" } } }
+                    }]
+                }),
+                "tools/call" => {
+                    let tool_name = req["params"]["name"].as_str().unwrap_or("").to_string();
+                    mcp_calls_bg.lock().unwrap().push(tool_name);
+                    serde_json::json!({
+                        "content": [{ "type": "text", "text": "pong-from-mcp" }],
+                        "isError": false
+                    })
+                }
+                _ => serde_json::json!({}),
+            };
+            let reply = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": result
+            })
+            .to_string();
+            write_http_response(&mut stream, "application/json", &reply);
+        }
+    });
+
+    // 2. Spawn a loopback OpenAI-compatible SSE runtime server.
+    let llm_listener = TcpListener::bind("127.0.0.1:0").expect("bind llm");
+    let llm_addr = llm_listener.local_addr().unwrap();
+    let seen_bodies = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_bodies_bg = seen_bodies.clone();
+    std::thread::spawn(move || {
+        let mut round = 0usize;
+        for stream in llm_listener.incoming().flatten() {
+            let mut stream = stream;
+            let Some((_head, body)) = read_http_request(&mut stream) else {
+                continue;
+            };
+            seen_bodies_bg.lock().unwrap().push(body);
+            round += 1;
+            if round == 1 {
+                let sse = concat!(
+                    "data: {\"id\":\"chatcmpl-1\",\"model\":\"vitna/code\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"mcp__ops__ping\",\"arguments\":\"{\\\"target\\\":\\\"api\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+                    "data: {\"id\":\"chatcmpl-1\",\"model\":\"vitna/code\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                    "data: [DONE]\n\n"
+                );
+                write_http_response(&mut stream, "text/event-stream", sse);
+            } else {
+                let sse = concat!(
+                    "data: {\"id\":\"chatcmpl-2\",\"model\":\"vitna/code\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"MCP + Skills \"},\"finish_reason\":null}]}\n\n",
+                    "data: {\"id\":\"chatcmpl-2\",\"model\":\"vitna/code\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"verified!\"},\"finish_reason\":\"stop\"}]}\n\n",
+                    "data: [DONE]\n\n"
+                );
+                write_http_response(&mut stream, "text/event-stream", sse);
+            }
+        }
+    });
+
+    let runtime_url = format!("http://{llm_addr}");
+    let mcp_spec = format!("ops=http://{mcp_addr}/mcp");
+    let out = run_vitna(
+        &[
+            "run",
+            "check ops liveness",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--runtime-url",
+            &runtime_url,
+            "--lane",
+            "vitna/code",
+            "--mcp-http",
+            &mcp_spec,
+            "--auto-approve",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        out.status.success(),
+        "live vitna run failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("MCP Tools:  1 attached"), "{stdout}");
+    assert!(stdout.contains("Skills:     ops-check"), "{stdout}");
+    assert!(stdout.contains("MCP + Skills verified!"), "{stdout}");
+
+    // Confirm MCP server actually received the remote `ping` call.
+    assert_eq!(*mcp_calls.lock().unwrap(), vec!["ping".to_string()]);
+
+    // Confirm round 1 request carried the workspace skill + namespaced MCP tool,
+    // and round 2 carried the MCP tool output.
+    let bodies = seen_bodies.lock().unwrap();
+    assert_eq!(bodies.len(), 2);
+    assert!(bodies[0].contains("SKILL-MARKER-99"), "missing skill in round 1");
+    assert!(bodies[0].contains("mcp__ops__ping"), "missing MCP tool in round 1");
+    assert!(bodies[1].contains("pong-from-mcp"), "missing MCP output in round 2");
+
+    // Verify the signed receipt on disk using `vitna verify`.
+    let receipts_dir = ws.join(".vitna").join("receipts");
+    let receipt_path = fs::read_dir(&receipts_dir)
+        .expect("receipts dir")
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+        .expect("signed receipt file");
+    let verify = run_vitna(&["verify", receipt_path.to_str().unwrap()], &home, &ws);
+    assert!(
+        verify.status.success(),
+        "vitna verify failed: {}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}
+
 

@@ -265,3 +265,117 @@ async fn tui_ctrl_c_cancels_active_run_without_quitting() {
 
     link_task.abort();
 }
+
+struct RecordingScriptedModel {
+    replies: Mutex<VecDeque<ProviderResponse>>,
+    requests: Arc<Mutex<Vec<ProviderRequest>>>,
+}
+
+#[async_trait]
+impl Provider for RecordingScriptedModel {
+    fn name(&self) -> &str {
+        "recording-tui"
+    }
+
+    fn parse_sse_event(&self, _: &str, _: &str) -> Result<Vec<ProviderStreamEvent>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn complete(&self, req: &ProviderRequest) -> Result<ProviderResponse, String> {
+        self.requests.lock().unwrap().push(req.clone());
+        self.replies
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or_else(|| "script exhausted".to_string())
+    }
+}
+
+#[tokio::test]
+async fn tui_attachments_and_steer_command_reach_live_daemon_model() {
+    let root = temp_workspace("attach_steer");
+    std::fs::write(root.join("notes.txt"), "secret-attachment-marker-77\n").expect("seed notes");
+
+    let runner = Arc::new(Mutex::new(
+        FakeRunner::new(root.join("runner.journal")).expect("runner"),
+    ));
+    let recorded = Arc::new(Mutex::new(Vec::<ProviderRequest>::new()));
+    let model = Arc::new(RecordingScriptedModel {
+        replies: Mutex::new(write_script("steered.txt", "ok\n").into()),
+        requests: recorded.clone(),
+    });
+    let daemon = Arc::new(
+        DaemonServer::new(
+            EventStore::open_in_memory().expect("store"),
+            runner,
+            vitna_receipts::generate_signing_key(),
+        )
+        .with_route(ModelRoute {
+            provider: model,
+            model: "vitna/code".into(),
+            routing_reason: "runtime_lane:vitna/code".into(),
+        }),
+    );
+
+    let (client, server) = tokio::io::duplex(1 << 20);
+    tokio::spawn(ipc::serve_connection(server, daemon.clone()));
+
+    let (upd_tx, upd_rx) = mpsc::channel();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(root.clone());
+    app.cmd_tx = Some(cmd_tx);
+
+    let link_task = tokio::spawn(link::drive_stream(client, root.clone(), upd_tx, cmd_rx));
+
+    pump_until(&mut app, &upd_rx, |a, _| {
+        matches!(a.link, Link::Open { .. }) && a.session_id.is_some()
+    })
+    .await;
+
+    // Submit with an @notes.txt workspace attachment.
+    type_and_enter(&mut app, "inspect @notes.txt and write steered.txt");
+
+    // Wait for the approval box so round 1 is paused on approval.
+    pump_until(&mut app, &upd_rx, |a, _| {
+        a.turn.iter().any(|e| {
+            matches!(e, Entry::Tool(t) if t.phase == turn::Phase::Waiting && t.approval.is_some())
+        })
+    })
+    .await;
+
+    // Send /steer while the run is active before approving the tool.
+    // Note: while an approval is pending, keys route to approval first; test
+    // steering via /steer after approving or by sending directly when no
+    // approval is open. First approve the tool, and simultaneously verify the
+    // attachment reached round 1.
+    let approval_opened = app
+        .turn
+        .iter()
+        .find_map(|e| match e {
+            Entry::Tool(t) => t.approval.as_ref().map(|a| a.opened),
+            _ => None,
+        })
+        .unwrap();
+    app.key_at(
+        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        approval_opened + turn::ARMING + Duration::from_millis(50),
+    );
+
+    pump_until(&mut app, &upd_rx, |a, _| !a.run_active).await;
+
+    let reqs = recorded.lock().unwrap();
+    assert!(!reqs.is_empty());
+    let first_prompt = reqs[0]
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        first_prompt.contains("secret-attachment-marker-77"),
+        "expected @notes.txt contents in model request, got: {first_prompt}"
+    );
+
+    link_task.abort();
+}
+

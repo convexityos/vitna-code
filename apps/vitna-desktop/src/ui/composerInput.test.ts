@@ -23,6 +23,16 @@ describe('parseComposer', () => {
       argument: 'keep the timeout at 50 ms\nand log it',
     });
     expect(parseComposer('/PAUSE')).toEqual({ kind: 'command', name: 'pause', argument: '' });
+    expect(parseComposer('/spawn audit tests')).toEqual({
+      kind: 'command',
+      name: 'spawn',
+      argument: 'audit tests',
+    });
+    expect(parseComposer('/apply cs-123 deadbeef')).toEqual({
+      kind: 'command',
+      name: 'apply',
+      argument: 'cs-123 deadbeef',
+    });
   });
 
   it('names an unknown command instead of sending it as a prompt', () => {
@@ -36,7 +46,9 @@ describe('parseComposer', () => {
 
   it('lists matching commands while one is being typed', () => {
     expect(commandsMatching('/re').map((c) => c.name)).toEqual(['resume', 'receipt']);
-    expect(commandsMatching('/').length).toBe(6);
+    expect(commandsMatching('/').length).toBe(8);
+    expect(commandsMatching('/sp').map((c) => c.name)).toEqual(['spawn']);
+    expect(commandsMatching('/ap').map((c) => c.name)).toEqual(['apply']);
     expect(commandsMatching('/steer now')).toEqual([]);
     expect(commandsMatching('hello')).toEqual([]);
   });
