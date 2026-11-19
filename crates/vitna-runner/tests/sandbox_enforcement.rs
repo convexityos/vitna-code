@@ -385,43 +385,51 @@ async fn a_sandboxed_command_can_still_work_in_the_workspace() {
         .expect("nested command runs");
     #[cfg(windows)]
     if nested.exit_code != 0 {
-        let host_probe = runner(&fx)
+        let env_probe = runner(&fx)
             .run_command(CommandRequest::new(
-                "hostname.exe",
+                "echo COMSPEC=[%COMSPEC%] & echo WINDIR=[%WINDIR%] & echo PATH_LEN_OK",
                 &fx.workspace,
                 &fx.workspace,
                 30_000,
             ))
             .await;
-        let sys32_probe = runner(&fx)
+        let abs_cmd_probe = runner(&fx)
             .run_command(CommandRequest::new(
-                "cd /d C:\\Windows\\System32 && \"%COMSPEC%\" /c echo sys32_ok",
+                r"C:\Windows\System32\cmd.exe /d /c echo abs_cmd_ok",
                 &fx.workspace,
                 &fx.workspace,
                 30_000,
             ))
             .await;
-        let icacls_cmd = std::process::Command::new("icacls")
-            .arg(r"C:\Windows\System32\cmd.exe")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
-        let icacls_host = std::process::Command::new("icacls")
-            .arg(r"C:\Windows\System32\hostname.exe")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+        let whoami_probe = runner(&fx)
+            .run_command(CommandRequest::new(
+                r"C:\Windows\System32\whoami.exe",
+                &fx.workspace,
+                &fx.workspace,
+                30_000,
+            ))
+            .await;
+        let ps_probe = runner(&fx)
+            .run_command(CommandRequest::new(
+                r#"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "Write-Output ps_ok""#,
+                &fx.workspace,
+                &fx.workspace,
+                30_000,
+            ))
+            .await;
         panic!(
             "nested failed: exit={} stdout={:?} stderr={:?}\n\
-             hostname_probe={:?}\n\
-             sys32_probe={:?}\n\
-             icacls_cmd={:?}\n\
-             icacls_host={:?}",
+             env_probe={:?}\n\
+             abs_cmd_probe={:?}\n\
+             whoami_probe={:?}\n\
+             ps_probe={:?}",
             nested.exit_code,
             nested.stdout,
             nested.stderr,
-            host_probe.map(|o| (o.exit_code, o.stdout, o.stderr)),
-            sys32_probe.map(|o| (o.exit_code, o.stdout, o.stderr)),
-            icacls_cmd,
-            icacls_host,
+            env_probe.map(|o| (o.exit_code, o.stdout, o.stderr)),
+            abs_cmd_probe.map(|o| (o.exit_code, o.stdout, o.stderr)),
+            whoami_probe.map(|o| (o.exit_code, o.stdout, o.stderr)),
+            ps_probe.map(|o| (o.exit_code, o.stdout, o.stderr)),
         );
     }
     assert_eq!(
