@@ -308,6 +308,53 @@ pub struct ToolProposed {
     pub raw_arguments_json: Vec<u8>,
 }
 
+/// `commands.proto`: inject operator feedback into an active run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SteerRun {
+    #[serde(default)]
+    pub run_id: String,
+    #[serde(default)]
+    pub feedback: String,
+    #[serde(default)]
+    pub idempotency_key: String,
+}
+
+/// `commands.proto`: pause an active run before its next round.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseRun {
+    #[serde(default)]
+    pub run_id: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// `commands.proto`: resume a paused run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeRun {
+    #[serde(default)]
+    pub run_id: String,
+}
+
+/// `commands.proto`: cancel an active run and sign its receipt as cancelled.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelRun {
+    #[serde(default)]
+    pub run_id: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// `events.proto`: streaming output chunk from a running tool.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolOutput {
+    #[serde(default)]
+    pub tool_call_id: String,
+    #[serde(default)]
+    pub stream: String,
+    #[serde(default)]
+    pub chunk: Vec<u8>,
+}
+
 /// `events.proto`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffChanged {
@@ -363,8 +410,10 @@ pub mod run_state {
     pub const RUNNING_MODEL: &str = "running_model";
     pub const WAITING_FOR_APPROVAL: &str = "waiting_for_approval";
     pub const RUNNING_TOOL: &str = "running_tool";
+    pub const PAUSED: &str = "paused";
     pub const COMPLETED: &str = "completed";
     pub const FAILED: &str = "failed";
+    pub const CANCELLED: &str = "cancelled";
 }
 
 /// `events.proto`.

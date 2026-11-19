@@ -50,22 +50,44 @@ fn start() -> Result<(), String> {
     let runtime = Runtime::new().map_err(|e| format!("the async runtime would not start: {e}"))?;
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(root.clone());
-    look(&runtime, &tx, &root, true);
+    let mut link_task = Some(connect_daemon(&runtime, &tx, &mut app));
+    read_workspace(&runtime, &tx, &root, true);
 
     let mut terminal =
         enter(&app.folder).map_err(|e| format!("the terminal would not enter full screen: {e}"))?;
-    let result = run(&mut terminal, &mut app, &rx, &runtime, &tx, depth);
+    let result = run(
+        &mut terminal,
+        &mut app,
+        &rx,
+        &runtime,
+        &tx,
+        &mut link_task,
+        depth,
+    );
+    if let Some(handle) = link_task.take() {
+        handle.abort();
+    }
     leave(&mut terminal);
     result.map_err(|e| format!("drawing failed: {e}"))
 }
 
-/// Finds out, off the drawing thread, everything the screen reports: whether
-/// a daemon answers, what receipts are on disk, and which branch this is.
-fn look(runtime: &Runtime, tx: &Sender<Update>, root: &Path, branch: bool) {
+fn connect_daemon(
+    runtime: &Runtime,
+    tx: &Sender<Update>,
+    app: &mut App,
+) -> tokio::task::JoinHandle<()> {
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.cmd_tx = Some(cmd_tx);
     let t = tx.clone();
+    let root = app.root.clone();
     runtime.spawn(async move {
-        let _ = t.send(Update::Link(link::probe().await));
-    });
+        link::connect_session(root, t, cmd_rx).await;
+    })
+}
+
+/// Finds out, off the drawing thread, what receipts are on disk and which
+/// branch this is.
+fn read_workspace(runtime: &Runtime, tx: &Sender<Update>, root: &Path, branch: bool) {
     let (t, r) = (tx.clone(), root.to_path_buf());
     runtime.spawn_blocking(move || {
         let _ = t.send(Update::Ledger(ledger::read(&r)));
@@ -84,11 +106,14 @@ fn run(
     rx: &Receiver<Update>,
     runtime: &Runtime,
     tx: &Sender<Update>,
+    link_task: &mut Option<tokio::task::JoinHandle<()>>,
     depth: Depth,
 ) -> io::Result<()> {
     while !app.quit {
         while let Ok(update) = rx.try_recv() {
-            app.update(update);
+            if app.apply_update(update) == Ask::RefreshLedger {
+                read_workspace(runtime, tx, &app.root, false);
+            }
         }
         terminal.draw(|frame| {
             view::render(app, frame, SystemTime::now());
@@ -103,7 +128,11 @@ fn run(
                 batch.push(event::read()?);
             }
             if app.events(&batch) == Ask::Refresh {
-                look(runtime, tx, &app.root, false);
+                if let Some(handle) = link_task.take() {
+                    handle.abort();
+                }
+                *link_task = Some(connect_daemon(runtime, tx, app));
+                read_workspace(runtime, tx, &app.root, false);
             }
         }
     }

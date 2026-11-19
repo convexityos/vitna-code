@@ -42,6 +42,7 @@ pub enum Phase {
 
 #[derive(Debug, Clone)]
 pub struct Tool {
+    pub call_id: String,
     pub name: String,
     pub target: Option<String>,
     pub effect: String,
@@ -138,6 +139,7 @@ pub const CHOICES: [Choice; 5] = [
 /// because the digest is what gets approved.
 #[derive(Debug, Clone)]
 pub struct Approval {
+    pub approval_id: String,
     pub description: String,
     pub digest: String,
     pub runs_as: String,
@@ -205,6 +207,7 @@ mod tests {
 
     fn approval(opened: Instant) -> Approval {
         Approval {
+            approval_id: "apr-test".into(),
             description: "Write 12 lines to src/lib.rs".into(),
             digest: "ab".repeat(32),
             runs_as: String::new(),

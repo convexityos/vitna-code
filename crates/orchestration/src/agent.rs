@@ -39,6 +39,10 @@ pub struct AgentTurn {
     /// True when the loop stopped at its round limit with the model still
     /// working.
     pub hit_round_limit: bool,
+    /// True when the turn was stopped by `CancelRun`.
+    pub cancelled: bool,
+    /// Why the turn was cancelled, if it was.
+    pub cancel_reason: Option<String>,
     /// Every model a response said served it, in order of first appearance.
     pub served_models: Vec<String>,
 }
@@ -78,6 +82,25 @@ impl OrchestrationEngine {
         prompt: &str,
         max_rounds: usize,
     ) -> Result<AgentTurn, String> {
+        self.run_agent_turn_with_attachments(provider, prior, prompt, &[], max_rounds)
+            .await
+    }
+
+    /// Runs one turn with optional operator-attached workspace files.
+    ///
+    /// Each entry in `attachments` is `(relative_path, content)`, already read
+    /// through the workspace containment boundary. They are delimited as
+    /// untrusted workspace content and hashed into `CONTEXT_ASSEMBLED`.
+    pub async fn run_agent_turn_with_attachments(
+        &mut self,
+        provider: &dyn Provider,
+        prior: &[ProviderMessage],
+        prompt: &str,
+        attachments: &[(String, String)],
+        max_rounds: usize,
+    ) -> Result<AgentTurn, String> {
+        use sha2::{Digest, Sha256};
+
         let tools: Vec<serde_json::Value> = self
             .tool_registry
             .definitions()
@@ -85,11 +108,36 @@ impl OrchestrationEngine {
             .map(|d| serde_json::to_value(d).unwrap_or(serde_json::Value::Null))
             .collect();
 
+        let user_content = if attachments.is_empty() {
+            prompt.to_string()
+        } else {
+            let mut combined = String::from(prompt);
+            combined.push_str("\n\nAttached workspace files (untrusted repository content):\n");
+            for (path, content) in attachments {
+                let safe_content = content.replace("</attached_file>", "<\\/attached_file>");
+                combined.push_str(&format!(
+                    "<attached_file path=\"{path}\">\n{safe_content}\n</attached_file>\n"
+                ));
+            }
+            combined
+        };
+
         let mut messages: Vec<ProviderMessage> = prior.to_vec();
-        messages.push(ProviderMessage::user(prompt));
+        messages.push(ProviderMessage::user(user_content.clone()));
         let mut turn = AgentTurn::default();
         let mut served: Vec<String> = Vec::new();
         let (mut prompt_tokens, mut completion_tokens, mut saw_usage) = (0u64, 0u64, false);
+
+        let context_digest = hex::encode(Sha256::digest(user_content.as_bytes()));
+        self.record_event(
+            crate::audit::CONTEXT_ASSEMBLED,
+            &serde_json::json!({
+                "context_digest": context_digest,
+                "prior_messages": prior.len(),
+                "attached_files": attachments.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
+                "estimated_tokens": user_content.len() / 4,
+            }),
+        )?;
 
         self.record_event(
             type_url::event::MESSAGE_DELTA,
@@ -100,7 +148,37 @@ impl OrchestrationEngine {
             },
         )?;
 
+        let control = self.control.clone();
+
         for round in 0..max_rounds {
+            if let Some(ctrl) = &control {
+                if ctrl.is_paused() && !ctrl.is_cancelled() {
+                    self.set_run_state(run_state::PAUSED, &ctrl.pause_reason())?;
+                    ctrl.wait_while_paused().await;
+                }
+                if let Some(reason) = ctrl.cancel_reason() {
+                    turn.cancelled = true;
+                    turn.cancel_reason = Some(reason);
+                    self.completion_state = "cancelled".to_string();
+                    turn.prompt_tokens = saw_usage.then_some(prompt_tokens);
+                    turn.completion_tokens = saw_usage.then_some(completion_tokens);
+                    self.settle_model(&served);
+                    turn.served_models = served;
+                    return Ok(turn);
+                }
+                for feedback in ctrl.take_steers() {
+                    self.record_event(
+                        type_url::event::MESSAGE_DELTA,
+                        &MessageDelta {
+                            message_id: format!("{}-steer-{}", self.config.run_id, round + 1),
+                            role: "user".to_string(),
+                            delta_text: feedback.clone(),
+                        },
+                    )?;
+                    messages.push(ProviderMessage::user(feedback));
+                }
+            }
+
             turn.rounds = round + 1;
             self.set_run_state(run_state::RUNNING_MODEL, "asking the model")?;
 
@@ -124,9 +202,32 @@ impl OrchestrationEngine {
                 }),
             )?;
 
-            let response = match provider.complete(&request).await {
-                Ok(response) => response,
-                Err(e) => {
+            let provider_result = if let Some(ctrl) = &control {
+                tokio::select! {
+                    res = provider.complete(&request) => Some(res),
+                    _ = ctrl.cancelled() => None,
+                }
+            } else {
+                Some(provider.complete(&request).await)
+            };
+
+            let response = match provider_result {
+                None => {
+                    let reason = control
+                        .as_ref()
+                        .and_then(|c| c.cancel_reason())
+                        .unwrap_or_else(|| "cancelled by operator".to_string());
+                    turn.cancelled = true;
+                    turn.cancel_reason = Some(reason);
+                    self.completion_state = "cancelled".to_string();
+                    turn.prompt_tokens = saw_usage.then_some(prompt_tokens);
+                    turn.completion_tokens = saw_usage.then_some(completion_tokens);
+                    self.settle_model(&served);
+                    turn.served_models = served;
+                    return Ok(turn);
+                }
+                Some(Ok(response)) => response,
+                Some(Err(e)) => {
                     // The reason reaches the operator intact: a turn that
                     // failed because the runtime is down must not read like a
                     // model that declined.
@@ -215,6 +316,19 @@ impl OrchestrationEngine {
             ));
 
             for call in &response.tool_calls {
+                if let Some(ctrl) = &control {
+                    if let Some(reason) = ctrl.cancel_reason() {
+                        turn.cancelled = true;
+                        turn.cancel_reason = Some(reason);
+                        self.completion_state = "cancelled".to_string();
+                        turn.prompt_tokens = saw_usage.then_some(prompt_tokens);
+                        turn.completion_tokens = saw_usage.then_some(completion_tokens);
+                        self.settle_model(&served);
+                        turn.served_models = served;
+                        return Ok(turn);
+                    }
+                }
+
                 if self.tool_registry.get(&call.name).is_none() {
                     // Said out loud, since an invented tool never reaches
                     // `ToolProposed` and would otherwise leave no trace a
@@ -236,6 +350,19 @@ impl OrchestrationEngine {
                 let outcome = self
                     .execute_tool(&call.name, call.arguments.clone(), Some(&call.id))
                     .await;
+
+                if let Some(ctrl) = &control {
+                    if let Some(reason) = ctrl.cancel_reason() {
+                        turn.cancelled = true;
+                        turn.cancel_reason = Some(reason);
+                        self.completion_state = "cancelled".to_string();
+                        turn.prompt_tokens = saw_usage.then_some(prompt_tokens);
+                        turn.completion_tokens = saw_usage.then_some(completion_tokens);
+                        self.settle_model(&served);
+                        turn.served_models = served;
+                        return Ok(turn);
+                    }
+                }
 
                 let content = match &outcome {
                     Ok(result) if result.success => {

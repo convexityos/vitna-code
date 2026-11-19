@@ -151,6 +151,7 @@ pub fn receipt() -> App {
 
 fn tool(name: &str, target: &str, effect: &str, phase: Phase, status: Option<&str>) -> Tool {
     Tool {
+        call_id: String::new(),
         name: name.into(),
         target: Some(target.into()),
         effect: effect.into(),
@@ -193,6 +194,7 @@ pub fn turn_waiting() -> App {
         ],
     });
     write.approval = Some(Approval {
+        approval_id: "apr-fixture".into(),
         description:
             "Write apps/vitna-cli/src/main.rs: 9 lines added, 1 removed, inside the workspace."
                 .into(),

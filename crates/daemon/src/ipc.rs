@@ -35,8 +35,9 @@ use tokio::sync::mpsc;
 
 use vitna_orchestration::ApprovalDecision;
 use vitna_protocol::messages::{
-    ApproveAction, CreateSession, ErrorCode, ErrorResponse, HandshakeRequest, HandshakeResponse,
-    RejectAction, SessionCreated, SubmitTurn, SubscribeEvents,
+    ApproveAction, CancelRun, CreateSession, ErrorCode, ErrorResponse, HandshakeRequest,
+    HandshakeResponse, PauseRun, RejectAction, ResumeRun, SessionCreated, SteerRun, SubmitTurn,
+    SubscribeEvents,
 };
 use vitna_protocol::{
     type_url, ProtocolEnvelope, MAX_FRAME_SIZE_BYTES, PROTOCOL_VERSION_MAJOR,
@@ -475,25 +476,114 @@ where
                 } else {
                     body.session_id.clone()
                 };
-                if !body.attached_file_paths.is_empty() {
-                    // Declared and not read yet. Refused rather than dropped,
-                    // so a turn never runs without files its prompt refers to.
-                    out.send(error_for(
-                        &request,
-                        ErrorCode::PolicyDenied,
-                        "attached_file_paths is not served yet; name the files in the prompt instead",
-                    ))
-                    .await
+                match daemon.submit_turn_with_attachments(
+                    &session_id,
+                    &body.prompt,
+                    &body.attached_file_paths,
+                ) {
+                    // No declared reply: the turn's events, beginning with
+                    // the run moving to running_model, are the answer, on
+                    // the session's subscription.
+                    Ok(_run_id) => Ok(()),
+                    Err(why) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::CANCEL_RUN => {
+                let body: CancelRun = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                let run_id = if body.run_id.is_empty() {
+                    request.run_id.clone()
                 } else {
-                    match daemon.submit_turn(&session_id, &body.prompt) {
-                        // No declared reply: the turn's events, beginning with
-                        // the run moving to running_model, are the answer, on
-                        // the session's subscription.
-                        Ok(_run_id) => Ok(()),
-                        Err(why) => {
-                            out.send(error_for(&request, ErrorCode::PolicyDenied, why))
-                                .await
-                        }
+                    body.run_id.clone()
+                };
+                match daemon.cancel_run(&run_id, &body.reason) {
+                    Ok(()) => Ok(()),
+                    Err(why) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::STEER_RUN => {
+                let body: SteerRun = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                let run_id = if body.run_id.is_empty() {
+                    request.run_id.clone()
+                } else {
+                    body.run_id.clone()
+                };
+                match daemon.steer_run(&run_id, &body.feedback) {
+                    Ok(()) => Ok(()),
+                    Err(why) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::PAUSE_RUN => {
+                let body: PauseRun = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                let run_id = if body.run_id.is_empty() {
+                    request.run_id.clone()
+                } else {
+                    body.run_id.clone()
+                };
+                match daemon.pause_run(&run_id, &body.reason) {
+                    Ok(()) => Ok(()),
+                    Err(why) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::RESUME_RUN => {
+                let body: ResumeRun = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                let run_id = if body.run_id.is_empty() {
+                    request.run_id.clone()
+                } else {
+                    body.run_id.clone()
+                };
+                match daemon.resume_run(&run_id) {
+                    Ok(()) => Ok(()),
+                    Err(why) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                            .await
                     }
                 }
             }

@@ -458,9 +458,8 @@ async fn a_declared_but_unimplemented_command_says_so() {
 
     send(
         &mut stream,
-        // SteerRun rather than ApproveAction, which this daemon serves since
-        // ADR-0007.
-        type_url::command::STEER_RUN,
+        // AttachTerminal rather than SteerRun, which this daemon now serves.
+        type_url::command::ATTACH_TERMINAL,
         &fx.session_id,
         &serde_json::json!({}),
     )

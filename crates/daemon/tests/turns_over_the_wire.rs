@@ -238,7 +238,11 @@ impl Wire {
             .until(|f| {
                 f.type_url == type_url::event::RUN_STATE_CHANGED
                     && f.payload_as::<RunStateChanged>()
-                        .map(|s| s.new_state == "completed" || s.new_state == "failed")
+                        .map(|s| {
+                            s.new_state == "completed"
+                                || s.new_state == "failed"
+                                || s.new_state == "cancelled"
+                        })
                         .unwrap_or(false)
             })
             .await;
@@ -515,20 +519,298 @@ async fn a_session_for_a_folder_that_does_not_exist_is_refused() {
 }
 
 #[tokio::test]
-async fn attached_files_are_refused_rather_than_dropped() {
-    let mut wire = connect("attach", Some(vec![say("x")]), None).await;
+async fn attached_workspace_files_reach_the_model_and_traversals_are_refused() {
+    let mut wire = connect("attach", Some(vec![say("read it")]), None).await;
     let session = wire.open_session().await;
-    wire.send(type_url::command::SUBMIT_TURN, &session, &json!({ "session_id": session, "prompt": "read it", "attached_file_paths": ["README.md"] }))
-        .await;
+
+    // Outside-workspace traversal is refused before asking the model.
+    wire.send(
+        type_url::command::SUBMIT_TURN,
+        &session,
+        &json!({
+            "session_id": session,
+            "prompt": "read secret",
+            "attached_file_paths": ["../outside.txt"]
+        }),
+    )
+    .await;
     let (frame, _) = wire
         .until(|f| f.type_url == type_url::envelope::ERROR_RESPONSE)
         .await;
-    assert!(error_of(&frame)
-        .unwrap()
-        .message
-        .contains("attached_file_paths"));
+    assert_eq!(error_of(&frame).unwrap().code, ErrorCode::PolicyDenied);
     assert!(
         wire.model.seen.lock().unwrap().is_empty(),
-        "no model was asked"
+        "no model was asked when an attachment was refused"
     );
+
+    // Valid workspace file is read safely and included in the prompt sent to the model.
+    wire.send(
+        type_url::command::SUBMIT_TURN,
+        &session,
+        &json!({
+            "session_id": session,
+            "prompt": "summarize readme",
+            "attached_file_paths": ["README.md"]
+        }),
+    )
+    .await;
+    let (state, _) = wire.final_state().await;
+    assert_eq!(state.new_state, "completed");
+
+    let seen = wire.model.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    let user_msg = &seen[0].messages.last().unwrap().content;
+    assert!(user_msg.contains("summarize readme"));
+    assert!(user_msg.contains("README.md"));
+    assert!(user_msg.contains("hello"));
+}
+
+#[tokio::test]
+async fn cancel_run_interrupts_waiting_approval_and_signs_cancelled_receipt() {
+    let mut wire = connect("cancel", Some(write_then_done("never.txt")), None).await;
+    let session = wire.open_session().await;
+    wire.submit(&session, "write never.txt").await;
+    let asked = wire.approval().await;
+
+    let run_id = wire
+        .daemon
+        .approval_run(&asked.approval_id)
+        .expect("waiting approval knows its run id");
+
+    wire.send(
+        type_url::command::CANCEL_RUN,
+        &session,
+        &json!({ "run_id": run_id, "reason": "operator aborted" }),
+    )
+    .await;
+
+    let (state, _) = wire.final_state().await;
+    assert_eq!(state.new_state, "cancelled");
+    assert!(state.reason.contains("operator aborted"));
+    assert!(
+        !wire.root.join("never.txt").exists(),
+        "cancelled approval must not write the file"
+    );
+    assert!(
+        wire.daemon.approvals.lock().unwrap().is_empty(),
+        "cancelled approval must be removed from pending queue"
+    );
+
+    let receipt_path = wire
+        .root
+        .join(".vitna/receipts")
+        .join(format!("{run_id}.json"));
+    let raw = std::fs::read_to_string(&receipt_path).expect("cancelled receipt written");
+    let receipt: vitna_receipts::VitnaRunReceiptV1 =
+        serde_json::from_str(&raw).expect("valid receipt json");
+    assert_eq!(receipt.completion_state, "cancelled");
+    let key = wire.daemon.device_public_key();
+    ReceiptVerifier::verify_receipt(&receipt, Some(&key))
+        .expect("cancelled receipt signature verifies");
+}
+
+#[tokio::test]
+async fn steer_run_injects_feedback_into_next_model_round() {
+    let mut wire = connect("steer", Some(write_then_done("steered.txt")), None).await;
+    let session = wire.open_session().await;
+    wire.submit(&session, "write steered.txt").await;
+    let asked = wire.approval().await;
+
+    let run_id = wire
+        .daemon
+        .approval_run(&asked.approval_id)
+        .expect("run id");
+
+    // Queue steer feedback while blocked on approval, then reject so round 2 runs.
+    wire.send(
+        type_url::command::STEER_RUN,
+        &session,
+        &json!({ "run_id": run_id, "feedback": "keep summary under one sentence" }),
+    )
+    .await;
+    wire.send(
+        type_url::command::REJECT_ACTION,
+        &session,
+        &json!({ "approval_id": asked.approval_id, "action_digest": asked.action_digest }),
+    )
+    .await;
+
+    let (state, _) = wire.final_state().await;
+    assert_eq!(state.new_state, "completed");
+
+    let seen = wire.model.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert!(
+        seen[1]
+            .messages
+            .iter()
+            .any(|m| m.role == "user" && m.content.contains("keep summary under one sentence")),
+        "round 2 should receive queued SteerRun feedback"
+    );
+}
+
+#[tokio::test]
+async fn pause_and_resume_run_pauses_before_next_round() {
+    let mut wire = connect("pause", Some(write_then_done("paused.txt")), None).await;
+    let session = wire.open_session().await;
+    wire.submit(&session, "write paused.txt").await;
+    let asked = wire.approval().await;
+
+    let run_id = wire
+        .daemon
+        .approval_run(&asked.approval_id)
+        .expect("run id");
+
+    // Request pause before answering approval so the loop pauses at round 2 entry.
+    wire.send(
+        type_url::command::PAUSE_RUN,
+        &session,
+        &json!({ "run_id": run_id, "reason": "checking diff" }),
+    )
+    .await;
+    wire.send(
+        type_url::command::REJECT_ACTION,
+        &session,
+        &json!({ "approval_id": asked.approval_id, "action_digest": asked.action_digest }),
+    )
+    .await;
+
+    let (paused_frame, _) = wire
+        .until(|f| {
+            f.type_url == type_url::event::RUN_STATE_CHANGED
+                && f.payload_as::<RunStateChanged>()
+                    .map(|s| s.new_state == "paused")
+                    .unwrap_or(false)
+        })
+        .await;
+    let paused_state: RunStateChanged = paused_frame.payload_as().unwrap();
+    assert_eq!(paused_state.new_state, "paused");
+    assert!(paused_state.reason.contains("checking diff"));
+
+    // Now resume and verify completion.
+    wire.send(
+        type_url::command::RESUME_RUN,
+        &session,
+        &json!({ "run_id": run_id }),
+    )
+    .await;
+    let (final_state, _) = wire.final_state().await;
+    assert_eq!(final_state.new_state, "completed");
+}
+
+#[tokio::test]
+async fn session_and_conversation_history_survive_daemon_restart() {
+    let root = folder("restart");
+    let db_path = root.join("daemon.db");
+    let key_dir = root.join("keys");
+    std::fs::create_dir_all(&key_dir).unwrap();
+
+    // First daemon instance: create session and run turn 1.
+    let session_id = {
+        let model1 = Arc::new(Scripted {
+            replies: Mutex::new(vec![say("Answer one.")].into()),
+            seen: Mutex::new(Vec::new()),
+        });
+        let daemon1 = Arc::new(
+            DaemonServer::open_with_key_in(&db_path, &key_dir)
+                .expect("open daemon 1")
+                .with_route(ModelRoute {
+                    provider: model1,
+                    model: "vitna/code".into(),
+                    routing_reason: "runtime_lane:vitna/code".into(),
+                }),
+        );
+        let (client, server) = tokio::io::duplex(1 << 20);
+        tokio::spawn(ipc::serve_connection(server, daemon1.clone()));
+        let (read, write) = tokio::io::split(client);
+        let mut wire = Wire {
+            daemon: daemon1,
+            model: Arc::new(Scripted {
+                replies: Mutex::new(VecDeque::new()),
+                seen: Mutex::new(Vec::new()),
+            }),
+            read,
+            write,
+            root: root.clone(),
+        };
+        wire.send(
+            type_url::envelope::HANDSHAKE_REQUEST,
+            "",
+            &HandshakeRequest {
+                min_supported_version: PROTOCOL_VERSION_MAJOR,
+                max_supported_version: PROTOCOL_VERSION_MAJOR,
+                client_identifier: "restart-test".into(),
+            },
+        )
+        .await;
+        assert_eq!(
+            wire.recv().await.type_url,
+            type_url::envelope::HANDSHAKE_RESPONSE
+        );
+        let session = wire.open_session().await;
+        wire.submit(&session, "first prompt").await;
+        assert_eq!(wire.final_state().await.0.new_state, "completed");
+        session
+    };
+
+    // Second daemon instance opening the same SQLite store: session & history restored.
+    let model2 = Arc::new(Scripted {
+        replies: Mutex::new(vec![say("Answer two.")].into()),
+        seen: Mutex::new(Vec::new()),
+    });
+    let daemon2 = Arc::new(
+        DaemonServer::open_with_key_in(&db_path, &key_dir)
+            .expect("open daemon 2")
+            .with_route(ModelRoute {
+                provider: model2.clone(),
+                model: "vitna/code".into(),
+                routing_reason: "runtime_lane:vitna/code".into(),
+            }),
+    );
+    assert!(
+        daemon2.get_session(&session_id).is_some(),
+        "persisted session must be restored on restart"
+    );
+
+    let (client, server) = tokio::io::duplex(1 << 20);
+    tokio::spawn(ipc::serve_connection(server, daemon2.clone()));
+    let (read, write) = tokio::io::split(client);
+    let mut wire = Wire {
+        daemon: daemon2,
+        model: model2,
+        read,
+        write,
+        root: root.clone(),
+    };
+    wire.send(
+        type_url::envelope::HANDSHAKE_REQUEST,
+        "",
+        &HandshakeRequest {
+            min_supported_version: PROTOCOL_VERSION_MAJOR,
+            max_supported_version: PROTOCOL_VERSION_MAJOR,
+            client_identifier: "restart-test-2".into(),
+        },
+    )
+    .await;
+    assert_eq!(
+        wire.recv().await.type_url,
+        type_url::envelope::HANDSHAKE_RESPONSE
+    );
+    wire.send(
+        type_url::command::SUBSCRIBE_EVENTS,
+        &session_id,
+        &json!({ "session_id": session_id, "resume_after_sequence": 0 }),
+    )
+    .await;
+    wire.submit(&session_id, "second prompt").await;
+    assert_eq!(wire.final_state().await.0.new_state, "completed");
+
+    let seen = wire.model.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    let sent: Vec<&str> = seen[0]
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(sent, vec!["first prompt", "Answer one.", "second prompt"]);
 }

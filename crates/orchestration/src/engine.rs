@@ -1,4 +1,4 @@
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -10,13 +10,16 @@ use vitna_receipts::{
     ChangeSetRecord, EvidenceItemRecord, FileModificationRecord, ModelSelectionRecord,
     RunnerExecutionStatementRecord, VitnaRunReceiptV1,
 };
-use vitna_protocol::messages::{run_state, tool_status, DiffChanged, RunStateChanged, ToolProposed};
+use vitna_protocol::messages::{
+    run_state, tool_status, DiffChanged, RunStateChanged, ToolOutput, ToolProposed,
+};
 use vitna_protocol::type_url;
 use vitna_runner::Runner;
 use vitna_store::{EventRecord, EventStore, GENESIS_HASH};
 use vitna_tools::{ToolContext, ToolRegistry, ToolResult};
 
 use crate::approval::{ApprovalDecision, ApprovalRequest, Approver};
+use crate::control::RunControl;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestrationConfig {
@@ -82,6 +85,8 @@ pub struct OrchestrationEngine {
     pub completion_state: String,
     /// Why this model served the run, as the receipt records it.
     pub routing_reason: String,
+    /// Cooperative cancel/steer/pause signals for an active turn.
+    pub control: Option<Arc<RunControl>>,
 }
 
 /// How long a person has to answer an approval before it is refused.
@@ -166,6 +171,7 @@ impl OrchestrationEngine {
             run_state: run_state::QUEUED.to_string(),
             completion_state: "completed_with_evidence".to_string(),
             routing_reason: "pinned_profile".to_string(),
+            control: None,
         }
     }
 
@@ -173,6 +179,12 @@ impl OrchestrationEngine {
     /// `auto_approve`.
     pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Self {
         self.approver = Some(approver);
+        self
+    }
+
+    /// Attaches cooperative run-control signals (cancel, steer, pause, resume).
+    pub fn with_control(mut self, control: Arc<RunControl>) -> Self {
+        self.control = Some(control);
         self
     }
 
@@ -530,6 +542,28 @@ impl OrchestrationEngine {
             }
         };
 
+        if call.is_some() && !result.output.is_empty() {
+            const WIRE_OUTPUT_CAP: usize = 64 * 1024;
+            let bytes = result.output.as_bytes();
+            let capped = if bytes.len() > WIRE_OUTPUT_CAP {
+                &bytes[..WIRE_OUTPUT_CAP]
+            } else {
+                bytes
+            };
+            self.record_event(
+                type_url::event::TOOL_OUTPUT,
+                &ToolOutput {
+                    tool_call_id: tool_call_id.clone(),
+                    stream: if result.success {
+                        "stdout".to_string()
+                    } else {
+                        "stderr".to_string()
+                    },
+                    chunk: capped.to_vec(),
+                },
+            )?;
+        }
+
         // A tool that runs no process has no exit code, so it reports success
         // rather than inventing a signal it never saw.
         let status = if result.success {
@@ -580,10 +614,11 @@ impl OrchestrationEngine {
 
         if result.exit_code.is_some() {
             let stmt_digest = hex::encode(Sha256::digest(result.output.as_bytes()));
+            let stmt_sig = self.signing_key.sign(stmt_digest.as_bytes());
             self.runner_statements.push(RunnerExecutionStatementRecord {
                 action_id: format!("act-{}", self.runner_statements.len() + 1),
                 statement_digest: stmt_digest,
-                signature: hex::encode([0u8; 64]), // Signed statement placeholder
+                signature: hex::encode(stmt_sig.to_bytes()),
                 sandbox_backend: result.sandbox_backend.clone(),
                 sandbox_enforcement: result.sandbox_enforcement.clone(),
             });
