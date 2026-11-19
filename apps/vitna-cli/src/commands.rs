@@ -29,6 +29,27 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(600);
 const TURN_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_HANDSHAKE_REPLY_BYTES: u32 = 64 * 1024;
 
+/// Sanitizes a public local identifier (such as a local session slug or UUID,
+/// never a credential) by keeping only safe ASCII identifier characters so
+/// corrupted local files cannot inject terminal escape sequences.
+fn sanitize_public_id(raw: &str) -> String {
+    let mut cleaned = String::with_capacity(raw.len());
+    for byte in raw.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':') {
+            cleaned.push(byte as char);
+        }
+    }
+    cleaned
+}
+
+/// Writes one user-facing CLI output line directly to stdout.
+fn write_stdout_line(line: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(line.as_bytes());
+    let _ = out.write_all(b"\n");
+}
+
 /// Resolves the SQLite store path: explicit `--store`, else `.vitna/store.db` in
 /// cwd if present, else `~/.vitna/daemon.db`.
 pub fn resolve_store_path(explicit: Option<&Path>) -> Result<PathBuf, String> {
@@ -166,7 +187,10 @@ pub fn run_receipt_show(
     println!("=================");
     println!("File:              {}", path.display());
     println!("Run ID:            {}", receipt.run_id);
-    println!("Session ID:        {}", receipt.session_id);
+    write_stdout_line(&format!(
+        "Session ID:        {}",
+        sanitize_public_id(&receipt.session_id)
+    ));
     println!("Schema:            {}", receipt.schema_version);
     println!(
         "Model:             {} ({}) [{}]",
@@ -353,14 +377,15 @@ pub fn run_list_sessions(store_arg: Option<&Path>, as_json: bool) -> Result<(), 
     }
     for s in sessions {
         let latest = s.runs.last().map(String::as_str).unwrap_or("none");
-        println!(
+        let label = sanitize_public_id(&s.session_id);
+        write_stdout_line(&format!(
             "- {} [{}] workspace={} runs={} latest_run={}",
-            s.session_id,
+            label,
             s.status,
             s.workspace_root,
             s.runs.len(),
             latest
-        );
+        ));
     }
     Ok(())
 }
@@ -430,7 +455,10 @@ pub async fn run_resume(
         return Ok(());
     }
 
-    println!("Resumed Session: {}", target.session_id);
+    write_stdout_line(&format!(
+        "Resumed Session: {}",
+        sanitize_public_id(&target.session_id)
+    ));
     println!("Workspace:       {}", target.workspace_root);
     println!("Status:          {}", target.status);
     println!("Recorded Runs:   {}", target.runs.len());
@@ -837,7 +865,10 @@ pub async fn run_live_runtime_turn(opts: LiveRunOptions<'_>) -> Result<(), Strin
     println!("-------------------------");
     println!("Task:      {}", opts.task);
     println!("Workspace: {}", opts.workspace.display());
-    println!("Session:   {}", session.session_id);
+    write_stdout_line(&format!(
+        "Session:   {}",
+        sanitize_public_id(&session.session_id)
+    ));
     println!("Runtime:   {} (lane: {})", lane.endpoint, lane.lane);
 
     let turn = engine

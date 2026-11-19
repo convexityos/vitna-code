@@ -144,14 +144,17 @@ async fn openai_anthropic_and_runtime_record_exact_egress_and_scrub_secrets() {
 
     // Exported redacted JSON must never contain any raw secret tokens.
     let exported = collector.export_redacted_json().expect("export redacted json");
-    for secret in [
+    for (idx, needle) in [
         "sk-1234567890abcdef123456",
         "sk-proj-secretquery12345",
         "sk-ant-api03-secretvalue123456",
-    ] {
+    ]
+    .iter()
+    .enumerate()
+    {
         assert!(
-            !exported.contains(secret),
-            "secret {secret} leaked in redacted export: {exported}"
+            !exported.contains(needle),
+            "redacted export leaked test fixture token #{idx}"
         );
     }
     assert!(exported.contains("[REDACTED_SECRET]"));
