@@ -1,5 +1,6 @@
 //! Provider adapters with normalized event streaming and credential isolation.
 
+pub mod anchor;
 pub mod anthropic;
 pub mod credentials;
 pub mod fake;
@@ -10,6 +11,10 @@ pub mod openai;
 pub mod runtime;
 mod sse;
 
+pub use anchor::{
+    compute_checkpoint_digest, AnchorAttestation, AnchorConfig, AnchorHealth, AnchorModelEntry,
+    VitnaAnchorProvider, DEFAULT_ANCHOR_BASE_URL,
+};
 pub use anthropic::AnthropicProvider;
 use async_trait::async_trait;
 pub use credentials::{
