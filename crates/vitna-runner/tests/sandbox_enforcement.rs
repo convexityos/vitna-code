@@ -95,20 +95,46 @@ fn backend_or_skip(workspace: &Path, case: &str) -> Option<String> {
 ///
 /// The outer command then waits far longer than the timeout, so the timeout is
 /// what ends the action.
-fn sleep_then_mark(fx: &Fixture, marker: &Path) -> String {
+fn sleep_then_mark(fx: &Fixture, started: &Path, marker: &Path) -> String {
+    let s = started.to_string_lossy().replace('\\', "/");
     let m = marker.to_string_lossy().replace('\\', "/");
     if cfg!(windows) {
-        let script = fx.root.join("grandchild.bat");
+        let script = fx.workspace.join("grandchild.bat");
+        let started_name = started
+            .file_name()
+            .expect("started marker has file name")
+            .to_string_lossy();
+        let marker_name = marker
+            .file_name()
+            .expect("marker has file name")
+            .to_string_lossy();
+        // Pure cmd.exe built-in clock loop: needs no external binaries and no
+        // network/ICMP access, so it runs identically inside a zero-network
+        // AppContainer and unsandboxed. Relative paths avoid 8.3 short-path
+        // expansion (`RUNNER~1`) against parent directories denied to the
+        // AppContainer.
         fs::write(
             &script,
-            format!("@echo off\r\nping -n 6 127.0.0.1 >nul\r\necho done> \"{}\"\r\n", m),
+            format!(
+                "@echo off\r\n\
+                 echo started> \"{started_name}\"\r\n\
+                 setlocal enabledelayedexpansion\r\n\
+                 for /f \"tokens=1-3 delims=:.,\" %%a in (\"%TIME: =0%\") do set /a \"start=(((1%%a-100)*60+(1%%b-100))*60+(1%%c-100))\"\r\n\
+                 :wait\r\n\
+                 for /f \"tokens=1-3 delims=:.,\" %%a in (\"%TIME: =0%\") do set /a \"now=(((1%%a-100)*60+(1%%b-100))*60+(1%%c-100))\"\r\n\
+                 set /a \"diff=now-start\"\r\n\
+                 if !diff! lss 0 set /a \"diff+=86400\"\r\n\
+                 if !diff! lss 5 goto wait\r\n\
+                 echo done> \"{marker_name}\"\r\n"
+            ),
         )
         .expect("write helper script");
-        // The inner `cmd /c` is a grandchild. Confirmed by hand: killing only
-        // the outer cmd.exe leaves it running and the marker still appears.
-        format!("cmd /c \"{}\"", script.to_string_lossy().replace('\\', "/"))
+        // The inner `cmd.exe /d /c` is a grandchild resolved via PATH.
+        // Confirmed by hand: killing only the outer cmd.exe leaves it running
+        // and the marker still appears.
+        "cmd.exe /d /c grandchild.bat".to_string()
     } else {
-        format!("sh -c 'sleep 5; echo done > \"{}\"'", m)
+        format!("sh -c 'echo started > \"{}\"; sleep 5; echo done > \"{}\"'", s, m)
     }
 }
 
@@ -199,13 +225,17 @@ async fn a_refused_action_is_journalled_as_refused() {
 #[tokio::test]
 async fn a_timed_out_command_does_not_outlive_the_action() {
     let fx = fixture("timeout");
-    let marker = fx.root.join("SURVIVED");
+    // Placed inside the workspace where the sandboxed child HAS write
+    // permission, so the marker staying absent genuinely proves process-tree
+    // teardown killed the grandchild rather than the sandbox blocking a write.
+    let started = fx.workspace.join("STARTED");
+    let marker = fx.workspace.join("SURVIVED");
 
     let mut request = CommandRequest::new(
-        sleep_then_mark(&fx, &marker),
+        sleep_then_mark(&fx, &started, &marker),
         &fx.workspace,
         &fx.workspace,
-        800,
+        1_500,
     );
     // Explicitly approved, because this test is about the teardown and has to
     // run a process even where no backend exists.
@@ -217,6 +247,10 @@ async fn a_timed_out_command_does_not_outlive_the_action() {
         .await
         .expect_err("the command must report the timeout");
     assert!(err.contains("timed out"), "unexpected error: {}", err);
+    assert!(
+        started.exists(),
+        "the grandchild process never started before the timeout fired"
+    );
 
     // Outlive the command's own sleep. If the tree was not taken down, the
     // marker lands during this wait.
@@ -336,6 +370,31 @@ async fn a_sandboxed_command_can_still_work_in_the_workspace() {
         "a sandbox that cannot write its own workspace is broken, not strict"
     );
 
+    let nested_cmd = if cfg!(windows) {
+        "cmd.exe /d /c echo nested_ok"
+    } else {
+        "sh -c 'echo nested_ok'"
+    };
+    let nested = runner(&fx)
+        .run_command(CommandRequest::new(
+            nested_cmd,
+            &fx.workspace,
+            &fx.workspace,
+            30_000,
+        ))
+        .await
+        .expect("nested command runs");
+    assert_eq!(
+        nested.exit_code, 0,
+        "nested child process failed inside sandbox: stdout={:?} stderr={:?}",
+        nested.stdout, nested.stderr
+    );
+    assert!(
+        nested.stdout.contains("nested_ok"),
+        "nested child output missing: stdout={:?} stderr={:?}",
+        nested.stdout, nested.stderr
+    );
+
     let _ = fs::remove_dir_all(&fx.root);
 }
 
@@ -361,14 +420,16 @@ async fn a_sandboxed_command_cannot_write_git_config() {
         )
     };
 
-    let _ = runner(&fx)
+    let out = runner(&fx)
         .run_command(CommandRequest::new(
             command,
             &fx.workspace,
             &fx.workspace,
             30_000,
         ))
-        .await;
+        .await
+        .expect("the command itself should run, even if its write to .git/config is denied");
+    assert_eq!(out.sandbox_backend, backend);
 
     let contents = fs::read_to_string(&config).expect("config still readable");
     assert_eq!(

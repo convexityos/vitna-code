@@ -22,7 +22,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -510,21 +510,67 @@ fn plan_guarded(
 }
 
 #[cfg(windows)]
+fn appcontainer_probe() -> &'static Result<(), String> {
+    static PROBE: OnceLock<Result<(), String>> = OnceLock::new();
+    PROBE.get_or_init(|| {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Security::Isolation::DeriveAppContainerSidFromAppContainerName;
+        use windows_sys::Win32::Security::{FreeSid, PSID};
+
+        let name: Vec<u16> = OsStr::new("VitnaSandbox_Probe")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut sid: PSID = std::ptr::null_mut();
+        let hr = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
+        if hr == 0 && !sid.is_null() {
+            unsafe {
+                FreeSid(sid);
+            }
+            Ok(())
+        } else {
+            Err(format!(
+                "Windows AppContainer APIs are unavailable on this host (HRESULT 0x{:08x})",
+                hr as u32
+            ))
+        }
+    })
+}
+
+#[cfg(windows)]
 fn plan_guarded(
-    _config: &SandboxConfig,
-    _command: &str,
-    _cwd: &Path,
+    config: &SandboxConfig,
+    command: &str,
+    cwd: &Path,
 ) -> Result<SandboxPlan, PlanError> {
-    // `generate_windows_appcontainer_name` produces a deterministic name and
-    // nothing has ever created a container to go with it. An AppContainer needs
-    // CreateAppContainerProfile, a capability SID, ACLs granting that SID the
-    // workspace, and CreateProcess with
-    // PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES. None of that exists here, so
-    // the honest answer is that Windows has no sandbox yet.
-    Err(PlanError::Unavailable {
-        reason: "no AppContainer launcher is implemented on Windows; \
-                 the existing profile name is an identifier, not a container"
-            .to_string(),
+    if let Err(reason) = appcontainer_probe() {
+        return Err(PlanError::Unavailable {
+            reason: reason.clone(),
+        });
+    }
+
+    let mut gaps = Vec::new();
+    if !config.workspace_root.join(".git").exists() {
+        gaps.push(
+            "workspace has no .git directory, so one created inside the sandbox is not \
+             protected"
+                .to_string(),
+        );
+    }
+
+    Ok(SandboxPlan {
+        backend: SandboxBackend::AppContainer,
+        enforcement: if gaps.is_empty() {
+            Enforcement::FullyEnforced
+        } else {
+            Enforcement::Fallback
+        },
+        gaps,
+        program: "cmd.exe".to_string(),
+        args: vec!["/C".to_string(), command.to_string()],
+        env: config.sanitized_environment.clone(),
+        cwd: cwd.to_path_buf(),
     })
 }
 

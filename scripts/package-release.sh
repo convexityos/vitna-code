@@ -14,17 +14,25 @@ RELEASE_DIST="${OUTPUT_DIR}/vitna-code-v${VERSION}-${TARGET}"
 rm -rf "${RELEASE_DIST}"
 mkdir -p "${RELEASE_DIST}/bin"
 
-# Copy binaries if present
+# Copy compiled binaries (fail fast instead of producing an empty bin/ archive)
 TARGET_RELEASE="target/${TARGET}/release"
-if [ -d "${TARGET_RELEASE}" ]; then
-    cp "${TARGET_RELEASE}/vitna" "${RELEASE_DIST}/bin/" 2>/dev/null || true
-    cp "${TARGET_RELEASE}/vitna-tui" "${RELEASE_DIST}/bin/" 2>/dev/null || true
+if [ ! -d "${TARGET_RELEASE}" ]; then
+    TARGET_RELEASE="target/release"
 fi
+
+for bin in vitna vitna-coded vitna-tui; do
+    if [ ! -f "${TARGET_RELEASE}/${bin}" ]; then
+        echo "ERROR: missing compiled binary ${TARGET_RELEASE}/${bin}. Run 'cargo build --release' first." >&2
+        exit 1
+    fi
+    cp "${TARGET_RELEASE}/${bin}" "${RELEASE_DIST}/bin/"
+done
 
 # Copy metadata and schemas
 cp README.md "${RELEASE_DIST}/"
 cp CONTRIBUTING.md "${RELEASE_DIST}/"
 cp schemas/vitna-run-receipt-v1.json "${RELEASE_DIST}/"
+cp schemas/vitna-release-manifest-v1.json "${RELEASE_DIST}/"
 
 # Create tarball
 TAR_FILE="${RELEASE_DIST}.tar.gz"
@@ -36,7 +44,8 @@ if command -v sha256sum >/dev/null 2>&1; then
 elif command -v shasum >/dev/null 2>&1; then
     HASH=$(shasum -a 256 "${TAR_FILE}" | awk '{print $1}')
 else
-    HASH="unknown"
+    echo "ERROR: neither sha256sum nor shasum is available to hash ${TAR_FILE}" >&2
+    exit 1
 fi
 
 echo "${HASH}  $(basename "${TAR_FILE}")" >> "${OUTPUT_DIR}/SHA256SUMS"

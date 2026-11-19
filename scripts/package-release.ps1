@@ -20,17 +20,24 @@ New-Item -ItemType Directory -Force -Path $ReleaseDist | Out-Null
 $BinDir = Join-Path $ReleaseDist "bin"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 
-# Copy binaries from target release if available, or generate release structure
+# Copy compiled binaries (fail fast instead of producing an empty bin/ archive)
 $TargetRelease = Join-Path "target" (Join-Path $Target "release")
-if (Test-Path $TargetRelease) {
-    Copy-Item (Join-Path $TargetRelease "vitna.exe") $BinDir -ErrorAction SilentlyContinue
-    Copy-Item (Join-Path $TargetRelease "vitna-tui.exe") $BinDir -ErrorAction SilentlyContinue
+if (-not (Test-Path $TargetRelease)) {
+    $TargetRelease = Join-Path "target" "release"
+}
+foreach ($BinName in @("vitna.exe", "vitna-coded.exe", "vitna-tui.exe")) {
+    $BinPath = Join-Path $TargetRelease $BinName
+    if (-not (Test-Path $BinPath)) {
+        throw "Missing compiled binary $BinPath. Run 'cargo build --release' first."
+    }
+    Copy-Item $BinPath $BinDir
 }
 
-# Copy documentation and licenses
+# Copy documentation and schemas
 Copy-Item "README.md" $ReleaseDist
 Copy-Item "CONTRIBUTING.md" $ReleaseDist
 Copy-Item "schemas\vitna-run-receipt-v1.json" $ReleaseDist
+Copy-Item "schemas\vitna-release-manifest-v1.json" $ReleaseDist
 
 # Create ZIP archive
 $ZipFile = "$ReleaseDist.zip"

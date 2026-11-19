@@ -83,10 +83,12 @@ jobs:
             arch: x86_64
             runner: windows-latest
             triple: x86_64-pc-windows-msvc
+            sandbox_backend: appcontainer
           - os: windows
             arch: aarch64
             runner: windows-11-arm
             triple: aarch64-pc-windows-msvc
+            sandbox_backend: appcontainer
     steps:
       - uses: actions/checkout@v4
 

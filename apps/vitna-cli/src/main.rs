@@ -211,6 +211,47 @@ enum Commands {
         #[arg(long, requires = "ledger")]
         record: Option<String>,
     },
+    /// Build, sign, and verify Ed25519 release manifests (vitna-release-manifest-v1)
+    Release {
+        #[command(subcommand)]
+        sub: ReleaseCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ReleaseCommands {
+    /// Hash real archive files on disk and sign a vitna-release-manifest-v1.json file
+    Sign {
+        /// Semver version string (for example 0.2.0 or 0.2.0-beta.1).
+        #[arg(long)]
+        version: String,
+        /// Release channel: stable, beta, or nightly.
+        #[arg(long, default_value = "beta")]
+        channel: String,
+        /// Release notes URL.
+        #[arg(long)]
+        release_notes_url: Option<String>,
+        /// Asset spec `TARGET_TRIPLE=ARCHIVE_PATH` (repeatable).
+        #[arg(long = "asset", value_name = "TRIPLE=PATH", required = true)]
+        assets: Vec<String>,
+        /// Output path for the signed manifest JSON.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Verify a release manifest's Ed25519 publisher signature and optional on-disk archives
+    Verify {
+        /// Path to the release manifest JSON file.
+        manifest_file: PathBuf,
+        /// Expected 64-char hex Ed25519 publisher public key.
+        #[arg(long)]
+        key: Option<String>,
+        /// Directory containing the packaged release archives to hash and check.
+        #[arg(long)]
+        assets_dir: Option<PathBuf>,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -503,6 +544,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
+        Some(Commands::Release { sub }) => match sub {
+            ReleaseCommands::Sign {
+                version,
+                channel,
+                release_notes_url,
+                assets,
+                out,
+            } => {
+                if let Err(e) = commands::run_release_sign(
+                    &version,
+                    &channel,
+                    release_notes_url.as_deref(),
+                    &assets,
+                    &out,
+                ) {
+                    eprintln!("vitna release sign: {e}");
+                    std::process::exit(1);
+                }
+            }
+            ReleaseCommands::Verify {
+                manifest_file,
+                key,
+                assets_dir,
+                json,
+            } => {
+                if let Err(e) = commands::run_release_verify(
+                    &manifest_file,
+                    key.as_deref(),
+                    assets_dir.as_deref(),
+                    json,
+                ) {
+                    eprintln!("vitna release verify: {e}");
+                    std::process::exit(1);
+                }
+            }
+        },
         Some(Commands::Receipt { sub }) => match sub {
             ReceiptCommands::Show {
                 run_id,

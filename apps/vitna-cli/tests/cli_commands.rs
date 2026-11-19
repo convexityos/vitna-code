@@ -927,4 +927,107 @@ fn vitna_run_live_turn_executes_mcp_tool_and_injects_workspace_skill() {
     let _ = fs::remove_dir_all(&base);
 }
 
+#[test]
+fn release_manifest_sign_and_verify_cli_round_trip() {
+    let base = temp_dir("release_manifest_cli");
+    let home = base.join("home");
+    let dist = base.join("dist");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&dist).unwrap();
+
+    let archive = dist.join("vitna-code-v0.2.0-x86_64-unknown-linux-gnu.tar.gz");
+    fs::write(&archive, b"fake-tarball-payload-for-release-manifest-test").unwrap();
+    let manifest_path = dist.join("manifest.json");
+    let asset_arg = format!("x86_64-unknown-linux-gnu={}", archive.display());
+
+    // 1. Sign a manifest over the real file on disk.
+    let signed = run_vitna(
+        &[
+            "release",
+            "sign",
+            "--version",
+            "0.2.0",
+            "--channel",
+            "beta",
+            "--asset",
+            &asset_arg,
+            "--out",
+            manifest_path.to_str().unwrap(),
+        ],
+        &home,
+        &base,
+    );
+    assert!(
+        signed.status.success(),
+        "release sign failed: {}",
+        String::from_utf8_lossy(&signed.stderr)
+    );
+    let manifest_raw = fs::read_to_string(&manifest_path).expect("read manifest");
+    let manifest_json: Value = serde_json::from_str(&manifest_raw).unwrap();
+    let pub_key = manifest_json["publisher_public_key"]
+        .as_str()
+        .expect("publisher_public_key")
+        .to_string();
+
+    // 2. Offline verify with pinned --key and --assets-dir succeeds.
+    let verified = run_vitna(
+        &[
+            "release",
+            "verify",
+            manifest_path.to_str().unwrap(),
+            "--key",
+            &pub_key,
+            "--assets-dir",
+            dist.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &base,
+    );
+    assert!(
+        verified.status.success(),
+        "release verify failed: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let report: Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(report["report"]["is_valid"].as_bool(), Some(true));
+    assert_eq!(report["report"]["signature_verified"].as_bool(), Some(true));
+    assert_eq!(report["disk_assets_verified"].as_array().unwrap().len(), 1);
+
+    // 3. Tampering with the archive on disk fails verification.
+    fs::write(&archive, b"corrupted-archive-bytes").unwrap();
+    let tampered_disk = run_vitna(
+        &[
+            "release",
+            "verify",
+            manifest_path.to_str().unwrap(),
+            "--key",
+            &pub_key,
+            "--assets-dir",
+            dist.to_str().unwrap(),
+        ],
+        &home,
+        &base,
+    );
+    assert!(!tampered_disk.status.success());
+
+    // 4. Wrong --key fails closed even when manifest signature is self-consistent.
+    let wrong_key = "0".repeat(64);
+    let wrong_key_out = run_vitna(
+        &[
+            "release",
+            "verify",
+            manifest_path.to_str().unwrap(),
+            "--key",
+            &wrong_key,
+        ],
+        &home,
+        &base,
+    );
+    assert!(!wrong_key_out.status.success());
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+
 
