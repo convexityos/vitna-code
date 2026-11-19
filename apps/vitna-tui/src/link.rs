@@ -15,8 +15,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use vitna_protocol::messages::{
-    ApproveAction, CancelRun, CreateSession, ErrorResponse, HandshakeRequest, HandshakeResponse,
-    RejectAction, SessionCreated, SubmitTurn, SubscribeEvents,
+    ApplyChangeSet, ApproveAction, CancelRun, CreateSession, ErrorResponse, HandshakeRequest,
+    HandshakeResponse, PauseRun, RejectAction, ResumeRun, SessionCreated, SpawnChild, SteerRun,
+    SubmitTurn, SubscribeEvents,
 };
 use vitna_protocol::{type_url, ProtocolEnvelope, MAX_FRAME_SIZE_BYTES};
 
@@ -60,6 +61,7 @@ impl Link {
 pub enum OutboundCmd {
     SubmitTurn {
         prompt: String,
+        attached_file_paths: Vec<String>,
     },
     ApproveAction {
         approval_id: String,
@@ -71,9 +73,29 @@ pub enum OutboundCmd {
         action_digest: String,
         reason: String,
     },
+    SteerRun {
+        run_id: String,
+        feedback: String,
+    },
+    PauseRun {
+        run_id: String,
+        reason: String,
+    },
+    ResumeRun {
+        run_id: String,
+    },
     CancelRun {
         run_id: String,
         reason: String,
+    },
+    SpawnChild {
+        parent_run_id: String,
+        goal: String,
+    },
+    ApplyChangeSet {
+        change_set_id: String,
+        target_checkout_path: String,
+        expected_base_commit: String,
     },
 }
 
@@ -320,7 +342,10 @@ pub async fn drive_stream<S>(
             let key = format!("tui-{seq}");
             seq = seq.saturating_add(1);
             let env = match cmd {
-                OutboundCmd::SubmitTurn { prompt } => ProtocolEnvelope::carrying(
+                OutboundCmd::SubmitTurn {
+                    prompt,
+                    attached_file_paths,
+                } => ProtocolEnvelope::carrying(
                     type_url::command::SUBMIT_TURN,
                     &session_for_writer,
                     "",
@@ -329,7 +354,7 @@ pub async fn drive_stream<S>(
                     &SubmitTurn {
                         session_id: session_for_writer.clone(),
                         prompt,
-                        attached_file_paths: Vec::new(),
+                        attached_file_paths,
                         idempotency_key: key.clone(),
                     },
                 ),
@@ -365,6 +390,39 @@ pub async fn drive_stream<S>(
                         reason,
                     },
                 ),
+                OutboundCmd::SteerRun { run_id, feedback } => ProtocolEnvelope::carrying(
+                    type_url::command::STEER_RUN,
+                    &session_for_writer,
+                    &run_id,
+                    0,
+                    &key,
+                    &SteerRun {
+                        run_id: run_id.clone(),
+                        feedback,
+                        idempotency_key: key.clone(),
+                    },
+                ),
+                OutboundCmd::PauseRun { run_id, reason } => ProtocolEnvelope::carrying(
+                    type_url::command::PAUSE_RUN,
+                    &session_for_writer,
+                    &run_id,
+                    0,
+                    &key,
+                    &PauseRun {
+                        run_id: run_id.clone(),
+                        reason,
+                    },
+                ),
+                OutboundCmd::ResumeRun { run_id } => ProtocolEnvelope::carrying(
+                    type_url::command::RESUME_RUN,
+                    &session_for_writer,
+                    &run_id,
+                    0,
+                    &key,
+                    &ResumeRun {
+                        run_id: run_id.clone(),
+                    },
+                ),
                 OutboundCmd::CancelRun { run_id, reason } => ProtocolEnvelope::carrying(
                     type_url::command::CANCEL_RUN,
                     &session_for_writer,
@@ -374,6 +432,41 @@ pub async fn drive_stream<S>(
                     &CancelRun {
                         run_id: run_id.clone(),
                         reason,
+                    },
+                ),
+                OutboundCmd::SpawnChild {
+                    parent_run_id,
+                    goal,
+                } => ProtocolEnvelope::carrying(
+                    type_url::command::SPAWN_CHILD,
+                    &session_for_writer,
+                    &parent_run_id,
+                    0,
+                    &key,
+                    &SpawnChild {
+                        parent_run_id: parent_run_id.clone(),
+                        goal,
+                        requested_mode: "build".to_string(),
+                        token_budget: 0,
+                        max_nesting_depth: 0,
+                        idempotency_key: key.clone(),
+                    },
+                ),
+                OutboundCmd::ApplyChangeSet {
+                    change_set_id,
+                    target_checkout_path,
+                    expected_base_commit,
+                } => ProtocolEnvelope::carrying(
+                    type_url::command::APPLY_CHANGE_SET,
+                    &session_for_writer,
+                    "",
+                    0,
+                    &key,
+                    &ApplyChangeSet {
+                        change_set_id,
+                        target_checkout_path,
+                        expected_base_commit,
+                        idempotency_key: key.clone(),
                     },
                 ),
             };
