@@ -1,0 +1,306 @@
+name: Vitna Code Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release semver version without leading v (for example 0.2.0-beta.1)'
+        required: true
+        type: string
+      channel:
+        description: 'Release channel (beta, nightly, or stable)'
+        required: true
+        default: 'beta'
+        type: choice
+        options:
+          - beta
+          - nightly
+          - stable
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Release Preflight (Hygiene, Runner Labels, SBOM & Licenses)
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      channel: ${{ steps.meta.outputs.channel }}
+      is_tag: ${{ steps.meta.outputs.is_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine release version and channel
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+        run: |
+          if [ "${EVENT_NAME}" = "push" ]; then
+            VERSION="${REF_NAME#v}"
+            IS_TAG="true"
+            if [[ "${VERSION}" == *"-nightly"* ]]; then
+              CHANNEL="nightly"
+            elif [[ "${VERSION}" == *"-"* ]]; then
+              CHANNEL="beta"
+            else
+              CHANNEL="stable"
+            fi
+          else
+            VERSION="${INPUT_VERSION#v}"
+            CHANNEL="${INPUT_CHANNEL}"
+            IS_TAG="false"
+          fi
+          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.]+)?$ ]]; then
+            echo "ERROR: invalid semver version '${VERSION}'" >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
+          echo "is_tag=${IS_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release: v${VERSION} (channel=${CHANNEL}, is_tag=${IS_TAG})"
+
+      - name: Scan for em-dashes
+        run: |
+          if grep -rn --exclude-dir=".git" -P "\x{2014}" .; then
+            echo "ERROR: Forbidden em-dash character found." >&2
+            exit 1
+          fi
+
+      - name: Validate runner labels
+        run: node scripts/check-runner-labels.mjs
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate SPDX 2.3 SBOM and verify license policy
+        env:
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          mkdir -p dist/sbom
+          node scripts/generate-sbom.mjs \
+            --out "dist/sbom/vitna-code-v${RELEASE_VERSION}.spdx.json" \
+            --check-licenses
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-sbom
+          path: dist/sbom/*.spdx.json
+          if-no-files-found: error
+
+  package:
+    name: Build & Package (${{ matrix.target.os }} - ${{ matrix.target.arch }})
+    needs: validate
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: linux
+            arch: x86_64
+            runner: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+          - os: linux
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+            triple: aarch64-unknown-linux-gnu
+            archive_ext: tar.gz
+          - os: macos
+            arch: aarch64
+            runner: macos-15
+            triple: aarch64-apple-darwin
+            archive_ext: tar.gz
+          - os: windows
+            arch: x86_64
+            runner: windows-latest
+            triple: x86_64-pc-windows-msvc
+            archive_ext: zip
+          - os: windows
+            arch: aarch64
+            runner: windows-11-arm
+            triple: aarch64-pc-windows-msvc
+            archive_ext: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.triple }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target.triple }}
+
+      - name: Build release binaries
+        env:
+          TARGET_TRIPLE: ${{ matrix.target.triple }}
+        run: |
+          cargo build --release --target "${TARGET_TRIPLE}" \
+            -p vitna-cli -p vitna-daemon -p vitna-tui
+
+      - name: Package Unix release archive
+        if: matrix.target.os != 'windows'
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          TARGET_TRIPLE: ${{ matrix.target.triple }}
+        run: |
+          bash scripts/package-release.sh "${RELEASE_VERSION}" "${TARGET_TRIPLE}" dist/out
+
+      - name: Package Windows release archive
+        if: matrix.target.os == 'windows'
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          TARGET_TRIPLE: ${{ matrix.target.triple }}
+        run: |
+          ./scripts/package-release.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -Target $env:TARGET_TRIPLE `
+            -OutputDir dist/out
+
+      - name: Upload target archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-archive-${{ matrix.target.triple }}
+          path: |
+            dist/out/vitna-code-v*.${{ matrix.target.archive_ext }}
+            dist/out/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Upload Linux x86_64 vitna CLI for manifest signing
+        if: matrix.target.triple == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitna-signer-bin
+          path: target/x86_64-unknown-linux-gnu/release/vitna
+          if-no-files-found: error
+
+  finalize:
+    name: Assemble Checksums, Sign Manifest & Draft Release
+    needs: [validate, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all packaged archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-archive-*
+          path: dist/staging
+
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: release-sbom
+          path: dist/release
+
+      - name: Download vitna CLI binary
+        uses: actions/download-artifact@v4
+        with:
+          name: vitna-signer-bin
+          path: dist/bin
+
+      - name: Consolidate archives and SHA256SUMS
+        run: |
+          mkdir -p dist/release
+          chmod +x dist/bin/vitna
+          find dist/staging -maxdepth 2 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} dist/release/ \;
+          (
+            cd dist/release
+            sha256sum vitna-code-v*.tar.gz vitna-code-v*.zip > SHA256SUMS
+          )
+          cat dist/release/SHA256SUMS
+
+      - name: Sign and verify release manifest
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_CHANNEL: ${{ needs.validate.outputs.channel }}
+          IS_TAG: ${{ needs.validate.outputs.is_tag }}
+          VITNA_RELEASE_SIGNING_KEY: ${{ secrets.VITNA_RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "${VITNA_RELEASE_SIGNING_KEY}" ]; then
+            if [ "${IS_TAG}" = "true" ]; then
+              echo "ERROR: VITNA_RELEASE_SIGNING_KEY secret is required for tagged releases." >&2
+              exit 1
+            fi
+            echo "VITNA_RELEASE_SIGNING_KEY not configured; skipping official manifest signing for dry-run dispatch."
+            exit 0
+          fi
+
+          SIGNER_HOME="${RUNNER_TEMP}/vitna-signer-home"
+          rm -rf "${SIGNER_HOME}"
+          (
+            umask 077
+            mkdir -p "${SIGNER_HOME}/.vitna"
+            printf 'vitna-device-key-v1\n%s\n' "${VITNA_RELEASE_SIGNING_KEY}" > "${SIGNER_HOME}/.vitna/device-key"
+          )
+
+          ASSET_ARGS=()
+          for triple in \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu \
+            aarch64-apple-darwin \
+            x86_64-pc-windows-msvc \
+            aarch64-pc-windows-msvc; do
+            if [[ "${triple}" == *"windows"* ]]; then
+              archive="dist/release/vitna-code-v${RELEASE_VERSION}-${triple}.zip"
+            else
+              archive="dist/release/vitna-code-v${RELEASE_VERSION}-${triple}.tar.gz"
+            fi
+            ASSET_ARGS+=(--asset "${triple}=${archive}")
+          done
+
+          HOME="${SIGNER_HOME}" dist/bin/vitna release sign \
+            --version "${RELEASE_VERSION}" \
+            --channel "${RELEASE_CHANNEL}" \
+            "${ASSET_ARGS[@]}" \
+            --out "dist/release/manifest.json"
+
+          rm -rf "${SIGNER_HOME}"
+
+          dist/bin/vitna release verify \
+            "dist/release/manifest.json" \
+            --assets-dir dist/release \
+            --json
+
+      - name: Upload consolidated release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitna-code-release-v${{ needs.validate.outputs.version }}
+          path: dist/release/*
+          if-no-files-found: error
+
+      - name: Create draft GitHub Release for tag
+        if: needs.validate.outputs.is_tag == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_CHANNEL: ${{ needs.validate.outputs.channel }}
+        run: |
+          PRERELEASE_FLAG=""
+          if [ "${RELEASE_CHANNEL}" != "stable" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          gh release create "${RELEASE_TAG}" \
+            dist/release/* \
+            --draft \
+            ${PRERELEASE_FLAG} \
+            --title "Vitna Code v${RELEASE_VERSION}" \
+            --generate-notes

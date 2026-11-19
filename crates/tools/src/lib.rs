@@ -2,7 +2,9 @@
 
 pub mod apply_patch;
 pub mod browser_verify;
+pub mod egress;
 pub mod git_status;
+pub mod http_fetch;
 pub mod list_dir;
 pub mod path_safety;
 pub mod read_file;
@@ -17,7 +19,12 @@ pub mod write_file;
 pub use apply_patch::ApplyPatchTool;
 use async_trait::async_trait;
 pub use browser_verify::BrowserVerifyTool;
+pub use egress::{
+    validate_allowlist_entry, BrokeredHttpResponse, EgressBroker, EgressPolicy,
+    NETWORK_DESTINATION_DENIED,
+};
 pub use git_status::GitStatusTool;
+pub use http_fetch::HttpFetchTool;
 pub use list_dir::ListDirTool;
 pub use path_safety::resolve_workspace_path;
 pub use read_file::ReadFileTool;
@@ -27,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use vitna_receipts::EgressCallRecord;
 use vitna_runner::Runner;
 pub use write_file::WriteFileTool;
 
@@ -60,6 +68,9 @@ pub struct ToolResult {
     pub sandbox_backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_enforcement: Option<String>,
+    /// Brokered `net:http_fetch` egress records observed during this tool call.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub egress_calls: Vec<EgressCallRecord>,
 }
 
 pub struct ToolContext {
@@ -72,6 +83,10 @@ pub struct ToolContext {
     /// so that adding a permission is always a visible edit.
     pub allow_unsandboxed: bool,
     pub allow_network: bool,
+    /// Operator-approved destination hosts permitted for brokered `net:http_fetch`
+    /// calls (`http_fetch` and remote `browser_verify`). Empty by default, which
+    /// denies all remote targets fail-closed.
+    pub egress_allowlist: Vec<String>,
 }
 
 impl ToolContext {
@@ -82,8 +97,30 @@ impl ToolContext {
             runner,
             allow_unsandboxed: false,
             allow_network: false,
+            egress_allowlist: Vec::new(),
         }
     }
+}
+
+/// Returns the URL scheme when `target` names a remote URL (`scheme://...`),
+/// requiring at least two scheme characters so Windows drive paths (`C:/...`)
+/// stay local paths.
+pub fn remote_url_scheme(target: &str) -> Option<&str> {
+    let end = target.find("://")?;
+    let scheme = &target[..end];
+    let mut chars = scheme.chars();
+    if !chars.next()?.is_ascii_alphabetic() || scheme.len() < 2 {
+        return None;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) {
+        return None;
+    }
+    Some(scheme)
+}
+
+/// True when `target` has a remote URL scheme (`http://`, `https://`, etc.).
+pub fn is_remote_url(target: &str) -> bool {
+    remote_url_scheme(target).is_some()
 }
 
 /// The identity of an action: which tool, given exactly which arguments.
@@ -212,7 +249,7 @@ impl ToolRegistry {
         defs
     }
 
-    /// Creates standard tool suite: read_file, write_file, list_dir, run_command, search_code, git_status, apply_patch, browser_verify.
+    /// Creates standard tool suite: read_file, write_file, list_dir, run_command, search_code, git_status, apply_patch, browser_verify, http_fetch.
     pub fn standard() -> Self {
         let mut registry = Self::new();
         registry.register(Arc::new(ReadFileTool));
@@ -223,6 +260,7 @@ impl ToolRegistry {
         registry.register(Arc::new(GitStatusTool));
         registry.register(Arc::new(ApplyPatchTool));
         registry.register(Arc::new(BrowserVerifyTool));
+        registry.register(Arc::new(HttpFetchTool));
         registry
     }
 
@@ -255,7 +293,7 @@ mod tests {
     async fn test_tool_registry_lifecycle() {
         let registry = ToolRegistry::standard();
         let defs = registry.definitions();
-        assert_eq!(defs.len(), 8);
+        assert_eq!(defs.len(), 9);
 
         let names: Vec<String> = defs.into_iter().map(|d| d.name).collect();
         assert!(names.contains(&"read_file".to_string()));
@@ -266,6 +304,7 @@ mod tests {
         assert!(names.contains(&"git_status".to_string()));
         assert!(names.contains(&"apply_patch".to_string()));
         assert!(names.contains(&"browser_verify".to_string()));
+        assert!(names.contains(&"http_fetch".to_string()));
 
         let temp_dir = std::env::temp_dir().join(format!("vitna_tools_test_{}", std::process::id()));
         fs::create_dir_all(&temp_dir).expect("create temp dir");

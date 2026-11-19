@@ -93,6 +93,34 @@ impl ReceiptVerifier {
             }
         }
 
+        // 4b. Brokered egress record completeness check
+        for (idx, call) in receipt.egress_calls.iter().enumerate() {
+            if call.target_domain.trim().is_empty() {
+                errors.push(format!("Egress call #{idx} is missing target_domain"));
+            }
+            if call.method.trim().is_empty() {
+                errors.push(format!("Egress call #{idx} is missing HTTP method"));
+            }
+            if call.redacted_url.trim().is_empty() {
+                errors.push(format!("Egress call #{idx} is missing redacted_url"));
+            }
+            if !(100..=599).contains(&call.status_code) {
+                errors.push(format!(
+                    "Egress call #{idx} has invalid HTTP status code {}",
+                    call.status_code
+                ));
+            }
+            let valid_sha256 = |s: &str| {
+                s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+            };
+            if !valid_sha256(&call.request_sha256) {
+                errors.push(format!("Egress call #{idx} has invalid request_sha256"));
+            }
+            if !valid_sha256(&call.response_sha256) {
+                errors.push(format!("Egress call #{idx} has invalid response_sha256"));
+            }
+        }
+
         // 5. Signature check (if public key provided)
         let mut signature_verified = false;
         if let Some(pub_hex) = public_key_hex {
@@ -176,6 +204,7 @@ mod tests {
                 diff_digest: "diff-99".to_string(),
             },
             runner_execution_statements: vec![],
+            egress_calls: vec![],
             child_receipt_roots: vec![],
             device_public_key: None,
             mandate_provenance: None,
@@ -249,10 +278,50 @@ mod tests {
             !String::from_utf8_lossy(&bytes).contains("device_public_key"),
             "legacy receipt without device_public_key must omit it from canonical bytes"
         );
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("egress_calls"),
+            "receipt with empty egress_calls must omit it from canonical bytes"
+        );
         receipt.device_signature = hex::encode(key.sign(&bytes).to_bytes());
 
         let report = ReceiptVerifier::verify_receipt(&receipt, Some(&pub_hex)).expect("verify");
         assert!(report.is_valid);
         assert!(report.signature_verified);
+    }
+
+    #[test]
+    fn test_verifier_validates_and_signs_egress_calls() {
+        let key = generate_signing_key();
+        let pub_hex = hex::encode(key.verifying_key().to_bytes());
+
+        let mut receipt = sample_receipt();
+        receipt.egress_calls.push(EgressCallRecord {
+            target_domain: "127.0.0.1".to_string(),
+            method: "GET".to_string(),
+            redacted_url: "http://127.0.0.1:8080/health".to_string(),
+            request_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                .to_string(),
+            status_code: 200,
+            response_sha256: "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+                .to_string(),
+            bytes_sent: 0,
+            bytes_received: 5,
+            latency_ms: 4,
+        });
+        receipt.sign(&key).expect("signing");
+
+        let ok = ReceiptVerifier::verify_receipt(&receipt, Some(&pub_hex)).expect("verify");
+        assert!(ok.is_valid, "errors: {:?}", ok.errors);
+        assert!(ok.signature_verified);
+
+        // Tampering an egress record invalidates both structure/signature.
+        receipt.egress_calls[0].response_sha256 = "not-a-sha256".to_string();
+        let bad = ReceiptVerifier::verify_receipt(&receipt, Some(&pub_hex)).expect("verify");
+        assert!(!bad.is_valid);
+        assert!(!bad.signature_verified);
+        assert!(bad
+            .errors
+            .iter()
+            .any(|e| e.contains("invalid response_sha256")));
     }
 }

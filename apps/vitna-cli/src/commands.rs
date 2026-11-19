@@ -237,6 +237,20 @@ pub fn run_receipt_show(
             short_hash(&st.statement_digest)
         );
     }
+    if !receipt.egress_calls.is_empty() {
+        println!("Egress Calls:      {}", receipt.egress_calls.len());
+        for eg in &receipt.egress_calls {
+            println!(
+                "  - {} {} -> {} ({} bytes, {}ms, sha256: {})",
+                eg.method,
+                eg.redacted_url,
+                eg.status_code,
+                eg.bytes_received,
+                eg.latency_ms,
+                short_hash(&eg.response_sha256)
+            );
+        }
+    }
     if !errors.is_empty() {
         println!("Errors:");
         for err in &errors {
@@ -807,6 +821,7 @@ pub struct LiveRunOptions<'a> {
     pub base_url: Option<String>,
     pub mcp_http: Vec<String>,
     pub mcp_stdio: Vec<String>,
+    pub allow_egress: Vec<String>,
     pub auto_approve: bool,
     pub verify_cmd: Option<String>,
     pub allow_unsandboxed: bool,
@@ -820,15 +835,16 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
         AnthropicProvider, CredentialResolver, KeyringStore, OpenAIProvider, Provider, ProviderId,
     };
 
-    // Reuse Launch's exact route and MCP server validation so `vitna run`,
-    // `vitna serve`, and `vitna-coded` never drift on flag rules.
+    // Reuse Launch's exact route, MCP server, and egress allowlist validation so
+    // `vitna run`, `vitna serve`, and `vitna-coded` never drift on flag rules.
     let launch = vitna_daemon::launch::Launch::resolve(
         Some("vitna-run".to_string()),
         Some(PathBuf::from("vitna-run.db")),
     )?
     .with_runtime(opts.runtime_url, opts.lane)?
     .with_direct_provider(opts.provider, opts.model, opts.base_url)?
-    .with_mcp_servers(opts.mcp_http, opts.mcp_stdio)?;
+    .with_mcp_servers(opts.mcp_http, opts.mcp_stdio)?
+    .with_egress_allowlist(opts.allow_egress)?;
 
     let db_path = match opts.store_arg {
         Some(p) => p.to_path_buf(),
@@ -934,7 +950,8 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
         signing_key,
     )
     .continuing_at(next_seq)
-    .with_extra_tools(extra_tools);
+    .with_extra_tools(extra_tools)
+    .with_egress_allowlist(launch.egress_allowlist.clone());
     engine.routing_reason = routing_reason;
 
     let mut loaded_skill_names = Vec::new();
@@ -961,6 +978,9 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
     if mcp_tool_count > 0 {
         println!("MCP Tools:  {mcp_tool_count} attached");
     }
+    if !launch.egress_allowlist.is_empty() {
+        println!("Egress:     {}", launch.egress_allowlist.join(", "));
+    }
     if !loaded_skill_names.is_empty() {
         println!("Skills:     {}", loaded_skill_names.join(", "));
     }
@@ -980,6 +1000,9 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
     println!("Rounds:            {}", turn.rounds);
     println!("Files Modified:    {}", receipt.changeset.files_modified.len());
     println!("Evidence Captured: {}", receipt.evidence_items.len());
+    if !receipt.egress_calls.is_empty() {
+        println!("Egress Calls:      {}", receipt.egress_calls.len());
+    }
     println!("Receipt Path:      .vitna/receipts/{}.json", receipt.run_id);
     Ok(())
 }

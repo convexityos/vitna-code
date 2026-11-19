@@ -248,6 +248,7 @@ pub(crate) fn receipt(
             diff_digest: sha256_hex(listing.as_bytes()),
         },
         runner_execution_statements: statements,
+        egress_calls: Vec::new(),
         child_receipt_roots: Vec::new(),
         device_public_key: None,
         mandate_provenance: None,

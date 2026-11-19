@@ -257,6 +257,7 @@ impl DaemonServer {
             .continuing_at(next_sequence)
             .with_control(Arc::clone(&control))
             .with_extra_tools(self.mcp_tools())
+            .with_egress_allowlist(self.egress_allowlist.clone())
             .with_approver(Arc::new(WireApprover {
                 pending: self.approvals.clone(),
                 run_id: run_id.clone(),
@@ -389,6 +390,7 @@ impl DaemonServer {
         .continuing_at(next_sequence)
         .with_control(Arc::clone(&control))
         .with_extra_tools(self.mcp_tools())
+        .with_egress_allowlist(self.egress_allowlist.clone())
         .with_approver(Arc::new(WireApprover {
             pending: self.approvals.clone(),
             run_id: child_run_id.clone(),

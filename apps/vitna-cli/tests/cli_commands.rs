@@ -73,6 +73,7 @@ fn write_signed_receipt(
             diff_digest: "b".repeat(64),
         },
         runner_execution_statements: Vec::new(),
+        egress_calls: Vec::new(),
         child_receipt_roots: Vec::new(),
         device_public_key: None,
         mandate_provenance: None,
@@ -1026,6 +1027,58 @@ fn release_manifest_sign_and_verify_cli_round_trip() {
         &base,
     );
     assert!(!wrong_key_out.status.success());
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn cli_allow_egress_rejects_blanket_wildcard_and_requires_model_route() {
+    let base = temp_dir("cli_allow_egress");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    // `vitna serve --allow-egress "*"` fails closed before binding any listener.
+    let serve_wildcard = run_vitna(
+        &[
+            "serve",
+            "--endpoint",
+            "unused-endpoint",
+            "--store",
+            base.join("daemon.db").to_str().unwrap(),
+            "--allow-egress",
+            "*",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!serve_wildcard.status.success());
+    let serve_err = String::from_utf8_lossy(&serve_wildcard.stderr);
+    assert!(
+        serve_err.contains("blanket egress allowlist wildcard"),
+        "expected blanket wildcard rejection, got: {serve_err}"
+    );
+
+    // `vitna run --allow-egress 127.0.0.1` without a live model route fails cleanly.
+    let run_no_route = run_vitna(
+        &[
+            "run",
+            "fetch status",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--allow-egress",
+            "127.0.0.1",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!run_no_route.status.success());
+    let run_err = String::from_utf8_lossy(&run_no_route.stderr);
+    assert!(
+        run_err.contains("require a model route"),
+        "expected model route requirement error, got: {run_err}"
+    );
 
     let _ = fs::remove_dir_all(&base);
 }

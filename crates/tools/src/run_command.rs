@@ -98,6 +98,7 @@ impl Tool for RunCommandTool {
             exit_code: Some(output.exit_code),
             sandbox_backend: Some(output.sandbox_backend),
             sandbox_enforcement: Some(output.sandbox_enforcement),
+            ..Default::default()
         })
     }
 }
