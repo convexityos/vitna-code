@@ -44,10 +44,10 @@ use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
     InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    WaitForSingleObject, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
     EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
-    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-    STARTUPINFOW,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES,
+    STARTUPINFOEXW, STARTUPINFOW,
 };
 
 use crate::tree::Teardown;
@@ -651,7 +651,8 @@ pub fn run_in_appcontainer(
 
     let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.StartupInfo.wShowWindow = 0; // SW_HIDE
     si.StartupInfo.hStdInput = stdin_nul.raw();
     si.StartupInfo.hStdOutput = stdout_write.raw();
     si.StartupInfo.hStdError = stderr_write.raw();
@@ -700,10 +701,11 @@ pub fn run_in_appcontainer(
     }
 
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-    let flags = EXTENDED_STARTUPINFO_PRESENT
-        | CREATE_UNICODE_ENVIRONMENT
-        | CREATE_NO_WINDOW
-        | CREATE_SUSPENDED;
+    // Avoid CREATE_NO_WINDOW inside AppContainer: spawning a headless conhost
+    // under a LowBox token causes grandchild console processes to fail with
+    // ERROR_ACCESS_DENIED (5). STARTF_USESHOWWINDOW + SW_HIDE hides windows
+    // without breaking grandchild console creation.
+    let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
     let created = unsafe {
         CreateProcessW(
             w_app.as_ptr(),
