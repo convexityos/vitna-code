@@ -111,6 +111,14 @@ impl RuntimeLaneProvider {
         Self { lane, inner }
     }
 
+    pub fn with_telemetry(
+        mut self,
+        collector: std::sync::Arc<vitna_telemetry::TelemetryCollector>,
+    ) -> Self {
+        self.inner = self.inner.with_telemetry(collector);
+        self
+    }
+
     pub fn lane(&self) -> &RuntimeLane {
         &self.lane
     }

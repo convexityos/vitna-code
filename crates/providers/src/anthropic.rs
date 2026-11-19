@@ -2,14 +2,27 @@ use crate::credentials::ProviderCredentials;
 use crate::{Provider, ProviderRequest, ProviderResponse, ProviderStreamEvent, ProviderToolCall};
 use async_trait::async_trait;
 use serde_json::json;
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use vitna_telemetry::{EgressRecord, TelemetryCollector};
 
 pub struct AnthropicProvider {
     pub credentials: ProviderCredentials,
+    telemetry: Option<Arc<TelemetryCollector>>,
 }
 
 impl AnthropicProvider {
     pub fn new(credentials: ProviderCredentials) -> Self {
-        Self { credentials }
+        Self {
+            credentials,
+            telemetry: None,
+        }
+    }
+
+    pub fn with_telemetry(mut self, collector: Arc<TelemetryCollector>) -> Self {
+        self.telemetry = Some(collector);
+        self
     }
 
     pub fn default_endpoint(&self) -> String {
@@ -191,7 +204,20 @@ impl Provider for AnthropicProvider {
         // this path, which is how it went unnoticed.
         payload["stream"] = json!(false);
         let endpoint = self.default_endpoint();
+        let req_bytes = serde_json::to_vec(&payload)
+            .map_err(|e| format!("Failed to serialize Anthropic request JSON: {}", e))?;
+        let bytes_sent = req_bytes.len() as u64;
+        let host = reqwest::Url::parse(&endpoint)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        let provider_label = if self.credentials.provider.is_empty() {
+            "anthropic".to_string()
+        } else {
+            self.credentials.provider.clone()
+        };
 
+        let started = Instant::now();
         let client = reqwest::Client::new();
         let resp = client
             .post(&endpoint)
@@ -199,20 +225,43 @@ impl Provider for AnthropicProvider {
             .header("anthropic-version", "2023-06-01")
             .header("anthropic-beta", "prompt-caching-2024-07-31")
             .header("content-type", "application/json")
-            .json(&payload)
+            .body(req_bytes)
             .send()
             .await
             .map_err(|e| format!("Anthropic request network error: {}", e))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+        let status = resp.status();
+        let resp_bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("Failed to read Anthropic response body: {}", e))?;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+        if let Some(telemetry) = &self.telemetry {
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            telemetry.record_egress(EgressRecord {
+                provider: provider_label.clone(),
+                host,
+                endpoint: endpoint.clone(),
+                bytes_sent,
+                bytes_received: resp_bytes.len() as u64,
+                timestamp_ms: now_ms,
+            });
+            let mut labels = BTreeMap::new();
+            labels.insert("provider".to_string(), provider_label);
+            labels.insert("status".to_string(), status.as_u16().to_string());
+            telemetry.record_metric("provider_http_latency_ms", elapsed_ms, labels);
+        }
+
+        if !status.is_success() {
+            let body = String::from_utf8_lossy(&resp_bytes);
             return Err(format!("Anthropic API error (status {}): {}", status, body));
         }
 
-        let body: serde_json::Value = resp
-            .json()
-            .await
+        let body: serde_json::Value = serde_json::from_slice(&resp_bytes)
             .map_err(|e| format!("Failed to parse Anthropic response JSON: {}", e))?;
 
         let mut content = String::new();
