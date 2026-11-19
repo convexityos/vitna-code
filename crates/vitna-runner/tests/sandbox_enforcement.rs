@@ -383,6 +383,47 @@ async fn a_sandboxed_command_can_still_work_in_the_workspace() {
         ))
         .await
         .expect("nested command runs");
+    #[cfg(windows)]
+    if nested.exit_code != 0 {
+        let host_probe = runner(&fx)
+            .run_command(CommandRequest::new(
+                "hostname.exe",
+                &fx.workspace,
+                &fx.workspace,
+                30_000,
+            ))
+            .await;
+        let sys32_probe = runner(&fx)
+            .run_command(CommandRequest::new(
+                "cd /d C:\\Windows\\System32 && \"%COMSPEC%\" /c echo sys32_ok",
+                &fx.workspace,
+                &fx.workspace,
+                30_000,
+            ))
+            .await;
+        let icacls_cmd = std::process::Command::new("icacls")
+            .arg(r"C:\Windows\System32\cmd.exe")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+        let icacls_host = std::process::Command::new("icacls")
+            .arg(r"C:\Windows\System32\hostname.exe")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+        panic!(
+            "nested failed: exit={} stdout={:?} stderr={:?}\n\
+             hostname_probe={:?}\n\
+             sys32_probe={:?}\n\
+             icacls_cmd={:?}\n\
+             icacls_host={:?}",
+            nested.exit_code,
+            nested.stdout,
+            nested.stderr,
+            host_probe.map(|o| (o.exit_code, o.stdout, o.stderr)),
+            sys32_probe.map(|o| (o.exit_code, o.stdout, o.stderr)),
+            icacls_cmd,
+            icacls_host,
+        );
+    }
     assert_eq!(
         nested.exit_code, 0,
         "nested child process failed inside sandbox: stdout={:?} stderr={:?}",
