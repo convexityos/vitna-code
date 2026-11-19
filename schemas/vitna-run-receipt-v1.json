@@ -133,6 +133,34 @@
       "type": "string",
       "description": "Hex-encoded 32-byte Ed25519 verifying key that signed this receipt. Optional for backwards compatibility with legacy receipts."
     },
+    "mandate_provenance": {
+      "type": "object",
+      "description": "Optional am/1 Agent Mandate provenance for mandated autonomous runs. Omitted when no mandate was enforced.",
+      "required": [
+        "chain_hash",
+        "root_jti",
+        "path",
+        "ledger",
+        "currency",
+        "total_spent",
+        "spend_digests"
+      ],
+      "properties": {
+        "chain_hash": { "type": "string" },
+        "root_jti": { "type": "string" },
+        "path": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "ledger": { "type": "string" },
+        "currency": { "type": "string" },
+        "total_spent": { "type": "string" },
+        "spend_digests": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
     "device_signature": {
       "type": "string"
     }

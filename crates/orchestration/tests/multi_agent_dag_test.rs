@@ -214,6 +214,7 @@ async fn test_multi_agent_dag_execution_and_receipt_aggregation() {
         runner_execution_statements: Vec::new(),
         child_receipt_roots: Vec::new(),
         device_public_key: None,
+        mandate_provenance: None,
         device_signature: String::new(),
     };
 

@@ -171,6 +171,7 @@ mod tests {
             runner_execution_statements: vec![],
             child_receipt_roots: vec![],
             device_public_key: None,
+            mandate_provenance: None,
             device_signature: String::new(),
         }
     }

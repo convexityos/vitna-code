@@ -104,6 +104,28 @@ describe('canonical bytes', () => {
     expect(reading.uncovered).toEqual(['note', 'model_selection.tier', 'evidence_items[0].verified']);
     expect(new TextDecoder().decode(canonicalBytes(reading.receipt as Receipt))).toBe(RUST_TEST_CANONICAL);
   });
+
+  it('includes mandate_provenance in canonical bytes when present with zero uncovered keys', () => {
+    const reading = read({
+      ...RUST_TEST_RECEIPT,
+      mandate_provenance: {
+        chain_hash: 'sha256:abc123',
+        root_jti: 'mnd_root',
+        path: ['mnd_root', 'mnd_child'],
+        ledger: 'https://ledger.convexityos.com',
+        currency: 'USD',
+        total_spent: '0.45',
+        spend_digests: ['sha256:spend1'],
+      },
+    });
+    expect(reading.schemaErrors).toEqual([]);
+    expect(reading.rustMissing).toEqual([]);
+    expect(reading.uncovered).toEqual([]);
+    const canonical = new TextDecoder().decode(canonicalBytes(reading.receipt as Receipt));
+    expect(canonical).toContain(
+      '"mandate_provenance":{"chain_hash":"sha256:abc123","currency":"USD","ledger":"https://ledger.convexityos.com","path":["mnd_root","mnd_child"],"root_jti":"mnd_root","spend_digests":["sha256:spend1"],"total_spent":"0.45"}',
+    );
+  });
 });
 
 describe('reading a receipt', () => {
