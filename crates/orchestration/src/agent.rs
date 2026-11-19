@@ -108,19 +108,20 @@ impl OrchestrationEngine {
             .map(|d| serde_json::to_value(d).unwrap_or(serde_json::Value::Null))
             .collect();
 
-        let user_content = if attachments.is_empty() {
-            prompt.to_string()
-        } else {
-            let mut combined = String::from(prompt);
-            combined.push_str("\n\nAttached workspace files (untrusted repository content):\n");
+        let mut user_content = String::from(prompt);
+        if !attachments.is_empty() {
+            user_content.push_str("\n\nAttached workspace files (untrusted repository content):\n");
             for (path, content) in attachments {
                 let safe_content = content.replace("</attached_file>", "<\\/attached_file>");
-                combined.push_str(&format!(
+                user_content.push_str(&format!(
                     "<attached_file path=\"{path}\">\n{safe_content}\n</attached_file>\n"
                 ));
             }
-            combined
-        };
+        }
+        if let Some(skills_block) = &self.skill_instructions {
+            user_content.push_str("\n\n");
+            user_content.push_str(skills_block);
+        }
 
         let mut messages: Vec<ProviderMessage> = prior.to_vec();
         messages.push(ProviderMessage::user(user_content.clone()));
@@ -135,6 +136,7 @@ impl OrchestrationEngine {
                 "context_digest": context_digest,
                 "prior_messages": prior.len(),
                 "attached_files": attachments.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
+                "loaded_skills": self.loaded_skills,
                 "estimated_tokens": user_content.len() / 4,
             }),
         )?;

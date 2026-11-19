@@ -4,11 +4,13 @@ pub mod changesets;
 pub mod ipc;
 pub mod key;
 pub mod launch;
+pub mod mcp;
 pub mod server;
 pub mod terminal;
 pub mod turns;
 
 pub use changesets::{AppliedChangeSet, ApplyChangeSetError, StagedChangeSet};
+pub use mcp::McpServerSpec;
 pub use server::{DaemonServer, SessionInfo};
 pub use terminal::{TerminalAttachment, TerminalError};
 pub use turns::{AnswerRefused, ModelRoute};

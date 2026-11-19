@@ -61,6 +61,8 @@ pub struct DaemonServer {
     pub terminals: Arc<Mutex<HashMap<String, Arc<vitna_runner::PtySession>>>>,
     /// Staged isolated child-workspace changesets awaiting ApplyChangeSet.
     pub pending_changesets: Arc<Mutex<HashMap<String, crate::changesets::StagedChangeSet>>>,
+    /// Attached external MCP tool bridges injected into every turn's registry.
+    pub mcp_tools: Arc<Mutex<Vec<Arc<dyn vitna_tools::Tool>>>>,
 }
 
 impl DaemonServer {
@@ -143,6 +145,7 @@ impl DaemonServer {
             telemetry: Arc::new(TelemetryCollector::new()),
             terminals: Arc::new(Mutex::new(HashMap::new())),
             pending_changesets: Arc::new(Mutex::new(HashMap::new())),
+            mcp_tools: Arc::new(Mutex::new(Vec::new())),
         }
     }
 

@@ -1,12 +1,46 @@
 use crate::client::McpClient;
 use crate::protocol::McpToolDescriptor;
 use async_trait::async_trait;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use vitna_tools::{Tool, ToolContext, ToolDefinition, ToolResult};
 
+/// Sanitizes an MCP server or tool identifier into a safe ASCII slug.
+fn sanitize_slug(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "unnamed".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Builds a collision-free, non-shadowing registry name for an external MCP tool.
+///
+/// The `mcp__` prefix guarantees an untrusted MCP server can never overwrite a
+/// built-in tool (`read_file`, `write_file`, `run_command`, etc.), and including
+/// the server name keeps two servers exposing the same tool name distinct.
+pub fn namespaced_tool_name(server_name: &str, tool_name: &str) -> String {
+    format!(
+        "mcp__{}__{}",
+        sanitize_slug(server_name),
+        sanitize_slug(tool_name)
+    )
+}
+
 pub struct McpToolBridge {
     pub server_name: String,
+    pub registered_name: String,
     pub descriptor: McpToolDescriptor,
     pub client: Arc<Mutex<McpClient>>,
     pub is_mutating: bool,
@@ -19,8 +53,30 @@ impl McpToolBridge {
         client: Arc<Mutex<McpClient>>,
         is_mutating: bool,
     ) -> Self {
+        let server_name = server_name.into();
+        let registered_name = descriptor.name.clone();
         Self {
-            server_name: server_name.into(),
+            server_name,
+            registered_name,
+            descriptor,
+            client,
+            is_mutating,
+        }
+    }
+
+    /// Creates a bridge whose registry name is namespaced as `mcp__<server>__<tool>`
+    /// so untrusted external servers can never shadow built-in workspace tools.
+    pub fn namespaced(
+        server_name: impl Into<String>,
+        descriptor: McpToolDescriptor,
+        client: Arc<Mutex<McpClient>>,
+        is_mutating: bool,
+    ) -> Self {
+        let server_name = server_name.into();
+        let registered_name = namespaced_tool_name(&server_name, &descriptor.name);
+        Self {
+            server_name,
+            registered_name,
             descriptor,
             client,
             is_mutating,
@@ -28,15 +84,59 @@ impl McpToolBridge {
     }
 }
 
+/// Initializes an MCP client if needed, discovers all paginated tools via
+/// `tools/list`, and wraps each tool in a namespaced [`McpToolBridge`].
+///
+/// Every bridged tool strictly requires exact-action approval and preserves
+/// the server's real tool name for JSON-RPC `tools/call` and action digests.
+pub async fn discover_and_bridge_tools(
+    server_name: impl Into<String>,
+    client: Arc<Mutex<McpClient>>,
+) -> Result<Vec<Arc<dyn Tool>>, String> {
+    let server_name = server_name.into();
+    if server_name.trim().is_empty() {
+        return Err("MCP server name must be non-empty".to_string());
+    }
+
+    let descriptors = {
+        let mut guard = client.lock().await;
+        if !guard.is_initialized() {
+            guard.initialize().await?;
+        }
+        guard.list_tools().await?
+    };
+
+    let mut seen = HashSet::new();
+    let mut bridges: Vec<Arc<dyn Tool>> = Vec::with_capacity(descriptors.len());
+    for desc in descriptors {
+        if desc.name.trim().is_empty() {
+            return Err(format!(
+                "MCP server '{}' advertised a tool with an empty name",
+                server_name
+            ));
+        }
+        let bridge = McpToolBridge::namespaced(&server_name, desc, Arc::clone(&client), true);
+        if !seen.insert(bridge.registered_name.clone()) {
+            return Err(format!(
+                "MCP server '{}' produced duplicate namespaced tool '{}'",
+                server_name, bridge.registered_name
+            ));
+        }
+        bridges.push(Arc::new(bridge));
+    }
+
+    Ok(bridges)
+}
+
 #[async_trait]
 impl Tool for McpToolBridge {
     fn name(&self) -> &str {
-        &self.descriptor.name
+        &self.registered_name
     }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: self.descriptor.name.clone(),
+            name: self.registered_name.clone(),
             description: format!(
                 "[MCP: {}] {}",
                 self.server_name,
@@ -83,7 +183,7 @@ impl Tool for McpToolBridge {
 
         Ok(ToolResult {
             call_id: String::new(),
-            tool_name: self.descriptor.name.clone(),
+            tool_name: self.registered_name.clone(),
             success: is_success,
             output,
             preimage_hash: None,
