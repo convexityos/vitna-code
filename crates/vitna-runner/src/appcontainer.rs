@@ -660,7 +660,7 @@ pub fn run_in_appcontainer(
 
     let cmd_exe = resolve_cmd_exe();
     let w_app = wide_null(cmd_exe.as_os_str());
-    let mut w_cmdline = wide_str(&format!("cmd.exe /C {command}"));
+    let mut w_cmdline = wide_str(&format!("cmd.exe /D /C {command}"));
     let w_cwd = wide_null(resolved_cwd.as_os_str());
 
     let mut effective_env = env.to_vec();
@@ -701,10 +701,9 @@ pub fn run_in_appcontainer(
     }
 
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-    // Avoid CREATE_NO_WINDOW inside AppContainer: spawning a headless conhost
-    // under a LowBox token causes grandchild console processes to fail with
-    // ERROR_ACCESS_DENIED (5). STARTF_USESHOWWINDOW + SW_HIDE hides windows
-    // without breaking grandchild console creation.
+    // Avoid CREATE_NO_WINDOW inside AppContainer: hiding windows via
+    // STARTF_USESHOWWINDOW + SW_HIDE preserves console attachment and avoids
+    // headless conhost initialization failures under restricted tokens.
     let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
     let created = unsafe {
         CreateProcessW(

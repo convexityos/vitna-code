@@ -129,9 +129,10 @@ fn sleep_then_mark(fx: &Fixture, started: &Path, marker: &Path) -> String {
             ),
         )
         .expect("write helper script");
-        // The inner `%COMSPEC% /c` is a grandchild. Confirmed by hand: killing
-        // only the outer cmd.exe leaves it running and the marker still appears.
-        "\"%COMSPEC%\" /c grandchild.bat".to_string()
+        // The inner `cmd.exe /d /c` is a grandchild resolved via PATH.
+        // Confirmed by hand: killing only the outer cmd.exe leaves it running
+        // and the marker still appears.
+        "cmd.exe /d /c grandchild.bat".to_string()
     } else {
         format!("sh -c 'echo started > \"{}\"; sleep 5; echo done > \"{}\"'", s, m)
     }
@@ -370,7 +371,7 @@ async fn a_sandboxed_command_can_still_work_in_the_workspace() {
     );
 
     let nested_cmd = if cfg!(windows) {
-        "\"%COMSPEC%\" /c echo nested_ok"
+        "cmd.exe /d /c echo nested_ok"
     } else {
         "sh -c 'echo nested_ok'"
     };
@@ -383,55 +384,6 @@ async fn a_sandboxed_command_can_still_work_in_the_workspace() {
         ))
         .await
         .expect("nested command runs");
-    #[cfg(windows)]
-    if nested.exit_code != 0 {
-        let abs_host = runner(&fx)
-            .run_command(CommandRequest::new(
-                r"C:\Windows\System32\hostname.exe",
-                &fx.workspace,
-                &fx.workspace,
-                30_000,
-            ))
-            .await;
-        let bare_whoami = runner(&fx)
-            .run_command(CommandRequest::new(
-                "whoami.exe",
-                &fx.workspace,
-                &fx.workspace,
-                30_000,
-            ))
-            .await;
-        let bare_cmd = runner(&fx)
-            .run_command(CommandRequest::new(
-                "cmd.exe /d /c echo bare_cmd_ok",
-                &fx.workspace,
-                &fx.workspace,
-                30_000,
-            ))
-            .await;
-        let bare_ps = runner(&fx)
-            .run_command(CommandRequest::new(
-                r#"powershell.exe -NoProfile -Command "Write-Output bare_ps_ok""#,
-                &fx.workspace,
-                &fx.workspace,
-                30_000,
-            ))
-            .await;
-        panic!(
-            "nested failed: exit={} stdout={:?} stderr={:?}\n\
-             abs_host={:?}\n\
-             bare_whoami={:?}\n\
-             bare_cmd={:?}\n\
-             bare_ps={:?}",
-            nested.exit_code,
-            nested.stdout,
-            nested.stderr,
-            abs_host.map(|o| (o.exit_code, o.stdout, o.stderr)),
-            bare_whoami.map(|o| (o.exit_code, o.stdout, o.stderr)),
-            bare_cmd.map(|o| (o.exit_code, o.stdout, o.stderr)),
-            bare_ps.map(|o| (o.exit_code, o.stdout, o.stderr)),
-        );
-    }
     assert_eq!(
         nested.exit_code, 0,
         "nested child process failed inside sandbox: stdout={:?} stderr={:?}",
