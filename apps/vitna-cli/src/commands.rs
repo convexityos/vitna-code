@@ -999,8 +999,9 @@ async fn submit_prompt_to_daemon(
         match env.type_url.as_str() {
             type_url::event::MESSAGE_DELTA => {
                 if let Ok(delta) = serde_json::from_slice::<MessageDelta>(&env.payload) {
-                    if !delta.delta_text.is_empty() {
+                    if delta.role == "model" && !delta.delta_text.is_empty() {
                         print!("{}", delta.delta_text);
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
                     }
                 }
             }

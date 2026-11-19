@@ -202,13 +202,57 @@ impl OrchestrationEngine {
                 }),
             )?;
 
-            let provider_result = if let Some(ctrl) = &control {
+            let message_id = format!("{}-m{}", self.config.run_id, turn.rounds);
+            let mut streamed_any = false;
+            let (delta_tx, mut delta_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let on_delta = move |chunk: String| {
+                let _ = delta_tx.send(chunk);
+            };
+            let stream_fut = provider.complete_streaming(&request, &on_delta);
+            tokio::pin!(stream_fut);
+
+            let provider_result = loop {
                 tokio::select! {
-                    res = provider.complete(&request) => Some(res),
-                    _ = ctrl.cancelled() => None,
+                    biased;
+                    _ = async {
+                        if let Some(ctrl) = &control {
+                            ctrl.cancelled().await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {
+                        break None;
+                    }
+                    Some(delta) = delta_rx.recv() => {
+                        if !delta.is_empty() {
+                            streamed_any = true;
+                            self.record_event(
+                                type_url::event::MESSAGE_DELTA,
+                                &MessageDelta {
+                                    message_id: message_id.clone(),
+                                    role: "model".to_string(),
+                                    delta_text: delta,
+                                },
+                            )?;
+                        }
+                    }
+                    res = &mut stream_fut => {
+                        while let Ok(delta) = delta_rx.try_recv() {
+                            if !delta.is_empty() {
+                                streamed_any = true;
+                                self.record_event(
+                                    type_url::event::MESSAGE_DELTA,
+                                    &MessageDelta {
+                                        message_id: message_id.clone(),
+                                        role: "model".to_string(),
+                                        delta_text: delta,
+                                    },
+                                )?;
+                            }
+                        }
+                        break Some(res);
+                    }
                 }
-            } else {
-                Some(provider.complete(&request).await)
             };
 
             let response = match provider_result {
@@ -292,14 +336,16 @@ impl OrchestrationEngine {
 
             if !response.content.is_empty() {
                 turn.text = response.content.clone();
-                self.record_event(
-                    type_url::event::MESSAGE_DELTA,
-                    &MessageDelta {
-                        message_id: format!("{}-m{}", self.config.run_id, turn.rounds),
-                        role: "model".to_string(),
-                        delta_text: response.content.clone(),
-                    },
-                )?;
+                if !streamed_any {
+                    self.record_event(
+                        type_url::event::MESSAGE_DELTA,
+                        &MessageDelta {
+                            message_id,
+                            role: "model".to_string(),
+                            delta_text: response.content.clone(),
+                        },
+                    )?;
+                }
             }
 
             if response.tool_calls.is_empty() {

@@ -144,6 +144,17 @@ impl Provider for RuntimeLaneProvider {
             .await
             .map_err(|e| format!("the runtime at {} answered: {e}", self.lane.endpoint))
     }
+
+    async fn complete_streaming(
+        &self,
+        req: &ProviderRequest,
+        on_delta: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<ProviderResponse, String> {
+        self.inner
+            .complete_streaming(req, on_delta)
+            .await
+            .map_err(|e| format!("the runtime at {} answered: {e}", self.lane.endpoint))
+    }
 }
 
 #[cfg(test)]

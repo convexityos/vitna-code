@@ -2,10 +2,9 @@ use crate::credentials::ProviderCredentials;
 use crate::{Provider, ProviderRequest, ProviderResponse, ProviderStreamEvent, ProviderToolCall};
 use async_trait::async_trait;
 use serde_json::json;
-use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use vitna_telemetry::{EgressRecord, TelemetryCollector};
+use std::time::Instant;
+use vitna_telemetry::TelemetryCollector;
 
 pub struct OpenAIProvider {
     pub credentials: ProviderCredentials,
@@ -237,24 +236,16 @@ impl Provider for OpenAIProvider {
             .map_err(|e| format!("Failed to read OpenAI response body: {}", e))?;
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
 
-        if let Some(telemetry) = &self.telemetry {
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            telemetry.record_egress(EgressRecord {
-                provider: provider_label.clone(),
-                host,
-                endpoint: endpoint.clone(),
-                bytes_sent,
-                bytes_received: resp_bytes.len() as u64,
-                timestamp_ms: now_ms,
-            });
-            let mut labels = BTreeMap::new();
-            labels.insert("provider".to_string(), provider_label);
-            labels.insert("status".to_string(), status.as_u16().to_string());
-            telemetry.record_metric("provider_http_latency_ms", elapsed_ms, labels);
-        }
+        crate::sse::record_http_telemetry(
+            self.telemetry.as_ref(),
+            provider_label,
+            host,
+            endpoint,
+            bytes_sent,
+            resp_bytes.len() as u64,
+            status,
+            elapsed_ms,
+        );
 
         if !status.is_success() {
             let body = String::from_utf8_lossy(&resp_bytes);
@@ -265,6 +256,129 @@ impl Provider for OpenAIProvider {
             .map_err(|e| format!("Failed to parse OpenAI response JSON: {}", e))?;
 
         Ok(parse_completion(&body))
+    }
+
+    async fn complete_streaming(
+        &self,
+        req: &ProviderRequest,
+        on_delta: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<ProviderResponse, String> {
+        let mut payload = self.format_request_payload(req);
+        payload["stream"] = json!(true);
+        payload["stream_options"] = json!({ "include_usage": true });
+        let endpoint = self.default_endpoint();
+        let req_bytes = serde_json::to_vec(&payload)
+            .map_err(|e| format!("Failed to serialize OpenAI request JSON: {}", e))?;
+        let bytes_sent = req_bytes.len() as u64;
+        let host = reqwest::Url::parse(&endpoint)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        let provider_label = if self.credentials.provider.is_empty() {
+            "openai".to_string()
+        } else {
+            self.credentials.provider.clone()
+        };
+
+        let started = Instant::now();
+        let client = reqwest::Client::new();
+        let mut request = client
+            .post(&endpoint)
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream, application/json");
+        if !self.credentials.api_key.is_empty() {
+            request = request.header("Authorization", format!("Bearer {}", self.credentials.api_key));
+        }
+        let mut resp = request
+            .body(req_bytes)
+            .send()
+            .await
+            .map_err(|e| format!("OpenAI request network error: {}", e))?;
+
+        let status = resp.status();
+        let streaming = status.is_success() && crate::sse::is_event_stream(resp.headers());
+
+        if !status.is_success() {
+            let resp_bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| format!("Failed to read OpenAI error body: {}", e))?;
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            crate::sse::record_http_telemetry(
+                self.telemetry.as_ref(),
+                provider_label,
+                host,
+                endpoint,
+                bytes_sent,
+                resp_bytes.len() as u64,
+                status,
+                elapsed_ms,
+            );
+            let body = String::from_utf8_lossy(&resp_bytes);
+            return Err(format!("OpenAI API error (status {}): {}", status, body));
+        }
+
+        if !streaming {
+            // Proxy or local endpoint answered with a single JSON completion body.
+            let resp_bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| format!("Failed to read OpenAI response body: {}", e))?;
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            crate::sse::record_http_telemetry(
+                self.telemetry.as_ref(),
+                provider_label,
+                host,
+                endpoint,
+                bytes_sent,
+                resp_bytes.len() as u64,
+                status,
+                elapsed_ms,
+            );
+            let body: serde_json::Value = serde_json::from_slice(&resp_bytes)
+                .map_err(|e| format!("Failed to parse OpenAI response JSON: {}", e))?;
+            let parsed = parse_completion(&body);
+            if !parsed.content.is_empty() {
+                on_delta(parsed.content.clone());
+            }
+            return Ok(parsed);
+        }
+
+        let mut parser = crate::sse::SseParser::new();
+        let mut accumulator = crate::sse::StreamAccumulator::new("stop");
+        let mut bytes_received = 0u64;
+
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| format!("Failed to read OpenAI SSE chunk: {}", e))?
+        {
+            bytes_received += chunk.len() as u64;
+            for (event_type, data) in parser.push(&chunk) {
+                accumulator.observe_raw_json(&data);
+                let events = self.parse_sse_event(&event_type, &data)?;
+                accumulator.apply_events(events, on_delta);
+            }
+        }
+        if let Some((event_type, data)) = parser.finish() {
+            accumulator.observe_raw_json(&data);
+            let events = self.parse_sse_event(&event_type, &data)?;
+            accumulator.apply_events(events, on_delta);
+        }
+
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        crate::sse::record_http_telemetry(
+            self.telemetry.as_ref(),
+            provider_label,
+            host,
+            endpoint,
+            bytes_sent,
+            bytes_received,
+            status,
+            elapsed_ms,
+        );
+
+        Ok(accumulator.into_response())
     }
 }
 

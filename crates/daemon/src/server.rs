@@ -74,6 +74,7 @@ impl DaemonServer {
                 for run_id in &s.runs {
                     if let Ok(events) = store.get_events(run_id, 0) {
                         let mut prompt: Option<String> = None;
+                        let mut last_model_message_id: Option<String> = None;
                         let mut last_model_text: Option<String> = None;
                         for ev in events {
                             if ev.type_url == vitna_orchestration::audit::TURN_STARTED {
@@ -89,7 +90,16 @@ impl DaemonServer {
                                     serde_json::from_slice::<MessageDelta>(&ev.encrypted_payload)
                                 {
                                     if delta.role == "model" && !delta.delta_text.is_empty() {
-                                        last_model_text = Some(delta.delta_text);
+                                        if last_model_message_id.as_deref()
+                                            == Some(delta.message_id.as_str())
+                                        {
+                                            if let Some(existing) = last_model_text.as_mut() {
+                                                existing.push_str(&delta.delta_text);
+                                            }
+                                        } else {
+                                            last_model_message_id = Some(delta.message_id);
+                                            last_model_text = Some(delta.delta_text);
+                                        }
                                     }
                                 }
                             }

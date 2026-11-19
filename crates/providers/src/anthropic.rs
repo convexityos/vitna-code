@@ -2,10 +2,9 @@ use crate::credentials::ProviderCredentials;
 use crate::{Provider, ProviderRequest, ProviderResponse, ProviderStreamEvent, ProviderToolCall};
 use async_trait::async_trait;
 use serde_json::json;
-use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use vitna_telemetry::{EgressRecord, TelemetryCollector};
+use std::time::Instant;
+use vitna_telemetry::TelemetryCollector;
 
 pub struct AnthropicProvider {
     pub credentials: ProviderCredentials,
@@ -125,6 +124,24 @@ impl AnthropicProvider {
         };
 
         match event_type {
+            "message_start" => {
+                if let Some(usage) = val.get("message").and_then(|m| m.get("usage")) {
+                    let prompt = usage
+                        .get("input_tokens")
+                        .and_then(|t| t.as_u64())
+                        .unwrap_or(0) as u32;
+                    let comp = usage
+                        .get("output_tokens")
+                        .and_then(|t| t.as_u64())
+                        .unwrap_or(0) as u32;
+                    if prompt > 0 || comp > 0 {
+                        events.push(ProviderStreamEvent::Usage {
+                            prompt_tokens: prompt,
+                            completion_tokens: comp,
+                        });
+                    }
+                }
+            }
             "content_block_start" => {
                 if let Some(cb) = val.get("content_block") {
                     if cb.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
@@ -237,24 +254,16 @@ impl Provider for AnthropicProvider {
             .map_err(|e| format!("Failed to read Anthropic response body: {}", e))?;
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
 
-        if let Some(telemetry) = &self.telemetry {
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            telemetry.record_egress(EgressRecord {
-                provider: provider_label.clone(),
-                host,
-                endpoint: endpoint.clone(),
-                bytes_sent,
-                bytes_received: resp_bytes.len() as u64,
-                timestamp_ms: now_ms,
-            });
-            let mut labels = BTreeMap::new();
-            labels.insert("provider".to_string(), provider_label);
-            labels.insert("status".to_string(), status.as_u16().to_string());
-            telemetry.record_metric("provider_http_latency_ms", elapsed_ms, labels);
-        }
+        crate::sse::record_http_telemetry(
+            self.telemetry.as_ref(),
+            provider_label,
+            host,
+            endpoint,
+            bytes_sent,
+            resp_bytes.len() as u64,
+            status,
+            elapsed_ms,
+        );
 
         if !status.is_success() {
             let body = String::from_utf8_lossy(&resp_bytes);
@@ -264,58 +273,191 @@ impl Provider for AnthropicProvider {
         let body: serde_json::Value = serde_json::from_slice(&resp_bytes)
             .map_err(|e| format!("Failed to parse Anthropic response JSON: {}", e))?;
 
-        let mut content = String::new();
-        let mut tool_calls = Vec::new();
+        Ok(parse_completion(&body))
+    }
 
-        if let Some(blocks) = body.get("content").and_then(|c| c.as_array()) {
-            for b in blocks {
-                let block_type = b.get("type").and_then(|t| t.as_str());
-                if block_type == Some("text") {
-                    if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
-                        content.push_str(t);
-                    }
-                } else if block_type == Some("tool_use") {
-                    let id = b.get("id").and_then(|i| i.as_str()).unwrap_or_default().to_string();
-                    let name = b.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string();
-                    let input = b.get("input").cloned().unwrap_or(json!({}));
-                    tool_calls.push(ProviderToolCall {
-                        id,
-                        name,
-                        arguments: input,
-                    });
-                }
-            }
+    async fn complete_streaming(
+        &self,
+        req: &ProviderRequest,
+        on_delta: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<ProviderResponse, String> {
+        let mut payload = self.format_request_payload(req);
+        payload["stream"] = json!(true);
+        let endpoint = self.default_endpoint();
+        let req_bytes = serde_json::to_vec(&payload)
+            .map_err(|e| format!("Failed to serialize Anthropic request JSON: {}", e))?;
+        let bytes_sent = req_bytes.len() as u64;
+        let host = reqwest::Url::parse(&endpoint)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        let provider_label = if self.credentials.provider.is_empty() {
+            "anthropic".to_string()
+        } else {
+            self.credentials.provider.clone()
+        };
+
+        let started = Instant::now();
+        let client = reqwest::Client::new();
+        let mut resp = client
+            .post(&endpoint)
+            .header("x-api-key", &self.credentials.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-beta", "prompt-caching-2024-07-31")
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream, application/json")
+            .body(req_bytes)
+            .send()
+            .await
+            .map_err(|e| format!("Anthropic request network error: {}", e))?;
+
+        let status = resp.status();
+        let streaming = status.is_success() && crate::sse::is_event_stream(resp.headers());
+
+        if !status.is_success() {
+            let resp_bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| format!("Failed to read Anthropic error body: {}", e))?;
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            crate::sse::record_http_telemetry(
+                self.telemetry.as_ref(),
+                provider_label,
+                host,
+                endpoint,
+                bytes_sent,
+                resp_bytes.len() as u64,
+                status,
+                elapsed_ms,
+            );
+            let body = String::from_utf8_lossy(&resp_bytes);
+            return Err(format!("Anthropic API error (status {}): {}", status, body));
         }
 
-        let prompt_tokens = body
-            .get("usage")
-            .and_then(|u| u.get("input_tokens"))
-            .and_then(|t| t.as_u64())
-            .unwrap_or(0) as u32;
+        if !streaming {
+            let resp_bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| format!("Failed to read Anthropic response body: {}", e))?;
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            crate::sse::record_http_telemetry(
+                self.telemetry.as_ref(),
+                provider_label,
+                host,
+                endpoint,
+                bytes_sent,
+                resp_bytes.len() as u64,
+                status,
+                elapsed_ms,
+            );
+            let body: serde_json::Value = serde_json::from_slice(&resp_bytes)
+                .map_err(|e| format!("Failed to parse Anthropic response JSON: {}", e))?;
+            let parsed = parse_completion(&body);
+            if !parsed.content.is_empty() {
+                on_delta(parsed.content.clone());
+            }
+            return Ok(parsed);
+        }
 
-        let completion_tokens = body
-            .get("usage")
-            .and_then(|u| u.get("output_tokens"))
-            .and_then(|t| t.as_u64())
-            .unwrap_or(0) as u32;
+        let mut parser = crate::sse::SseParser::new();
+        let mut accumulator = crate::sse::StreamAccumulator::new("end_turn");
+        let mut bytes_received = 0u64;
 
-        let finish_reason = body
-            .get("stop_reason")
-            .and_then(|s| s.as_str())
-            .unwrap_or("end_turn")
-            .to_string();
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| format!("Failed to read Anthropic SSE chunk: {}", e))?
+        {
+            bytes_received += chunk.len() as u64;
+            for (event_type, data) in parser.push(&chunk) {
+                accumulator.observe_raw_json(&data);
+                let events = self.parse_sse_event(&event_type, &data)?;
+                accumulator.apply_events(events, on_delta);
+            }
+        }
+        if let Some((event_type, data)) = parser.finish() {
+            accumulator.observe_raw_json(&data);
+            let events = self.parse_sse_event(&event_type, &data)?;
+            accumulator.apply_events(events, on_delta);
+        }
 
-        Ok(ProviderResponse {
-            content,
-            tool_calls,
-            prompt_tokens,
-            completion_tokens,
-            finish_reason,
-            model: body
-                .get("model")
-                .and_then(|m| m.as_str())
-                .filter(|m| !m.is_empty())
-                .map(str::to_string),
-        })
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        crate::sse::record_http_telemetry(
+            self.telemetry.as_ref(),
+            provider_label,
+            host,
+            endpoint,
+            bytes_sent,
+            bytes_received,
+            status,
+            elapsed_ms,
+        );
+
+        Ok(accumulator.into_response())
+    }
+}
+
+/// An Anthropic Messages response body parsed into the normalized shape.
+pub fn parse_completion(body: &serde_json::Value) -> ProviderResponse {
+    let mut content = String::new();
+    let mut tool_calls = Vec::new();
+
+    if let Some(blocks) = body.get("content").and_then(|c| c.as_array()) {
+        for b in blocks {
+            let block_type = b.get("type").and_then(|t| t.as_str());
+            if block_type == Some("text") {
+                if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                    content.push_str(t);
+                }
+            } else if block_type == Some("tool_use") {
+                let id = b
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let name = b
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let input = b.get("input").cloned().unwrap_or(json!({}));
+                tool_calls.push(ProviderToolCall {
+                    id,
+                    name,
+                    arguments: input,
+                });
+            }
+        }
+    }
+
+    let prompt_tokens = body
+        .get("usage")
+        .and_then(|u| u.get("input_tokens"))
+        .and_then(|t| t.as_u64())
+        .unwrap_or(0) as u32;
+
+    let completion_tokens = body
+        .get("usage")
+        .and_then(|u| u.get("output_tokens"))
+        .and_then(|t| t.as_u64())
+        .unwrap_or(0) as u32;
+
+    let finish_reason = body
+        .get("stop_reason")
+        .and_then(|s| s.as_str())
+        .unwrap_or("end_turn")
+        .to_string();
+
+    ProviderResponse {
+        content,
+        tool_calls,
+        prompt_tokens,
+        completion_tokens,
+        finish_reason,
+        model: body
+            .get("model")
+            .and_then(|m| m.as_str())
+            .filter(|m| !m.is_empty())
+            .map(str::to_string),
     }
 }

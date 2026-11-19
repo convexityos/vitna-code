@@ -70,6 +70,8 @@ pub struct App {
     pub ledger: Option<Ledger>,
     /// The turn on screen, populated strictly from live daemon events.
     pub turn: Vec<turn::Entry>,
+    /// Tracks the active streaming model message_id so token deltas append inline.
+    pub last_model_message_id: Option<String>,
     pub draft: Vec<char>,
     /// The cursor, as a char index into `draft`.
     pub cursor: usize,
@@ -100,6 +102,7 @@ impl App {
             cmd_tx: None,
             ledger: None,
             turn: Vec::new(),
+            last_model_message_id: None,
             draft: Vec::new(),
             cursor: 0,
             screen: Screen::Home,
@@ -170,17 +173,27 @@ impl App {
                         return false;
                     }
                     if delta.role == "user" {
+                        self.last_model_message_id = None;
                         self.turn.push(turn::Entry::You(text));
                     } else if delta.role == "model" {
+                        let same_message = !delta.message_id.is_empty()
+                            && self.last_model_message_id.as_deref()
+                                == Some(delta.message_id.as_str());
                         if let Some(turn::Entry::Model(existing)) = self.turn.last_mut() {
-                            if !existing.is_empty() && !existing.ends_with('\n') {
+                            if !same_message && !existing.is_empty() && !existing.ends_with('\n') {
                                 existing.push('\n');
                             }
                             existing.push_str(&text);
                         } else {
                             self.turn.push(turn::Entry::Model(text));
                         }
+                        self.last_model_message_id = if delta.message_id.is_empty() {
+                            None
+                        } else {
+                            Some(delta.message_id)
+                        };
                     } else {
+                        self.last_model_message_id = None;
                         self.turn.push(turn::Entry::Note {
                             tone: theme::FAINT,
                             text,
@@ -190,6 +203,7 @@ impl App {
                 false
             }
             type_url::event::TOOL_PROPOSED => {
+                self.last_model_message_id = None;
                 if let Ok(p) = env.payload_as::<ToolProposed>() {
                     let target = extract_target(&p.raw_arguments_json).map(|t| clean(&t));
                     self.turn.push(turn::Entry::Tool(Box::new(turn::Tool {

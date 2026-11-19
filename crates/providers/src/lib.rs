@@ -8,6 +8,7 @@ pub mod keyring;
 pub mod memory;
 pub mod openai;
 pub mod runtime;
+mod sse;
 
 pub use anthropic::AnthropicProvider;
 use async_trait::async_trait;
@@ -128,6 +129,22 @@ pub trait Provider: Send + Sync {
     fn name(&self) -> &str;
     fn parse_sse_event(&self, event_type: &str, data: &str) -> Result<Vec<ProviderStreamEvent>, String>;
     async fn complete(&self, req: &ProviderRequest) -> Result<ProviderResponse, String>;
+
+    /// Executes a model request and invokes `on_delta` with incremental text
+    /// chunks as they arrive. Adapters that support SSE streaming override
+    /// this to emit tokens in real time; the default falls back to
+    /// [`Provider::complete`] and emits the completed text once when non-empty.
+    async fn complete_streaming(
+        &self,
+        req: &ProviderRequest,
+        on_delta: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<ProviderResponse, String> {
+        let resp = self.complete(req).await?;
+        if !resp.content.is_empty() {
+            on_delta(resp.content.clone());
+        }
+        Ok(resp)
+    }
 }
 
 #[cfg(test)]

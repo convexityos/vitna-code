@@ -555,3 +555,117 @@ async fn the_session_so_far_is_sent_before_this_turns_prompt() {
         vec!["first question", "first answer", "and the second?"]
     );
 }
+
+struct ChunkedStreamingProvider {
+    chunks: Vec<String>,
+    delay_ms: u64,
+}
+
+#[async_trait]
+impl Provider for ChunkedStreamingProvider {
+    fn name(&self) -> &str {
+        "chunked-stream"
+    }
+
+    fn parse_sse_event(&self, _: &str, _: &str) -> Result<Vec<ProviderStreamEvent>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn complete(&self, _req: &ProviderRequest) -> Result<ProviderResponse, String> {
+        Ok(ProviderResponse {
+            content: self.chunks.concat(),
+            finish_reason: "stop".to_string(),
+            prompt_tokens: 12,
+            completion_tokens: 9,
+            model: Some("stream-model-1".to_string()),
+            ..Default::default()
+        })
+    }
+
+    async fn complete_streaming(
+        &self,
+        _req: &ProviderRequest,
+        on_delta: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<ProviderResponse, String> {
+        for chunk in &self.chunks {
+            on_delta(chunk.clone());
+            if self.delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            }
+        }
+        Ok(ProviderResponse {
+            content: self.chunks.concat(),
+            finish_reason: "stop".to_string(),
+            prompt_tokens: 12,
+            completion_tokens: 9,
+            model: Some("stream-model-1".to_string()),
+            ..Default::default()
+        })
+    }
+}
+
+#[tokio::test]
+async fn streaming_provider_persists_incremental_message_deltas_in_order() {
+    let mut r = run("stream-deltas", None);
+    let provider = ChunkedStreamingProvider {
+        chunks: vec![
+            "Reading ".to_string(),
+            "the ".to_string(),
+            "workspace ".to_string(),
+            "now.".to_string(),
+        ],
+        delay_ms: 2,
+    };
+
+    let turn = r
+        .engine
+        .run_agent_turn(&provider, &[], "stream reply", MAX_ROUNDS)
+        .await
+        .expect("turn");
+    assert_eq!(turn.text, "Reading the workspace now.");
+    assert_eq!(turn.served_models, vec!["stream-model-1"]);
+
+    let ev = events(&r.store, "run-stream-deltas");
+    let model_deltas: Vec<vitna_protocol::messages::MessageDelta> =
+        payloads::<vitna_protocol::messages::MessageDelta>(&ev, type_url::event::MESSAGE_DELTA)
+            .into_iter()
+            .filter(|m| m.role == "model")
+            .collect();
+
+    // Exactly the 4 streamed chunks, no duplicated final full-message event.
+    let texts: Vec<&str> = model_deltas.iter().map(|m| m.delta_text.as_str()).collect();
+    assert_eq!(texts, vec!["Reading ", "the ", "workspace ", "now."]);
+    assert!(model_deltas
+        .iter()
+        .all(|m| m.message_id == "run-stream-deltas-m1"));
+}
+
+#[tokio::test]
+async fn streaming_provider_can_be_cancelled_mid_stream() {
+    let mut r = run("stream-cancel", None);
+    let control = Arc::new(vitna_orchestration::RunControl::new());
+    r.engine = r.engine.with_control(Arc::clone(&control));
+
+    let provider = ChunkedStreamingProvider {
+        chunks: vec!["one ".to_string(), "two ".to_string(), "three".to_string()],
+        delay_ms: 80,
+    };
+
+    let cancel_handle = Arc::clone(&control);
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        cancel_handle.cancel("operator stopped mid-stream");
+    });
+
+    let turn = r
+        .engine
+        .run_agent_turn(&provider, &[], "cancel me", MAX_ROUNDS)
+        .await
+        .expect("cancelled turn");
+    assert!(turn.cancelled);
+    assert_eq!(
+        turn.cancel_reason.as_deref(),
+        Some("operator stopped mid-stream")
+    );
+}
+
