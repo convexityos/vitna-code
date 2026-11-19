@@ -1567,3 +1567,173 @@ pub fn run_skills_verify(
     Ok(())
 }
 
+fn default_min_os_for_target(target_triple: &str) -> &'static str {
+    match target_triple {
+        "x86_64-pc-windows-msvc" => "Windows 10 Build 19041+",
+        "aarch64-pc-windows-msvc" => "Windows 11 Build 22000+",
+        "x86_64-unknown-linux-gnu" | "aarch64-unknown-linux-gnu" => {
+            "Linux kernel 5.15+, glibc 2.31+"
+        }
+        "x86_64-apple-darwin" => "macOS Monterey 12.0+",
+        "aarch64-apple-darwin" => "macOS Monterey 12.0+ (Apple Silicon)",
+        _ => "unspecified",
+    }
+}
+
+/// `vitna release sign --version <ver> --channel <ch> --asset <TRIPLE=PATH>... --out <file>`
+pub fn run_release_sign(
+    version: &str,
+    channel: &str,
+    release_notes_url: Option<&str>,
+    asset_specs: &[String],
+    out_path: &Path,
+) -> Result<(), String> {
+    use vitna_receipts::{
+        ReleaseAsset, VitnaReleaseManifestV1, RELEASE_MANIFEST_SCHEMA_V1,
+        SUPPORTED_RELEASE_CHANNELS,
+    };
+
+    if !SUPPORTED_RELEASE_CHANNELS.contains(&channel) {
+        return Err(format!(
+            "unsupported channel '{channel}': expected one of {}",
+            SUPPORTED_RELEASE_CHANNELS.join(", ")
+        ));
+    }
+
+    let mut assets = Vec::with_capacity(asset_specs.len());
+    for spec in asset_specs {
+        let Some((triple, raw_path)) = spec.split_once('=') else {
+            return Err(format!(
+                "invalid --asset '{spec}': expected 'TARGET_TRIPLE=ARCHIVE_PATH'"
+            ));
+        };
+        let triple = triple.trim();
+        let file_path = Path::new(raw_path.trim());
+        let asset =
+            ReleaseAsset::from_file(file_path, triple, default_min_os_for_target(triple))?;
+        assets.push(asset);
+    }
+
+    let home = vitna_daemon::launch::vitna_home()?;
+    fs::create_dir_all(&home)
+        .map_err(|e| format!("could not create {}: {e}", home.display()))?;
+    let signing_key = vitna_daemon::key::load_or_create(&home)?;
+
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let release_date = format!("unix:{now_secs}");
+    let notes_url = release_notes_url
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!("https://github.com/convexityos/vitna-code/releases/tag/v{version}")
+        });
+
+    let mut manifest = VitnaReleaseManifestV1 {
+        schema_version: RELEASE_MANIFEST_SCHEMA_V1.to_string(),
+        version: version.to_string(),
+        channel: channel.to_string(),
+        release_date,
+        release_notes_url: notes_url,
+        assets,
+        publisher_public_key: String::new(),
+        publisher_signature: String::new(),
+    };
+    manifest.sign(&signing_key)?;
+
+    let report = manifest.verify(Some(&manifest.publisher_public_key));
+    if !report.is_valid {
+        return Err(format!(
+            "generated manifest failed self-verification: {}",
+            report.errors.join("; ")
+        ));
+    }
+
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+        }
+    }
+    let body = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+    fs::write(out_path, body)
+        .map_err(|e| format!("could not write {}: {e}", out_path.display()))?;
+
+    println!(
+        "Signed release manifest v{} ({} asset(s)) -> {}",
+        manifest.version,
+        manifest.assets.len(),
+        out_path.display()
+    );
+    println!("Publisher Public Key: {}", manifest.publisher_public_key);
+    Ok(())
+}
+
+/// `vitna release verify <manifest_file> [--key <hex>] [--assets-dir <dir>] [--json]`
+pub fn run_release_verify(
+    manifest_file: &Path,
+    expected_key: Option<&str>,
+    assets_dir: Option<&Path>,
+    as_json: bool,
+) -> Result<(), String> {
+    use vitna_receipts::VitnaReleaseManifestV1;
+
+    let raw = fs::read_to_string(manifest_file)
+        .map_err(|e| format!("could not read {}: {e}", manifest_file.display()))?;
+    let manifest: VitnaReleaseManifestV1 = serde_json::from_str(&raw)
+        .map_err(|e| format!("could not parse {}: {e}", manifest_file.display()))?;
+
+    let mut report = manifest.verify(expected_key);
+    let mut disk_verified = Vec::new();
+    if let Some(dir) = assets_dir {
+        match manifest.verify_assets_in_dir(dir) {
+            Ok(files) => disk_verified = files,
+            Err(errs) => {
+                report.is_valid = false;
+                report.errors.extend(errs);
+            }
+        }
+    }
+
+    if as_json {
+        let out = json!({
+            "manifest": manifest_file.display().to_string(),
+            "version": manifest.version,
+            "channel": manifest.channel,
+            "publisher_public_key": manifest.publisher_public_key,
+            "report": report,
+            "disk_assets_verified": disk_verified,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!("Vitna Release Manifest Verification");
+        println!("===================================");
+        println!("Manifest:   {}", manifest_file.display());
+        println!("Version:    {} ({})", manifest.version, manifest.channel);
+        println!("Signature:  {}", if report.signature_verified { "VALID" } else { "INVALID" });
+        println!("Assets:     {} declared", report.assets_checked);
+        if !disk_verified.is_empty() {
+            println!("On Disk:    {} verified by SHA-256 + byte size", disk_verified.len());
+        }
+        if !report.errors.is_empty() {
+            println!("Errors:");
+            for err in &report.errors {
+                println!("  - {err}");
+            }
+        }
+    }
+
+    if !report.is_valid {
+        return Err(format!(
+            "release manifest verification failed ({} error(s))",
+            report.errors.len()
+        ));
+    }
+    Ok(())
+}
+
+

@@ -1,5 +1,12 @@
 //! Cryptographic receipt generation, Merkle root calculation, and canonical signing.
 
+pub mod manifest;
+
+pub use manifest::{
+    ManifestVerificationReport, ReleaseAsset, VitnaReleaseManifestV1, RELEASE_MANIFEST_SCHEMA_V1,
+    SUPPORTED_RELEASE_CHANNELS, SUPPORTED_RELEASE_TARGETS,
+};
+
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
