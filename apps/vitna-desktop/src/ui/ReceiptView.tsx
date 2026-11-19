@@ -356,9 +356,14 @@ function Record({ receipt }: { receipt: Receipt }) {
           <ul className="statements">
             {receipt.runner_execution_statements.map((s) => {
               const shape = signatureShape(s.signature);
+              const sandboxLabel =
+                s.sandbox_backend || s.sandbox_enforcement
+                  ? ` · sandbox ${s.sandbox_backend || 'unspecified'}/${s.sandbox_enforcement || 'unspecified'}`
+                  : '';
               return (
                 <li key={s.action_id} className="mono">
-                  {s.action_id} · statement {shortDigest(s.statement_digest, 10)} ·{' '}
+                  {s.action_id} · statement {shortDigest(s.statement_digest, 10)}
+                  {sandboxLabel} ·{' '}
                   {shape === 'placeholder' ? (
                     <span className="tone-rust">placeholder signature, all zeros</span>
                   ) : shape === 'empty' ? (
@@ -372,6 +377,63 @@ function Record({ receipt }: { receipt: Receipt }) {
           </ul>
         )}
       </section>
+
+      {receipt.egress_calls.length > 0 ? (
+        <section className="record-section">
+          <h2 className="eyebrow">Egress calls</h2>
+          <table className="record-table">
+            <thead>
+              <tr>
+                <th scope="col">Request</th>
+                <th scope="col">Status</th>
+                <th scope="col">Response</th>
+              </tr>
+            </thead>
+            <tbody>
+              {receipt.egress_calls.map((eg, i) => (
+                <tr key={`${eg.method}-${eg.redacted_url}-${i}`}>
+                  <td className="mono">
+                    {eg.method} {eg.redacted_url}
+                  </td>
+                  <td className="mono faint">
+                    {eg.status_code} · {eg.bytes_received}B · {eg.latency_ms}ms
+                  </td>
+                  <td className="mono faint">{shortDigest(eg.response_sha256, 12)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+
+      {receipt.mandate_provenance ? (
+        <section className="record-section">
+          <h2 className="eyebrow">Mandate provenance (am/1)</h2>
+          <dl className="record-facts">
+            <div>
+              <dt>Root mandate</dt>
+              <dd className="mono">{receipt.mandate_provenance.root_jti}</dd>
+            </div>
+            <div>
+              <dt>Chain hash</dt>
+              <dd className="mono">{shortDigest(receipt.mandate_provenance.chain_hash, 16)}</dd>
+            </div>
+            <div>
+              <dt>Delegation path</dt>
+              <dd className="mono">{receipt.mandate_provenance.path.join(' -> ')}</dd>
+            </div>
+            <div>
+              <dt>Spend ledger</dt>
+              <dd className="mono">
+                {receipt.mandate_provenance.total_spent} {receipt.mandate_provenance.currency}
+                <span className="record-sub">
+                  {receipt.mandate_provenance.ledger} · {receipt.mandate_provenance.spend_digests.length} spend receipt(s)
+                </span>
+              </dd>
+            </div>
+          </dl>
+        </section>
+      ) : null}
 
       {receipt.child_receipt_roots.length > 0 ? (
         <section className="record-section">

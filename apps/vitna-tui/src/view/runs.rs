@@ -214,6 +214,9 @@ mod tests {
                     kind: ChangeKind::New,
                 })
                 .collect(),
+            egress_calls: Vec::new(),
+            runner_statements: Vec::new(),
+            mandate_provenance: None,
             children: 0,
             signed: true,
             failed_checks: Vec::new(),

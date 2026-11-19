@@ -91,6 +91,35 @@ describe('checkDeviceSignature', () => {
     const tampered = withKeySigned.replace('"diff_digest":"d"', '"diff_digest":"tampered"');
     expect(await check(tampered, publicKeyHex)).toEqual({ status: 'invalid' });
   });
+
+  it('signs and detects tampering inside egress_calls', async () => {
+    const withEgress = {
+      ...base,
+      device_public_key: publicKeyHex,
+      egress_calls: [
+        {
+          target_domain: '127.0.0.1',
+          method: 'GET',
+          redacted_url: 'http://127.0.0.1:9000/status',
+          request_sha256: 'a'.repeat(64),
+          status_code: 200,
+          response_sha256: 'b'.repeat(64),
+          bytes_sent: 0,
+          bytes_received: 128,
+          latency_ms: 9,
+        },
+      ],
+    };
+    const receipt = readReceipt(JSON.stringify(withEgress)).receipt as Receipt;
+    const signature = new Uint8Array(
+      await crypto.subtle.sign({ name: 'Ed25519' }, keys.privateKey, canonicalBytes(receipt)),
+    );
+    const signed = JSON.stringify({ ...withEgress, device_signature: bytesToHex(signature) });
+
+    expect(await check(signed, publicKeyHex)).toEqual({ status: 'valid' });
+    const tampered = signed.replace('"status_code":200', '"status_code":500');
+    expect(await check(tampered, publicKeyHex)).toEqual({ status: 'invalid' });
+  });
 });
 
 describe('hex helpers', () => {

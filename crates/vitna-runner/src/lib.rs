@@ -71,6 +71,10 @@ pub struct CommandRequest {
     /// decisions are not the same decision.
     pub allow_unsandboxed: bool,
     pub allow_network: bool,
+    /// Requested isolation guarantee (defaults to `SandboxGuarantee::Guarded`).
+    pub guarantee: SandboxGuarantee,
+    /// Optional explicit OCI container image for `SandboxGuarantee::Strong`.
+    pub container_image: Option<String>,
 }
 
 impl CommandRequest {
@@ -87,7 +91,19 @@ impl CommandRequest {
             timeout_ms,
             allow_unsandboxed: false,
             allow_network: false,
+            guarantee: SandboxGuarantee::Guarded,
+            container_image: None,
         }
+    }
+
+    pub fn with_guarantee(mut self, guarantee: SandboxGuarantee) -> Self {
+        self.guarantee = guarantee;
+        self
+    }
+
+    pub fn with_container_image(mut self, image: impl Into<String>) -> Self {
+        self.container_image = Some(image.into());
+        self
     }
 }
 
@@ -232,8 +248,9 @@ impl Runner for ProcessRunner {
         // Isolation is decided before anything starts. A command that cannot be
         // sandboxed is refused here unless the operator approved running without
         // one, and that refusal is recorded rather than silently downgraded.
-        let mut config = SandboxConfig::new(&request.workspace_root, SandboxGuarantee::Guarded);
+        let mut config = SandboxConfig::new(&request.workspace_root, request.guarantee);
         config.allow_network = request.allow_network;
+        config.container_image = request.container_image.clone();
 
         let planned = plan(&config, &request.command, &request.working_dir);
 

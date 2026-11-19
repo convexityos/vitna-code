@@ -60,6 +60,34 @@ pub struct Evidence {
     pub description: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct EgressCall {
+    pub method: String,
+    pub redacted_url: String,
+    pub status_code: u16,
+    pub bytes_received: u64,
+    pub latency_ms: u64,
+    pub response_sha256: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunnerStatement {
+    pub action_id: String,
+    pub sandbox_backend: Option<String>,
+    pub sandbox_enforcement: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MandateProvenance {
+    pub root_jti: String,
+    pub chain_hash: String,
+    pub ledger: String,
+    pub currency: String,
+    pub total_spent: String,
+    pub path: Vec<String>,
+    pub spend_count: usize,
+}
+
 /// One receipt, with every string made safe to draw.
 #[derive(Debug, Clone)]
 pub struct Run {
@@ -73,6 +101,9 @@ pub struct Run {
     pub completion: String,
     pub evidence: Vec<Evidence>,
     pub changes: Vec<Change>,
+    pub egress_calls: Vec<EgressCall>,
+    pub runner_statements: Vec<RunnerStatement>,
+    pub mandate_provenance: Option<MandateProvenance>,
     pub children: usize,
     pub signed: bool,
     /// What the verifier found wrong without a key. Empty means every check it
@@ -241,6 +272,36 @@ fn read_one(path: &Path, name: &str) -> Entry {
                 },
             })
             .collect(),
+        egress_calls: r
+            .egress_calls
+            .iter()
+            .map(|eg| EgressCall {
+                method: clean(&eg.method),
+                redacted_url: clean(&eg.redacted_url),
+                status_code: eg.status_code,
+                bytes_received: eg.bytes_received,
+                latency_ms: eg.latency_ms,
+                response_sha256: clean(&eg.response_sha256),
+            })
+            .collect(),
+        runner_statements: r
+            .runner_execution_statements
+            .iter()
+            .map(|st| RunnerStatement {
+                action_id: clean(&st.action_id),
+                sandbox_backend: st.sandbox_backend.as_deref().map(clean),
+                sandbox_enforcement: st.sandbox_enforcement.as_deref().map(clean),
+            })
+            .collect(),
+        mandate_provenance: r.mandate_provenance.as_ref().map(|mp| MandateProvenance {
+            root_jti: clean(&mp.root_jti),
+            chain_hash: clean(&mp.chain_hash),
+            ledger: clean(&mp.ledger),
+            currency: clean(&mp.currency),
+            total_spent: clean(&mp.total_spent),
+            path: mp.path.iter().map(|s| clean(s)).collect(),
+            spend_count: mp.spend_digests.len(),
+        }),
         children: r.child_receipt_roots.len(),
         signed: !r.device_signature.trim().is_empty(),
         failed_checks: verified.report.errors.iter().map(|e| clean(e)).collect(),
@@ -409,6 +470,94 @@ mod tests {
         assert!(
             matches!(&ledger.entries[0], Entry::Unreadable(u) if u.reason.contains("is a link")),
             "{ledger:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn egress_runner_and_mandate_provenance_are_loaded_and_sanitized() {
+        let dir = scratch("provenance");
+        let body = serde_json::json!({
+            "schema_version": "vitna-run-receipt-v1",
+            "run_id": "run-prov-1",
+            "session_id": "sess-1",
+            "workspace_fingerprint": "fp",
+            "base_commit_sha": "abc1234",
+            "model_selection": {
+                "provider": "vitna-anchor",
+                "model_sku": "qwen3-coder-30b",
+                "routing_reason": "vitna_anchor:qwen3-coder-30b"
+            },
+            "event_hash_chain_root": "root-1",
+            "isolation_label": "strong",
+            "completion_state": "completed_with_evidence",
+            "evidence_items": [],
+            "changeset": {
+                "files_modified": [],
+                "diff_digest": "diff-1"
+            },
+            "runner_execution_statements": [{
+                "action_id": "act-1",
+                "statement_digest": "stmt-1",
+                "signature": "sig-1",
+                "sandbox_backend": "oci_container",
+                "sandbox_enforcement": "fully_enforced"
+            }],
+            "egress_calls": [{
+                "target_domain": "api.example.com",
+                "method": "GET",
+                "redacted_url": "https://api.example.com/\u{001b}[31mstatus",
+                "request_sha256": "a".repeat(64),
+                "status_code": 200,
+                "response_sha256": "b".repeat(64),
+                "bytes_sent": 0,
+                "bytes_received": 64,
+                "latency_ms": 11
+            }],
+            "mandate_provenance": {
+                "chain_hash": "sha256:chain123",
+                "root_jti": "mnd_root_1",
+                "path": ["mnd_root_1", "mnd_child_1"],
+                "ledger": "https://ledger.example.com/\u{001b}]0;title\u{0007}",
+                "currency": "USD",
+                "total_spent": "0.12",
+                "spend_digests": ["sha256:s1"]
+            },
+            "device_signature": "sig"
+        });
+        fs::write(
+            receipts_dir(&dir).join("run-prov-1.json"),
+            serde_json::to_string_pretty(&body).unwrap(),
+        )
+        .unwrap();
+
+        let ledger = read(&dir);
+        let Some(Entry::Run(run)) = ledger.entries.first() else {
+            panic!("expected Run entry, got {:?}", ledger.entries);
+        };
+        assert_eq!(run.runner_statements.len(), 1);
+        assert_eq!(
+            run.runner_statements[0].sandbox_backend.as_deref(),
+            Some("oci_container")
+        );
+        assert_eq!(run.egress_calls.len(), 1);
+        assert_eq!(run.egress_calls[0].status_code, 200);
+        assert!(
+            !run.egress_calls[0]
+                .redacted_url
+                .chars()
+                .any(|c| c.is_control()),
+            "control chars must be stripped from redacted_url"
+        );
+        let mp = run
+            .mandate_provenance
+            .as_ref()
+            .expect("mandate_provenance loaded");
+        assert_eq!(mp.root_jti, "mnd_root_1");
+        assert_eq!(mp.spend_count, 1);
+        assert!(
+            !mp.ledger.chars().any(|c| c.is_control()),
+            "control chars must be stripped from mandate ledger"
         );
         let _ = fs::remove_dir_all(&dir);
     }

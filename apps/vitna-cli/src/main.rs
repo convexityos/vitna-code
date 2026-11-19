@@ -45,16 +45,19 @@ enum Commands {
         /// The vitna-runtime lane alias (e.g. vitna/code). Requires --runtime-url.
         #[arg(long)]
         lane: Option<String>,
-        /// Direct model provider backed by an OS-keychain API key (`anthropic` or `openai`).
+        /// Direct model provider (`anthropic`, `openai`, or local `vitna-anchor`).
         /// Requires --model and cannot be combined with --runtime-url/--lane.
         #[arg(long)]
         provider: Option<String>,
-        /// Model SKU for a direct provider route (for example `claude-sonnet-4-5` or `gpt-5`).
+        /// Model SKU for a direct provider route (for example `claude-sonnet-4-5`, `gpt-5`, or `qwen3-coder`).
         #[arg(long)]
         model: Option<String>,
         /// Optional explicit http:// or https:// endpoint override for --provider/--model.
         #[arg(long)]
         base_url: Option<String>,
+        /// Optional local checkpoint file or directory hashed for `vitna-anchor` receipt attestation.
+        #[arg(long)]
+        checkpoint: Option<PathBuf>,
         /// Attach a Streamable HTTP MCP server for this run (`NAME=URL`). Repeatable.
         #[arg(long = "mcp-http", value_name = "NAME=URL")]
         mcp_http: Vec<String>,
@@ -148,16 +151,19 @@ enum Commands {
         /// The lane every turn asks the runtime for, such as vitna/code.
         #[arg(long)]
         lane: Option<String>,
-        /// Direct model provider backed by an OS-keychain API key (`anthropic` or `openai`).
+        /// Direct model provider (`anthropic`, `openai`, or local `vitna-anchor`).
         /// Requires --model and cannot be combined with --runtime-url/--lane.
         #[arg(long)]
         provider: Option<String>,
-        /// Model SKU for a direct provider route (for example `claude-sonnet-4-5` or `gpt-5`).
+        /// Model SKU for a direct provider route (for example `claude-sonnet-4-5`, `gpt-5`, or `qwen3-coder`).
         #[arg(long)]
         model: Option<String>,
         /// Optional explicit http:// or https:// endpoint override for --provider/--model.
         #[arg(long)]
         base_url: Option<String>,
+        /// Optional local checkpoint file or directory hashed for `vitna-anchor` receipt attestation.
+        #[arg(long)]
+        checkpoint: Option<PathBuf>,
         /// Attach a Streamable HTTP MCP server at startup (`NAME=URL`). Repeatable.
         #[arg(long = "mcp-http", value_name = "NAME=URL")]
         mcp_http: Vec<String>,
@@ -356,6 +362,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             provider,
             model,
             base_url,
+            checkpoint,
             mcp_http,
             mcp_stdio,
             allow_egress,
@@ -366,7 +373,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 || lane.is_some()
                 || provider.is_some()
                 || model.is_some()
-                || base_url.is_some();
+                || base_url.is_some()
+                || checkpoint.is_some();
             if has_live_flags {
                 if let Err(e) = commands::run_live_turn(commands::LiveRunOptions {
                     task: &task,
@@ -377,6 +385,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     provider,
                     model,
                     base_url,
+                    checkpoint,
                     mcp_http,
                     mcp_stdio,
                     allow_egress,
@@ -463,6 +472,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             provider,
             model,
             base_url,
+            checkpoint,
             mcp_http,
             mcp_stdio,
             allow_egress,
@@ -475,6 +485,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 provider,
                 model,
                 base_url,
+                checkpoint,
                 mcp_http,
                 mcp_stdio,
                 allow_egress,
@@ -646,6 +657,7 @@ async fn serve(
     provider: Option<String>,
     model: Option<String>,
     base_url: Option<String>,
+    checkpoint: Option<PathBuf>,
     mcp_http: Vec<String>,
     mcp_stdio: Vec<String>,
     allow_egress: Vec<String>,
@@ -654,6 +666,7 @@ async fn serve(
     let launch = vitna_daemon::launch::Launch::resolve(endpoint, store)?
         .with_runtime(runtime_url, lane)?
         .with_direct_provider(provider, model, base_url)?
+        .with_checkpoint(checkpoint)?
         .with_mcp_servers(mcp_http, mcp_stdio)?
         .with_egress_allowlist(allow_egress)?;
     let announce = launch.endpoint.clone();

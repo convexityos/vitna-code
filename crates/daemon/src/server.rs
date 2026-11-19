@@ -66,6 +66,9 @@ pub struct DaemonServer {
     /// Operator-configured destination hosts permitted for brokered
     /// `net:http_fetch` tool calls (`http_fetch` and remote `browser_verify`).
     pub egress_allowlist: Vec<String>,
+    /// Optional policy or local `vitna-anchor` checkpoint SHA-256 digest stamped
+    /// into signed receipts produced by turns on this daemon.
+    pub policy_digest: Option<String>,
 }
 
 impl DaemonServer {
@@ -150,11 +153,17 @@ impl DaemonServer {
             pending_changesets: Arc::new(Mutex::new(HashMap::new())),
             mcp_tools: Arc::new(Mutex::new(Vec::new())),
             egress_allowlist: Vec::new(),
+            policy_digest: None,
         }
     }
 
     pub fn with_egress_allowlist(mut self, allowlist: Vec<String>) -> Self {
         self.egress_allowlist = allowlist;
+        self
+    }
+
+    pub fn with_policy_digest(mut self, digest: Option<String>) -> Self {
+        self.policy_digest = digest;
         self
     }
 

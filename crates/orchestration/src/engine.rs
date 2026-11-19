@@ -95,6 +95,9 @@ pub struct OrchestrationEngine {
     /// Operator-configured destination hosts permitted for brokered
     /// `net:http_fetch` tool calls (`http_fetch` and remote `browser_verify`).
     pub egress_allowlist: Vec<String>,
+    /// Optional policy or local checkpoint SHA-256 digest stamped into
+    /// `ModelSelectionRecord.policy_digest` on the signed receipt.
+    pub policy_digest: Option<String>,
 }
 
 /// How long a person has to answer an approval before it is refused.
@@ -196,6 +199,7 @@ impl OrchestrationEngine {
             skill_instructions: None,
             loaded_skills: Vec::new(),
             egress_allowlist: Vec::new(),
+            policy_digest: None,
         }
     }
 
@@ -239,6 +243,13 @@ impl OrchestrationEngine {
     /// `net:http_fetch` tool calls (`http_fetch` and remote `browser_verify`).
     pub fn with_egress_allowlist(mut self, allowlist: Vec<String>) -> Self {
         self.egress_allowlist = allowlist;
+        self
+    }
+
+    /// Sets the optional policy or local `vitna-anchor` checkpoint SHA-256 digest
+    /// recorded in `VitnaRunReceiptV1.model_selection.policy_digest`.
+    pub fn with_policy_digest(mut self, digest: Option<String>) -> Self {
+        self.policy_digest = digest;
         self
     }
 
@@ -892,7 +903,7 @@ impl OrchestrationEngine {
                 provider: self.config.provider_name.clone(),
                 model_sku: self.config.model_sku.clone(),
                 routing_reason: self.routing_reason.clone(),
-                policy_digest: None,
+                policy_digest: self.policy_digest.clone(),
             },
             event_hash_chain_root: merkle_root,
             isolation_label: self.observed_isolation_label(),

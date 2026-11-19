@@ -1083,5 +1083,135 @@ fn cli_allow_egress_rejects_blanket_wildcard_and_requires_model_route() {
     let _ = fs::remove_dir_all(&base);
 }
 
+#[test]
+fn cli_run_vitna_anchor_stamps_checkpoint_policy_digest_and_verifies_provenance_bundle() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let base = temp_dir("cli_anchor");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    let ckpt = base.join("qwen3-coder.gguf");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+    fs::write(&ckpt, b"GGUF-local-checkpoint-test-bytes").unwrap();
+    let expected_sha = sha256_hex(b"GGUF-local-checkpoint-test-bytes");
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake vitna-anchor");
+    let addr = listener.local_addr().unwrap();
+    let server_sha = expected_sha.clone();
+    let handle = std::thread::spawn(move || {
+        // Serve /health and /v1/chat/completions
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let body = if req.starts_with("GET /health") {
+                serde_json::json!({
+                    "ok": true,
+                    "engine": "vitna-anchor",
+                    "model": "qwen3-coder-30b",
+                    "generation": true,
+                    "context": 32768,
+                    "checkpoint_sha256": server_sha
+                })
+                .to_string()
+            } else {
+                serde_json::json!({
+                    "id": "chatcmpl-anchor-1",
+                    "object": "chat.completion",
+                    "model": "qwen3-coder-30b",
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "Local attested completion done."
+                        },
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {
+                        "prompt_tokens": 12,
+                        "completion_tokens": 6,
+                        "total_tokens": 18
+                    }
+                })
+                .to_string()
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    let base_url = format!("http://127.0.0.1:{}", addr.port());
+    let run_out = run_vitna(
+        &[
+            "run",
+            "summarize repo",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--provider",
+            "vitna-anchor",
+            "--model",
+            "qwen3-coder-30b",
+            "--base-url",
+            &base_url,
+            "--checkpoint",
+            ckpt.to_str().unwrap(),
+        ],
+        &home,
+        &ws,
+    );
+    let _ = handle.join();
+    assert!(
+        run_out.status.success(),
+        "vitna run --provider vitna-anchor failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&run_out.stdout),
+        String::from_utf8_lossy(&run_out.stderr)
+    );
+
+    // Find the signed receipt written under .vitna/receipts/*.json
+    let receipts_dir = ws.join(".vitna").join("receipts");
+    let receipt_path = fs::read_dir(&receipts_dir)
+        .expect("receipts dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+        .expect("receipt json file");
+
+    let raw = fs::read_to_string(&receipt_path).unwrap();
+    let parsed: VitnaRunReceiptV1 = serde_json::from_str(&raw).unwrap();
+    assert_eq!(parsed.model_selection.provider, "vitna-anchor");
+    assert_eq!(parsed.model_selection.model_sku, "qwen3-coder-30b");
+    assert_eq!(
+        parsed.model_selection.policy_digest.as_deref(),
+        Some(expected_sha.as_str())
+    );
+
+    // Cross-verify the signed receipt + local checkpoint through verify_provenance_bundle.
+    let audit = vitna_receipt_verify::verify_provenance_bundle(
+        &vitna_receipt_verify::ProvenanceAuditOptions {
+            receipt_path: receipt_path.clone(),
+            public_key_hex: parsed.device_public_key.clone(),
+            require_signature: true,
+            checkpoint_path: Some(ckpt.clone()),
+            envelope_paths: Vec::new(),
+            strict_freshness: false,
+        },
+    )
+    .expect("provenance bundle audit");
+    assert!(audit.overall_valid, "audit errors: {:?}", audit.errors);
+    assert!(audit.receipt.signature_verified);
+    assert!(audit.checkpoint.as_ref().is_some_and(|c| c.matched));
+
+    let _ = fs::remove_dir_all(&base);
+}
+
 
 
