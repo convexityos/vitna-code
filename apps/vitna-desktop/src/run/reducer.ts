@@ -127,8 +127,10 @@ function admit(state: SessionView, meta: EventMeta, apply: (s: SessionView) => S
 // ---- events -----------------------------------------------------------------
 
 function applyEvent(state: SessionView, meta: EventMeta, event: DaemonEvent, receivedAt: number): SessionView {
-  // A handshake is the transport's business and never reaches a session.
-  if (event.kind === 'HandshakeResponse') return state;
+  // A handshake is the transport's business and never reaches a session, and
+  // so is the reply naming a session: it travels at control sequence 0,
+  // outside the event stream a gap is measured against.
+  if (event.kind === 'HandshakeResponse' || event.kind === 'SessionCreated') return state;
   // Error responses answer a command rather than extend the run, so they sit
   // outside the event sequence.
   if (event.kind === 'ErrorResponse') return applyError(state, event.body);

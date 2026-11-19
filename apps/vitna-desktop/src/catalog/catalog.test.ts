@@ -70,7 +70,7 @@ describe('the pinned catalog', () => {
     }
   });
 
-  it('prices every provider the daemon can call, and exempts only the fake one', () => {
+  it('prices every provider the daemon can call, and exempts only the fake one and a runtime lane', () => {
     // Read from the Rust source rather than restating its provider list here.
     // A second copy of the list would go on passing while the crate changed,
     // which is how a catalog ends up missing the provider somebody just added.
@@ -87,10 +87,17 @@ describe('the pinned catalog', () => {
     expect(modules.size, 'no provider modules found in crates/providers/src/lib.rs').toBeGreaterThan(1);
     expect(modules.has('fake'), 'the fake provider module has moved or been renamed').toBe(true);
 
-    // `fake` invents its tokens and has no price. It is the only exemption, and
-    // it is exempt by name so that a second unpriced provider has to be argued
-    // for here rather than added quietly.
-    const callable = [...modules].filter((id) => id !== 'fake');
+    // `fake` invents its tokens and has no price. It is exempt by name so that
+    // a second unpriced provider has to be argued for here rather than added
+    // quietly.
+    //
+    // `runtime` is the second, argued for on 2026-10-19 (ADR-0007): a
+    // vitna-runtime lane sells nothing. It routes each call to a model a
+    // provider in this catalog sells, under that provider's own id, and the
+    // runtime's ledger prices the call it served. Pricing "vitna-runtime" as
+    // a provider here would put a second price beside the seller's.
+    const EXEMPT = new Set(['fake', 'runtime']);
+    const callable = [...modules].filter((id) => !EXEMPT.has(id));
     for (const id of callable) {
       expect(findProvider(id), `crates/providers has ${id}, the catalog does not price it`).not.toBeNull();
     }

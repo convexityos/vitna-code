@@ -73,6 +73,13 @@ export interface ErrorResponse {
   action_id: string;
 }
 
+/** The reply to CreateSession, at control sequence 0: the only place a new session's id appears (ADR-0007). */
+export interface SessionCreated {
+  session_id: string;
+  workspace_path: string;
+  initial_mode: string;
+}
+
 // ---- commands.proto --------------------------------------------------------
 
 export const SESSION_MODES = ['inspect', 'build', 'autopilot'] as const;
@@ -313,10 +320,11 @@ export interface Diagnostic {
   details: string;
 }
 
-/** Everything the daemon sends. The two responses from envelope.proto share the stream. */
+/** Everything the daemon sends. The three responses from envelope.proto share the stream. */
 export interface EventBodies {
   HandshakeResponse: HandshakeResponse;
   ErrorResponse: ErrorResponse;
+  SessionCreated: SessionCreated;
   MessageDelta: MessageDelta;
   ReasoningSummaryDelta: ReasoningSummaryDelta;
   PlanChanged: PlanChanged;

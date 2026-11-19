@@ -15,9 +15,11 @@
 //! and everything that wants to send, the command dispatcher and every live
 //! subscription, holds a handle to that queue.
 //!
-//! That is also what makes an approval gate possible later. A daemon that can
-//! only answer the frame in front of it cannot ask a question and wait, which
-//! is why the approval path currently aborts a run instead of pausing it.
+//! That is also what makes the approval gate possible. A daemon that can only
+//! answer the frame in front of it cannot ask a question and wait. A turn that
+//! reaches a mutating action announces `ApprovalRequested` on the session's
+//! stream and waits, and `ApproveAction` or `RejectAction` arriving on any
+//! connection answers it (ADR-0007).
 //!
 //! # What a client must do first
 //!
@@ -31,15 +33,17 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 
+use vitna_orchestration::ApprovalDecision;
 use vitna_protocol::messages::{
-    ErrorCode, ErrorResponse, HandshakeRequest, HandshakeResponse, SubscribeEvents,
+    ApproveAction, CreateSession, ErrorCode, ErrorResponse, HandshakeRequest, HandshakeResponse,
+    RejectAction, SessionCreated, SubmitTurn, SubscribeEvents,
 };
 use vitna_protocol::{
     type_url, ProtocolEnvelope, MAX_FRAME_SIZE_BYTES, PROTOCOL_VERSION_MAJOR,
     PROTOCOL_VERSION_MINOR,
 };
 
-use crate::DaemonServer;
+use crate::{AnswerRefused, DaemonServer};
 
 /// How many frames may wait for the write half before a producer blocks.
 ///
@@ -103,15 +107,25 @@ fn error_for(
     code: ErrorCode,
     message: impl Into<String>,
 ) -> ProtocolEnvelope {
+    // Empty unless the error belongs to a specific action. The client pins an
+    // error to a pending approval through this field and shows anything else
+    // as a diagnostic, so a wrong guess here would attach a refusal to the
+    // wrong decision.
+    error_for_action(request, code, message, "")
+}
+
+/// A refusal that answers one approval, pinned to it by `action_id`.
+fn error_for_action(
+    request: &ProtocolEnvelope,
+    code: ErrorCode,
+    message: impl Into<String>,
+    action_id: &str,
+) -> ProtocolEnvelope {
     let body = ErrorResponse {
         code,
         message: message.into(),
         error_details: String::new(),
-        // Empty unless the error belongs to a specific action. The client
-        // pins an error to a pending approval through this field and shows
-        // anything else as a diagnostic, so a wrong guess here would attach a
-        // refusal to the wrong decision.
-        action_id: String::new(),
+        action_id: action_id.to_string(),
     };
     ProtocolEnvelope::carrying(
         type_url::envelope::ERROR_RESPONSE,
@@ -388,6 +402,170 @@ where
                     body.resume_after_sequence,
                 ));
                 Ok(())
+            }
+
+            type_url::command::CREATE_SESSION => {
+                let body: CreateSession = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                if body.workspace_path.trim().is_empty() {
+                    out.send(error_for(
+                        &request,
+                        ErrorCode::InvalidFrame,
+                        "CreateSession needs a workspace_path",
+                    ))
+                    .await
+                } else {
+                    match daemon.create_session(&body.workspace_path) {
+                        Err(why) => {
+                            out.send(error_for(&request, ErrorCode::InvalidFrame, why))
+                                .await
+                        }
+                        Ok(session) => {
+                            let reply = SessionCreated {
+                                session_id: session.session_id.clone(),
+                                workspace_path: session
+                                    .workspace_root
+                                    .to_string_lossy()
+                                    .into_owned(),
+                                // Echoed, not applied: see `CreateSession`.
+                                initial_mode: body.initial_mode.clone(),
+                            };
+                            match ProtocolEnvelope::carrying(
+                                type_url::envelope::SESSION_CREATED,
+                                session.session_id.clone(),
+                                String::new(),
+                                CONTROL_SEQUENCE,
+                                request.idempotency_key.clone(),
+                                &reply,
+                            ) {
+                                Ok(envelope) => out.send(envelope).await,
+                                Err(e) => {
+                                    out.send(error_for(
+                                        &request,
+                                        ErrorCode::Internal,
+                                        e.to_string(),
+                                    ))
+                                    .await
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            type_url::command::SUBMIT_TURN => {
+                let body: SubmitTurn = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                let session_id = if body.session_id.is_empty() {
+                    request.session_id.clone()
+                } else {
+                    body.session_id.clone()
+                };
+                if !body.attached_file_paths.is_empty() {
+                    // Declared and not read yet. Refused rather than dropped,
+                    // so a turn never runs without files its prompt refers to.
+                    out.send(error_for(
+                        &request,
+                        ErrorCode::PolicyDenied,
+                        "attached_file_paths is not served yet; name the files in the prompt instead",
+                    ))
+                    .await
+                } else {
+                    match daemon.submit_turn(&session_id, &body.prompt) {
+                        // No declared reply: the turn's events, beginning with
+                        // the run moving to running_model, are the answer, on
+                        // the session's subscription.
+                        Ok(_run_id) => Ok(()),
+                        Err(why) => {
+                            out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                                .await
+                        }
+                    }
+                }
+            }
+
+            type_url::command::APPROVE_ACTION | type_url::command::REJECT_ACTION => {
+                let approving = request.type_url == type_url::command::APPROVE_ACTION;
+                let parsed = if approving {
+                    request.payload_as::<ApproveAction>().map(|b| {
+                        let scope = b.scope.clone();
+                        (b.approval_id, b.action_digest, Ok::<_, String>(scope))
+                    })
+                } else {
+                    request
+                        .payload_as::<RejectAction>()
+                        .map(|b| (b.approval_id, b.action_digest, Err::<String, _>(b.reason)))
+                };
+                let (approval_id, action_digest, answer) = match parsed {
+                    Ok(p) => p,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                let decision = match answer {
+                    Ok(scope) if scope.is_empty() || scope == "once" => {
+                        Some(ApprovalDecision::Approved)
+                    }
+                    // Declared, and each would approve actions nobody has seen
+                    // yet. Refused, and the request stays waiting for a "once".
+                    Ok(_) => None,
+                    Err(reason) => Some(ApprovalDecision::Rejected(if reason.trim().is_empty() {
+                        "the operator refused this action".to_string()
+                    } else {
+                        format!("the operator refused this action: {reason}")
+                    })),
+                };
+                match decision {
+                    None => {
+                        out.send(error_for_action(
+                            &request,
+                            ErrorCode::PolicyDenied,
+                            "only scope \"once\" is served; \"session\" and \"project\" are declared and not implemented",
+                            &approval_id,
+                        ))
+                        .await
+                    }
+                    Some(decision) => match daemon.answer_approval(&approval_id, &action_digest, decision) {
+                        Ok(()) => Ok(()),
+                        Err(AnswerRefused::NotWaiting) => {
+                            out.send(error_for_action(
+                                &request,
+                                ErrorCode::PolicyDenied,
+                                format!(
+                                    "nothing is waiting under {approval_id}: it was answered, timed out, or never asked"
+                                ),
+                                &approval_id,
+                            ))
+                            .await
+                        }
+                        Err(AnswerRefused::DigestMismatch) => {
+                            out.send(error_for_action(
+                                &request,
+                                ErrorCode::PolicyDenied,
+                                "that digest is not the action waiting for approval; it is still waiting",
+                                &approval_id,
+                            ))
+                            .await
+                        }
+                    },
+                }
             }
 
             other => {

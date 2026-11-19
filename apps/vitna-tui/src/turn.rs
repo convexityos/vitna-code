@@ -2,8 +2,8 @@
 //! each tool call with what it printed and what it asked.
 //!
 //! Nothing fills this yet, and the terminal says so rather than pretending.
-//! vitna-coded answers the handshake and streams a session's events, and it
-//! serves no `SubmitTurn`, so there is no way to start a turn over the wire.
+//! vitna-coded serves `SubmitTurn` since 2026-10-19 (ADR-0007), and this
+//! terminal does not send it yet, so no turn reaches these shapes.
 //! The client this replaces invented one: a canned reply, a diff of a file
 //! nobody wrote, and a receipt path for a receipt nobody signed. The shapes
 //! below follow the declared events (`MessageDelta`, `ToolProposed`,
