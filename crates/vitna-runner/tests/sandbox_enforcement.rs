@@ -95,10 +95,15 @@ fn backend_or_skip(workspace: &Path, case: &str) -> Option<String> {
 ///
 /// The outer command then waits far longer than the timeout, so the timeout is
 /// what ends the action.
-fn sleep_then_mark(fx: &Fixture, marker: &Path) -> String {
+fn sleep_then_mark(fx: &Fixture, started: &Path, marker: &Path) -> String {
+    let s = started.to_string_lossy().replace('\\', "/");
     let m = marker.to_string_lossy().replace('\\', "/");
     if cfg!(windows) {
         let script = fx.workspace.join("grandchild.bat");
+        let started_name = started
+            .file_name()
+            .expect("started marker has file name")
+            .to_string_lossy();
         let marker_name = marker
             .file_name()
             .expect("marker has file name")
@@ -112,6 +117,7 @@ fn sleep_then_mark(fx: &Fixture, marker: &Path) -> String {
             &script,
             format!(
                 "@echo off\r\n\
+                 echo started> \"{started_name}\"\r\n\
                  setlocal enabledelayedexpansion\r\n\
                  for /f \"tokens=1-3 delims=:.,\" %%a in (\"%TIME: =0%\") do set /a \"start=(((1%%a-100)*60+(1%%b-100))*60+(1%%c-100))\"\r\n\
                  :wait\r\n\
@@ -125,9 +131,9 @@ fn sleep_then_mark(fx: &Fixture, marker: &Path) -> String {
         .expect("write helper script");
         // The inner `%COMSPEC% /c` is a grandchild. Confirmed by hand: killing
         // only the outer cmd.exe leaves it running and the marker still appears.
-        "echo [S1] & echo [CD=%CD%] & echo [COMSPEC=%COMSPEC%] & (type grandchild.bat > nul && echo [READ_OK] || echo [READ_FAIL]) & (\"%COMSPEC%\" /c echo [SUB_OK] || echo [SUB_FAIL]) & (cmd.exe /c echo [CMD_OK] || echo [CMD_FAIL]) & (where.exe cmd.exe > nul && echo [WHERE_OK] || echo [WHERE_FAIL]) & \"%COMSPEC%\" /c grandchild.bat".to_string()
+        "\"%COMSPEC%\" /c grandchild.bat".to_string()
     } else {
-        format!("sh -c 'sleep 5; echo done > \"{}\"'", m)
+        format!("sh -c 'echo started > \"{}\"; sleep 5; echo done > \"{}\"'", s, m)
     }
 }
 
@@ -221,13 +227,14 @@ async fn a_timed_out_command_does_not_outlive_the_action() {
     // Placed inside the workspace where the sandboxed child HAS write
     // permission, so the marker staying absent genuinely proves process-tree
     // teardown killed the grandchild rather than the sandbox blocking a write.
+    let started = fx.workspace.join("STARTED");
     let marker = fx.workspace.join("SURVIVED");
 
     let mut request = CommandRequest::new(
-        sleep_then_mark(&fx, &marker),
+        sleep_then_mark(&fx, &started, &marker),
         &fx.workspace,
         &fx.workspace,
-        800,
+        1_500,
     );
     // Explicitly approved, because this test is about the teardown and has to
     // run a process even where no backend exists.
@@ -239,6 +246,10 @@ async fn a_timed_out_command_does_not_outlive_the_action() {
         .await
         .expect_err("the command must report the timeout");
     assert!(err.contains("timed out"), "unexpected error: {}", err);
+    assert!(
+        started.exists(),
+        "the grandchild process never started before the timeout fired"
+    );
 
     // Outlive the command's own sleep. If the tree was not taken down, the
     // marker lands during this wait.
@@ -356,6 +367,31 @@ async fn a_sandboxed_command_can_still_work_in_the_workspace() {
     assert!(
         inside.exists(),
         "a sandbox that cannot write its own workspace is broken, not strict"
+    );
+
+    let nested_cmd = if cfg!(windows) {
+        "\"%COMSPEC%\" /c echo nested_ok"
+    } else {
+        "sh -c 'echo nested_ok'"
+    };
+    let nested = runner(&fx)
+        .run_command(CommandRequest::new(
+            nested_cmd,
+            &fx.workspace,
+            &fx.workspace,
+            30_000,
+        ))
+        .await
+        .expect("nested command runs");
+    assert_eq!(
+        nested.exit_code, 0,
+        "nested child process failed inside sandbox: stdout={:?} stderr={:?}",
+        nested.stdout, nested.stderr
+    );
+    assert!(
+        nested.stdout.contains("nested_ok"),
+        "nested child output missing: stdout={:?} stderr={:?}",
+        nested.stdout, nested.stderr
     );
 
     let _ = fs::remove_dir_all(&fx.root);
