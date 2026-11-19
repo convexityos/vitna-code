@@ -87,6 +87,7 @@ impl BenchmarkSuite {
                 diff_digest: "diff-digest-bench".to_string(),
             },
             runner_execution_statements: Vec::new(),
+            egress_calls: Vec::new(),
             child_receipt_roots: Vec::new(),
             device_public_key: None,
             mandate_provenance: None,

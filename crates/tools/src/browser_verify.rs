@@ -26,27 +26,17 @@
 //! bytes are not a rendered DOM, and the report says so, because this tool's
 //! output is shaped to land in a receipt as captured evidence.
 
+use crate::egress::{EgressBroker, EgressPolicy, NETWORK_DESTINATION_DENIED};
 use crate::workspace_fs::{read_up_to, sha256_hex, Resolved, Workspace, MAX_FILE_BYTES};
-use crate::{Tool, ToolContext, ToolDefinition, ToolResult};
+use crate::{remote_url_scheme, Tool, ToolContext, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 
 pub struct BrowserVerifyTool;
 
-/// The scheme of a remote target, when `target` names one: a URL scheme
-/// followed by `://`. At least two characters, so a Windows drive letter
-/// (`C:/src/index.html`) stays a path rather than becoming a scheme.
+/// The scheme of a remote target, when `target` names one.
 fn remote_scheme(target: &str) -> Option<&str> {
-    let end = target.find("://")?;
-    let scheme = &target[..end];
-    let mut chars = scheme.chars();
-    if !chars.next()?.is_ascii_alphabetic() || scheme.len() < 2 {
-        return None;
-    }
-    if !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) {
-        return None;
-    }
-    Some(scheme)
+    remote_url_scheme(target)
 }
 
 /// True when `haystack` contains `needle`. Compared as bytes, so the answer
@@ -67,13 +57,13 @@ impl Tool for BrowserVerifyTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "browser_verify".to_string(),
-            description: "Digest a document saved in the workspace and check it for expected text, for sandbox evidence receipts. Reads the bytes on disk: no renderer runs, and no URL is fetched. A remote target is refused, so save the page first and verify the saved file.".to_string(),
+            description: "Digest a workspace document or an operator-allowlisted HTTP/HTTPS URL through the egress broker and check it for expected text. Local files are read on disk with no renderer; remote URLs require explicit egress allowlist + exact-action approval and report raw brokered HTTP response bytes (no JS renderer runs).".to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
                     "url_or_path": {
                         "type": "string",
-                        "description": "Path to a document within the workspace. A URL is refused: this tool performs no network I/O."
+                        "description": "Path to a document within the workspace, or an HTTP/HTTPS URL on an operator-allowlisted host."
                     },
                     "expected_text": {
                         "type": "string",
@@ -82,9 +72,9 @@ impl Tool for BrowserVerifyTool {
                 },
                 "required": ["url_or_path"]
             }),
-            // Reads a regular file inside the workspace and nothing else,
-            // which is `read_file`'s authority. Any change that makes this
-            // tool reach the network invalidates both of these.
+            // Local workspace file verification is read-only. When invoked with
+            // a remote URL, OrchestrationEngine gates execution behind
+            // exact-action approval and EgressBroker enforces the host allowlist.
             is_mutating: false,
             requires_approval: false,
         }
@@ -98,22 +88,77 @@ impl Tool for BrowserVerifyTool {
 
         let expected_text = args.get("expected_text").and_then(|e| e.as_str());
 
-        // Refused before anything else, so no branch below can be reached
-        // with a target nothing on this machine holds.
+        // Remote targets are refused fail-closed when no egress allowlist is
+        // granted, and otherwise fetched strictly through `EgressBroker` with
+        // full `EgressCallRecord` emission.
         if let Some(scheme) = remote_scheme(target) {
-            return Err(format!(
-                "browser_verify cannot retrieve '{}': it performs no network I/O, so it has \
-                 no '{}' content to digest and reports none. Fetching one would need network \
-                 authority this tool does not hold and an egress record the receipt cannot \
-                 yet carry. Save the document into the workspace and verify that file, or \
-                 capture the page with a tool that has that authority.",
-                target, scheme
-            ));
+            if ctx.egress_allowlist.is_empty() {
+                return Err(format!(
+                    "{NETWORK_DESTINATION_DENIED}: browser_verify cannot retrieve '{}': no egress \
+                     allowlist is configured so it performs no network I/O, has no '{}' content \
+                     to digest, and reports none. Pass --allow-egress <host> (with exact-action \
+                     approval) or save the document into the workspace and verify that file.",
+                    target, scheme
+                ));
+            }
+
+            let policy = EgressPolicy::with_allowlist(ctx.egress_allowlist.clone());
+            let fetched = EgressBroker::fetch(&policy, "GET", target).await?;
+            let status_ok = (200..400).contains(&fetched.status_code);
+            let text_matched = match expected_text {
+                Some(exp) => contains_bytes(&fetched.body, exp.as_bytes()),
+                None => true,
+            };
+            let success = status_ok && text_matched;
+
+            let mut output = format!(
+                "Brokered HTTP Verification Report for '{}'\n",
+                fetched.record.redacted_url
+            );
+            output.push_str(&format!("HTTP Status: {}\n", fetched.status_code));
+            output.push_str(&format!("SHA-256: {}\n", fetched.record.response_sha256));
+            output.push_str(&format!("Content Length: {} bytes\n", fetched.body.len()));
+            output.push_str(
+                "Captured: brokered HTTP response bytes via EgressBroker. No JS browser renderer ran, so this is the raw HTTP response payload and not a rendered DOM.\n",
+            );
+
+            if !status_ok {
+                output.push_str(&format!(
+                    "HTTP Assertion: FAIL (non-success status {})\n",
+                    fetched.status_code
+                ));
+            }
+            if let Some(exp) = expected_text {
+                if text_matched {
+                    output.push_str(&format!(
+                        "Verification Assertion: PASS (found expected text '{}')\n",
+                        exp
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "Verification Assertion: FAIL (missing expected text '{}')\n",
+                        exp
+                    ));
+                }
+            }
+
+            return Ok(ToolResult {
+                call_id: String::new(),
+                tool_name: "browser_verify".to_string(),
+                success,
+                output,
+                preimage_hash: None,
+                postimage_hash: Some(fetched.record.response_sha256.clone()),
+                diff: None,
+                exit_code: None,
+                sandbox_backend: None,
+                sandbox_enforcement: None,
+                egress_calls: vec![fetched.record],
+            });
         }
 
-        // This tool needs no approval, so it must not read anything the
-        // workspace does not contain: the path is resolved on the real
-        // filesystem, links included, and only a regular file is opened.
+        // Local workspace file path: resolved on the real filesystem, links
+        // included, and only a regular file is opened.
         let workspace = Workspace::new(&ctx.workspace_root)?;
         let real_path = match workspace.resolve(target)? {
             Resolved::Existing(real_path) => real_path,
@@ -438,5 +483,98 @@ mod tests {
             !body.contains(SYNTHETIC),
             "browser_verify must not carry a stand-in document"
         );
+    }
+
+    async fn serve_once(status_line: &str, body: &str) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let response = format!(
+            "HTTP/1.1 {status_line}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let handle = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        (format!("http://127.0.0.1:{port}/index?token=secret123"), handle)
+    }
+
+    #[tokio::test]
+    async fn test_allowlisted_loopback_http_verifies_real_bytes_and_emits_egress_record() {
+        let s = Scratch::new("bv_loopback_ok");
+        let page = "<html><body><h1>Live Preview Ready</h1></body></html>";
+        let (url, server) = serve_once("200 OK", page).await;
+
+        let mut ctx = s.ctx();
+        ctx.egress_allowlist = vec!["127.0.0.1".to_string()];
+
+        let res = BrowserVerifyTool
+            .execute(
+                json!({ "url_or_path": url, "expected_text": "Live Preview Ready" }),
+                &ctx,
+            )
+            .await
+            .expect("allowlisted loopback verify succeeds");
+        server.await.unwrap();
+
+        assert!(res.success, "output: {}", res.output);
+        assert!(res.output.contains("PASS"));
+        assert!(res.output.contains("No JS browser renderer ran"));
+        let expected_hash = sha256_hex(page.as_bytes());
+        assert_eq!(res.postimage_hash.as_deref(), Some(expected_hash.as_str()));
+        assert_eq!(res.egress_calls.len(), 1);
+        assert_eq!(res.egress_calls[0].target_domain, "127.0.0.1");
+        assert_eq!(res.egress_calls[0].status_code, 200);
+        assert_eq!(res.egress_calls[0].response_sha256, expected_hash);
+        assert!(
+            !res.egress_calls[0].redacted_url.contains("secret123"),
+            "query string must be stripped from redacted_url"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_allowlisted_loopback_http_fails_on_500_or_missing_text() {
+        let s = Scratch::new("bv_loopback_500");
+        let page = "<html><body><h1>Internal Error</h1></body></html>";
+        let (url, server) = serve_once("500 Internal Server Error", page).await;
+
+        let mut ctx = s.ctx();
+        ctx.egress_allowlist = vec!["127.0.0.1".to_string()];
+
+        let res = BrowserVerifyTool
+            .execute(
+                json!({ "url_or_path": url, "expected_text": "Internal Error" }),
+                &ctx,
+            )
+            .await
+            .expect("returns report for 500");
+        server.await.unwrap();
+
+        assert!(!res.success, "HTTP 500 must fail verification");
+        assert_eq!(res.egress_calls.len(), 1);
+        assert_eq!(res.egress_calls[0].status_code, 500);
+    }
+
+    #[tokio::test]
+    async fn test_non_allowlisted_host_is_denied_even_when_other_host_is_allowlisted() {
+        let s = Scratch::new("bv_other_host_denied");
+        let mut ctx = s.ctx();
+        ctx.egress_allowlist = vec!["127.0.0.1".to_string()];
+
+        let err = BrowserVerifyTool
+            .execute(
+                json!({ "url_or_path": "https://example.invalid/app" }),
+                &ctx,
+            )
+            .await
+            .expect_err("non-allowlisted host must fail closed");
+        assert!(err.contains(NETWORK_DESTINATION_DENIED), "err={err}");
     }
 }

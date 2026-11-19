@@ -61,6 +61,10 @@ enum Commands {
         /// Attach a stdio MCP server for this run (`NAME=COMMAND [ARGS...]`). Repeatable.
         #[arg(long = "mcp-stdio", value_name = "NAME=CMD")]
         mcp_stdio: Vec<String>,
+        /// Allowlist a destination host or wildcard subdomain for brokered `net:http_fetch`
+        /// (for example `api.github.com`, `*.docs.rs`, or `127.0.0.1`). Repeatable.
+        #[arg(long = "allow-egress", value_name = "HOST")]
+        allow_egress: Vec<String>,
         /// Optional SQLite store path (defaults to <workspace>/.vitna/store.db).
         #[arg(long)]
         store: Option<PathBuf>,
@@ -160,6 +164,10 @@ enum Commands {
         /// Attach a stdio MCP server at startup (`NAME=COMMAND [ARGS...]`). Repeatable.
         #[arg(long = "mcp-stdio", value_name = "NAME=CMD")]
         mcp_stdio: Vec<String>,
+        /// Allowlist a destination host or wildcard subdomain for brokered `net:http_fetch`
+        /// (for example `api.github.com`, `*.docs.rs`, or `127.0.0.1`). Repeatable.
+        #[arg(long = "allow-egress", value_name = "HOST")]
+        allow_egress: Vec<String>,
     },
     /// Manage customer-held provider credentials in the OS keychain (never scans env vars)
     Auth {
@@ -350,6 +358,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             base_url,
             mcp_http,
             mcp_stdio,
+            allow_egress,
             store,
             ..
         }) => {
@@ -370,6 +379,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     base_url,
                     mcp_http,
                     mcp_stdio,
+                    allow_egress,
                     auto_approve,
                     verify_cmd,
                     allow_unsandboxed,
@@ -379,9 +389,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("vitna run: {e}");
                     std::process::exit(1);
                 }
-            } else if !mcp_http.is_empty() || !mcp_stdio.is_empty() {
+            } else if !mcp_http.is_empty() || !mcp_stdio.is_empty() || !allow_egress.is_empty() {
                 eprintln!(
-                    "vitna run: --mcp-http/--mcp-stdio require a model route (--runtime-url/--lane or --provider/--model)."
+                    "vitna run: --mcp-http, --mcp-stdio, and --allow-egress require a model route (--runtime-url/--lane or --provider/--model)."
                 );
                 std::process::exit(1);
             } else {
@@ -455,6 +465,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             base_url,
             mcp_http,
             mcp_stdio,
+            allow_egress,
         }) => {
             if let Err(e) = serve(
                 endpoint,
@@ -466,6 +477,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 base_url,
                 mcp_http,
                 mcp_stdio,
+                allow_egress,
             )
             .await
             {
@@ -636,12 +648,14 @@ async fn serve(
     base_url: Option<String>,
     mcp_http: Vec<String>,
     mcp_stdio: Vec<String>,
+    allow_egress: Vec<String>,
 ) -> Result<(), String> {
     vitna_daemon::launch::logging();
     let launch = vitna_daemon::launch::Launch::resolve(endpoint, store)?
         .with_runtime(runtime_url, lane)?
         .with_direct_provider(provider, model, base_url)?
-        .with_mcp_servers(mcp_http, mcp_stdio)?;
+        .with_mcp_servers(mcp_http, mcp_stdio)?
+        .with_egress_allowlist(allow_egress)?;
     let announce = launch.endpoint.clone();
     vitna_daemon::launch::run(&launch, move || {
         // Printed once the endpoint is bound, so it is true when it is read.

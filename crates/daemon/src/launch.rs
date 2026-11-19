@@ -43,6 +43,8 @@ pub struct Launch {
     pub direct: Option<DirectProvider>,
     /// External MCP servers attached at startup before serving IPC.
     pub mcp_servers: Vec<McpServerSpec>,
+    /// Operator-configured destination hosts permitted for brokered `net:http_fetch`.
+    pub egress_allowlist: Vec<String>,
 }
 
 impl Launch {
@@ -69,6 +71,7 @@ impl Launch {
             route: None,
             direct: None,
             mcp_servers: Vec::new(),
+            egress_allowlist: Vec::new(),
         })
     }
 
@@ -186,6 +189,22 @@ impl Launch {
         }
         Ok(self)
     }
+
+    /// Configures destination hosts permitted for brokered `net:http_fetch`.
+    ///
+    /// Rejects blanket wildcards (`*`), schemes, paths, ports, and empty entries
+    /// so misconfigured CLI flags fail closed at startup rather than silently
+    /// widening egress policy.
+    pub fn with_egress_allowlist(mut self, hosts: Vec<String>) -> Result<Launch, String> {
+        let mut seen: HashSet<String> = self.egress_allowlist.iter().cloned().collect();
+        for raw in hosts {
+            let normalized = vitna_tools::validate_allowlist_entry(&raw)?;
+            if seen.insert(normalized.clone()) {
+                self.egress_allowlist.push(normalized);
+            }
+        }
+        Ok(self)
+    }
 }
 
 /// `.vitna/daemon.db` under the home directory.
@@ -280,6 +299,14 @@ pub async fn run<F: FnOnce()>(launch: &Launch, on_ready: F) -> Result<(), String
             tool_count = tools.len(),
             "attached external MCP server"
         );
+    }
+
+    if !launch.egress_allowlist.is_empty() {
+        tracing::info!(
+            hosts = %launch.egress_allowlist.join(","),
+            "brokered net:http_fetch egress allowlist enabled"
+        );
+        server = server.with_egress_allowlist(launch.egress_allowlist.clone());
     }
 
     let server = Arc::new(server);
@@ -386,6 +413,34 @@ mod tests {
                 vec!["dup=http://127.0.0.1:9000/mcp".into()],
                 vec!["dup=my-mcp".into()],
             )
+            .is_err());
+    }
+
+    #[test]
+    fn egress_allowlist_validates_and_deduplicates_entries() {
+        let base = || Launch::resolve(Some("e".into()), Some(PathBuf::from("a.db"))).unwrap();
+        let configured = base()
+            .with_egress_allowlist(vec![
+                "API.Example.COM".into(),
+                "api.example.com".into(),
+                "*.docs.rs".into(),
+                "127.0.0.1".into(),
+            ])
+            .expect("valid hosts should pass");
+        assert_eq!(
+            configured.egress_allowlist,
+            vec!["api.example.com", "*.docs.rs", "127.0.0.1"]
+        );
+
+        assert!(base().with_egress_allowlist(vec!["*".into()]).is_err());
+        assert!(base()
+            .with_egress_allowlist(vec!["https://example.com".into()])
+            .is_err());
+        assert!(base()
+            .with_egress_allowlist(vec!["example.com:443".into()])
+            .is_err());
+        assert!(base()
+            .with_egress_allowlist(vec!["example.com/path".into()])
             .is_err());
     }
 

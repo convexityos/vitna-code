@@ -212,6 +212,7 @@ async fn test_multi_agent_dag_execution_and_receipt_aggregation() {
             diff_digest: receipt_backend.changeset.diff_digest.clone(),
         },
         runner_execution_statements: Vec::new(),
+        egress_calls: Vec::new(),
         child_receipt_roots: Vec::new(),
         device_public_key: None,
         mandate_provenance: None,

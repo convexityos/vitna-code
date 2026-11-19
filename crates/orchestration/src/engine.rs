@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use vitna_context::{ContextAssembler, ContextMessage};
 use vitna_receipts::{
-    ChangeSetRecord, EvidenceItemRecord, FileModificationRecord, ModelSelectionRecord,
-    RunnerExecutionStatementRecord, VitnaRunReceiptV1,
+    ChangeSetRecord, EgressCallRecord, EvidenceItemRecord, FileModificationRecord,
+    ModelSelectionRecord, RunnerExecutionStatementRecord, VitnaRunReceiptV1,
 };
 use vitna_protocol::messages::{
     run_state, tool_status, DiffChanged, RunStateChanged, ToolOutput, ToolProposed,
@@ -69,6 +69,7 @@ pub struct OrchestrationEngine {
     pub changeset_modifications: Vec<FileModificationRecord>,
     pub accumulated_diffs: Vec<String>,
     pub runner_statements: Vec<RunnerExecutionStatementRecord>,
+    pub egress_calls: Vec<EgressCallRecord>,
     pub evidence_items: Vec<EvidenceItemRecord>,
     pub history: Vec<ContextMessage>,
     /// Who is asked about a mutating action. `None` keeps the rule `vitna run`
@@ -91,6 +92,9 @@ pub struct OrchestrationEngine {
     pub skill_instructions: Option<String>,
     /// Names of verified workspace skills included in this run's context.
     pub loaded_skills: Vec<String>,
+    /// Operator-configured destination hosts permitted for brokered
+    /// `net:http_fetch` tool calls (`http_fetch` and remote `browser_verify`).
+    pub egress_allowlist: Vec<String>,
 }
 
 /// How long a person has to answer an approval before it is refused.
@@ -99,9 +103,21 @@ pub struct OrchestrationEngine {
 /// away ends rather than holding its session open indefinitely.
 pub const APPROVAL_TIMEOUT_MS: u64 = 15 * 60 * 1000;
 
-/// The `effect_class` `ToolProposed` declares: "read", "write", "execute".
-fn effect_class(tool_name: &str, is_mutating: bool) -> &'static str {
-    if tool_name == "run_command" {
+/// True when `browser_verify` is called with a remote URL (`http://`, `https://`, etc.)
+/// rather than a local workspace file path.
+fn is_remote_browser_verify(tool_name: &str, args: &serde_json::Value) -> bool {
+    tool_name == "browser_verify"
+        && args
+            .get("url_or_path")
+            .and_then(|v| v.as_str())
+            .is_some_and(vitna_tools::is_remote_url)
+}
+
+/// The `effect_class` `ToolProposed` declares: "read", "write", "execute", "network".
+fn effect_class(tool_name: &str, is_mutating: bool, args: &serde_json::Value) -> &'static str {
+    if tool_name == "http_fetch" || is_remote_browser_verify(tool_name, args) {
+        "network"
+    } else if tool_name == "run_command" {
         "execute"
     } else if is_mutating {
         "write"
@@ -128,7 +144,7 @@ fn describe_arguments(args: &serde_json::Value) -> String {
     const LIMIT: usize = 120;
     // The argument that says what the action touches, in the order a reader
     // cares about. Falls back to the whole object when a tool uses none of them.
-    let summary = ["command", "path", "query", "url_or_path"]
+    let summary = ["command", "path", "url", "url_or_path", "query"]
         .iter()
         .find_map(|key| args.get(key).and_then(|v| v.as_str()).map(str::to_string))
         .unwrap_or_else(|| args.to_string());
@@ -168,6 +184,7 @@ impl OrchestrationEngine {
             changeset_modifications: Vec::new(),
             accumulated_diffs: Vec::new(),
             runner_statements: Vec::new(),
+            egress_calls: Vec::new(),
             evidence_items: Vec::new(),
             history: Vec::new(),
             approver: None,
@@ -178,6 +195,7 @@ impl OrchestrationEngine {
             control: None,
             skill_instructions: None,
             loaded_skills: Vec::new(),
+            egress_allowlist: Vec::new(),
         }
     }
 
@@ -214,6 +232,13 @@ impl OrchestrationEngine {
     ) -> Self {
         self.skill_instructions = Some(block);
         self.loaded_skills = skill_names;
+        self
+    }
+
+    /// Configures operator-approved destination hosts permitted for brokered
+    /// `net:http_fetch` tool calls (`http_fetch` and remote `browser_verify`).
+    pub fn with_egress_allowlist(mut self, allowlist: Vec<String>) -> Self {
+        self.egress_allowlist = allowlist;
         self
     }
 
@@ -451,14 +476,17 @@ impl OrchestrationEngine {
                         &serde_json::to_value(&definition).unwrap_or_default(),
                     ),
                     argument_digest: vitna_tools::canonical_digest(&args),
-                    effect_class: effect_class(&tool_name, is_mutating).to_string(),
+                    effect_class: effect_class(&tool_name, is_mutating, &args).to_string(),
                     raw_arguments_json: serde_json::to_vec(&args).unwrap_or_default(),
                 },
             )?;
         }
 
         // Step 3: Exact-action capability & approval check
-        if is_mutating {
+        let needs_approval = is_mutating
+            || definition.requires_approval
+            || is_remote_browser_verify(&tool_name, &args);
+        if needs_approval {
             let description = format!("{tool_name}: {}", describe_arguments(&args));
             let refused_by_rule = format!(
                 "Action requires human approval: {} (digest: {})",
@@ -545,6 +573,7 @@ impl OrchestrationEngine {
             self.runner.clone(),
         );
         ctx.allow_unsandboxed = unsandboxed_approved;
+        ctx.egress_allowlist = self.egress_allowlist.clone();
 
         if call.is_some() {
             self.set_run_state(run_state::RUNNING_TOOL, &tool_call_id)?;
@@ -651,6 +680,37 @@ impl OrchestrationEngine {
                 sandbox_backend: result.sandbox_backend.clone(),
                 sandbox_enforcement: result.sandbox_enforcement.clone(),
             });
+        }
+
+        // Step 5b: Record every brokered `net:http_fetch` egress call in the
+        // append-only hash-chained event store, receipt, and evidence list.
+        for egress in &result.egress_calls {
+            self.record_event(
+                crate::audit::EGRESS_CALL,
+                &serde_json::json!({
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "target_domain": egress.target_domain,
+                    "method": egress.method,
+                    "redacted_url": egress.redacted_url,
+                    "request_sha256": egress.request_sha256,
+                    "status_code": egress.status_code,
+                    "response_sha256": egress.response_sha256,
+                    "bytes_sent": egress.bytes_sent,
+                    "bytes_received": egress.bytes_received,
+                    "latency_ms": egress.latency_ms,
+                }),
+            )?;
+            self.evidence_items.push(EvidenceItemRecord {
+                evidence_id: format!("ev-egress-{}", self.evidence_items.len() + 1),
+                grade: "broker_observed".to_string(),
+                description: format!(
+                    "Brokered HTTP {} {} -> {} ({} bytes)",
+                    egress.method, egress.redacted_url, egress.status_code, egress.bytes_received
+                ),
+                artifact_digest: Some(egress.response_sha256.clone()),
+            });
+            self.egress_calls.push(egress.clone());
         }
 
         // Record turn in history
@@ -843,6 +903,7 @@ impl OrchestrationEngine {
                 diff_digest,
             },
             runner_execution_statements: self.runner_statements.clone(),
+            egress_calls: self.egress_calls.clone(),
             child_receipt_roots: Vec::new(),
             device_public_key: None,
             mandate_provenance: None,

@@ -62,6 +62,19 @@ pub struct RunnerExecutionStatementRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EgressCallRecord {
+    pub target_domain: String,
+    pub method: String,
+    pub redacted_url: String,
+    pub request_sha256: String,
+    pub status_code: u16,
+    pub response_sha256: String,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub latency_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VitnaRunReceiptV1 {
     pub schema_version: String,
     pub run_id: String,
@@ -75,6 +88,10 @@ pub struct VitnaRunReceiptV1 {
     pub evidence_items: Vec<EvidenceItemRecord>,
     pub changeset: ChangeSetRecord,
     pub runner_execution_statements: Vec<RunnerExecutionStatementRecord>,
+    /// Brokered `net:http_fetch` egress records observed during this run.
+    /// Omitted when empty so legacy receipts produce identical canonical bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub egress_calls: Vec<EgressCallRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub child_receipt_roots: Vec<String>,
     /// Hex-encoded 32-byte Ed25519 verifying key that signed this receipt.
@@ -93,7 +110,7 @@ pub struct VitnaRunReceiptV1 {
 }
 
 impl VitnaRunReceiptV1 {
-    /// Aggregates child agent evidence and event roots into this parent receipt.
+    /// Aggregates child agent evidence, egress calls, and event roots into this parent receipt.
     pub fn aggregate_child_receipt(&mut self, child_receipt: &VitnaRunReceiptV1) {
         if !child_receipt.event_hash_chain_root.is_empty() {
             self.child_receipt_roots.push(child_receipt.event_hash_chain_root.clone());
@@ -102,6 +119,9 @@ impl VitnaRunReceiptV1 {
             if !self.evidence_items.iter().any(|e| e.evidence_id == item.evidence_id) {
                 self.evidence_items.push(item.clone());
             }
+        }
+        for call in &child_receipt.egress_calls {
+            self.egress_calls.push(call.clone());
         }
     }
     /// Computes canonical JSON representation (RFC 8785 discipline: deterministic key ordering, compact whitespace).
@@ -231,6 +251,7 @@ mod tests {
                 sandbox_backend: None,
                 sandbox_enforcement: None,
             }],
+            egress_calls: Vec::new(),
             child_receipt_roots: Vec::new(),
             device_public_key: None,
             mandate_provenance: None,
@@ -283,6 +304,7 @@ mod tests {
                 diff_digest: "diff-mandated".to_string(),
             },
             runner_execution_statements: Vec::new(),
+            egress_calls: Vec::new(),
             child_receipt_roots: Vec::new(),
             device_public_key: None,
             mandate_provenance: Some(MandateProvenanceRecord {

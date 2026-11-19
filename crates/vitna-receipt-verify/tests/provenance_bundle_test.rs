@@ -43,8 +43,10 @@ fn signed_receipt_with_policy_digest(policy_digest: Option<String>) -> (VitnaRun
             diff_digest: "diff-bundle".to_string(),
         },
         runner_execution_statements: Vec::new(),
+        egress_calls: Vec::new(),
         child_receipt_roots: Vec::new(),
         device_public_key: None,
+        mandate_provenance: None,
         device_signature: String::new(),
     };
     receipt.sign(&key).expect("sign receipt");

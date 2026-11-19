@@ -13,7 +13,9 @@ vitna-protocol.workspace = true
 vitna-runner.workspace = true
 vitna-git-workspaces.workspace = true
 vitna-policy.workspace = true
+vitna-receipts.workspace = true
 vitna-sandbox.workspace = true
+reqwest.workspace = true
 sha2.workspace = true
 hex.workspace = true
 

@@ -66,6 +66,10 @@ struct Args {
     /// Attach a local stdio MCP server (`<name>=<program> [args...]`). Repeatable.
     #[arg(long)]
     mcp_stdio: Vec<String>,
+
+    /// Allowlist a destination host or `*.domain.tld` for brokered `net:http_fetch`. Repeatable.
+    #[arg(long = "allow-egress")]
+    allow_egress: Vec<String>,
 }
 
 #[tokio::main]
@@ -85,7 +89,8 @@ async fn run() -> Result<(), String> {
     let launch = Launch::resolve(args.endpoint, args.store)?
         .with_runtime(args.runtime_url, args.lane)?
         .with_direct_provider(args.provider, args.model, args.base_url)?
-        .with_mcp_servers(args.mcp_http, args.mcp_stdio)?;
+        .with_mcp_servers(args.mcp_http, args.mcp_stdio)?
+        .with_egress_allowlist(args.allow_egress)?;
 
     let announce = launch.endpoint.clone();
     launch::run(&launch, move || {

@@ -63,6 +63,9 @@ pub struct DaemonServer {
     pub pending_changesets: Arc<Mutex<HashMap<String, crate::changesets::StagedChangeSet>>>,
     /// Attached external MCP tool bridges injected into every turn's registry.
     pub mcp_tools: Arc<Mutex<Vec<Arc<dyn vitna_tools::Tool>>>>,
+    /// Operator-configured destination hosts permitted for brokered
+    /// `net:http_fetch` tool calls (`http_fetch` and remote `browser_verify`).
+    pub egress_allowlist: Vec<String>,
 }
 
 impl DaemonServer {
@@ -146,7 +149,13 @@ impl DaemonServer {
             terminals: Arc::new(Mutex::new(HashMap::new())),
             pending_changesets: Arc::new(Mutex::new(HashMap::new())),
             mcp_tools: Arc::new(Mutex::new(Vec::new())),
+            egress_allowlist: Vec::new(),
         }
+    }
+
+    pub fn with_egress_allowlist(mut self, allowlist: Vec<String>) -> Self {
+        self.egress_allowlist = allowlist;
+        self
     }
 
     pub fn telemetry(&self) -> Arc<TelemetryCollector> {

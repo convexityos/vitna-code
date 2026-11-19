@@ -56,6 +56,10 @@ pub const MODEL_REQUESTED: &str = "vitna.audit.v1.ModelRequested";
 /// how many tools it asked for, and its usage.
 pub const MODEL_RESPONDED: &str = "vitna.audit.v1.ModelResponded";
 
+/// A brokered `net:http_fetch` network request executed through `EgressBroker`,
+/// carrying destination domain, redacted URL, HTTP status, and SHA-256 digests.
+pub const EGRESS_CALL: &str = "vitna.audit.v1.EgressCall";
+
 /// Every audit name, so a test can check the set rather than a list someone
 /// remembered to update.
 pub const ALL: &[&str] = &[
@@ -66,6 +70,7 @@ pub const ALL: &[&str] = &[
     APPROVAL_REJECTED,
     MODEL_REQUESTED,
     MODEL_RESPONDED,
+    EGRESS_CALL,
 ];
 
 /// Whether `type_url` is one of this engine's own names.
