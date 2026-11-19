@@ -446,7 +446,7 @@ fn open_nul_stdin() -> Result<OwnedHandle, String> {
 
 fn build_unicode_env_block(env: &[(String, String)]) -> Vec<u16> {
     let mut sorted = env.to_vec();
-    sorted.sort_by(|a, b| a.0.to_ascii_uppercase().cmp(&b.0.to_ascii_uppercase()));
+    sorted.sort_by_key(|a| a.0.to_ascii_uppercase());
     let mut block: Vec<u16> = Vec::new();
     for (k, v) in sorted {
         block.extend(OsStr::new(&k).encode_wide());
