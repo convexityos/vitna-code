@@ -458,8 +458,8 @@ async fn a_declared_but_unimplemented_command_says_so() {
 
     send(
         &mut stream,
-        // AttachTerminal rather than SteerRun, which this daemon now serves.
-        type_url::command::ATTACH_TERMINAL,
+        // ApplyChangeSet rather than AttachTerminal, which this daemon now serves.
+        type_url::command::APPLY_CHANGE_SET,
         &fx.session_id,
         &serde_json::json!({}),
     )

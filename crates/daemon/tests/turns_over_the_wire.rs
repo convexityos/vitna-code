@@ -20,8 +20,9 @@ use tokio::io::{
 };
 use vitna_daemon::{ipc, DaemonServer, ModelRoute};
 use vitna_protocol::messages::{
-    AgentCompleted, AgentSpawned, ApprovalRequested, ErrorCode, ErrorResponse, HandshakeRequest,
-    RunStateChanged, SessionCreated, SpawnChild, ToolFinished,
+    AgentCompleted, AgentSpawned, ApprovalRequested, AttachTerminal, Diagnostic, ErrorCode,
+    ErrorResponse, HandshakeRequest, RunStateChanged, SessionCreated, SpawnChild, ToolFinished,
+    ToolOutput,
 };
 use vitna_protocol::{type_url, ProtocolEnvelope, PROTOCOL_VERSION_MAJOR};
 use vitna_providers::{
@@ -974,6 +975,152 @@ async fn spawn_child_enforces_nesting_depth_and_validates_parent() {
     let err: ErrorResponse = err_frame.payload_as().expect("ErrorResponse");
     assert_eq!(err.code, ErrorCode::PolicyDenied);
     assert!(err.message.contains("goal"), "{}", err.message);
+
+    let _ = std::fs::remove_dir_all(&wire.root);
+}
+
+#[tokio::test]
+async fn attach_terminal_spawns_pty_streams_output_and_resizes_over_the_wire() {
+    let mut wire = connect("attach_pty", None, None).await;
+    let session = wire.open_session().await;
+
+    // 1. Attach an 80x24 PTY to the session.
+    wire.send(
+        type_url::command::ATTACH_TERMINAL,
+        &session,
+        &AttachTerminal {
+            session_id: session.clone(),
+            terminal_columns: 80,
+            terminal_rows: 24,
+        },
+    )
+    .await;
+
+    let (attached_frame, _) = wire
+        .until(|f| {
+            f.type_url == type_url::event::DIAGNOSTIC
+                && f.payload_as::<Diagnostic>()
+                    .is_ok_and(|d| d.code == "terminal_attached")
+        })
+        .await;
+    let attached: Diagnostic = attached_frame.payload_as().expect("Diagnostic");
+    let details: serde_json::Value =
+        serde_json::from_str(&attached.details).expect("details JSON");
+    let terminal_id = details["terminal_id"]
+        .as_str()
+        .expect("terminal_id")
+        .to_string();
+    assert_eq!(details["columns"], 80);
+    assert_eq!(details["rows"], 24);
+
+    // 2. Write a command into the attached PTY and assert sanitized ToolOutput arrives over IPC.
+    #[cfg(windows)]
+    let cmd_bytes = b"echo vitna_wire_pty_ok\r\n";
+    #[cfg(not(windows))]
+    let cmd_bytes = b"echo vitna_wire_pty_ok\n";
+    wire.daemon
+        .write_terminal_input(&session, cmd_bytes)
+        .expect("write PTY input");
+
+    let mut combined = String::new();
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while tokio::time::Instant::now() < deadline && !combined.contains("vitna_wire_pty_ok") {
+        let frame = wire.recv().await;
+        if frame.type_url == type_url::event::TOOL_OUTPUT {
+            let out: ToolOutput = frame.payload_as().expect("ToolOutput");
+            assert_eq!(out.tool_call_id, terminal_id);
+            assert_eq!(out.stream, "stdout");
+            combined.push_str(&String::from_utf8_lossy(&out.chunk));
+        }
+    }
+    assert!(
+        combined.contains("vitna_wire_pty_ok"),
+        "expected PTY output over wire, got: {combined:?}"
+    );
+
+    // 3. Re-sending AttachTerminal on the same session resizes in place without duplicating the PTY.
+    wire.send(
+        type_url::command::ATTACH_TERMINAL,
+        &session,
+        &AttachTerminal {
+            session_id: session.clone(),
+            terminal_columns: 120,
+            terminal_rows: 40,
+        },
+    )
+    .await;
+
+    let (resized_frame, _) = wire
+        .until(|f| {
+            f.type_url == type_url::event::DIAGNOSTIC
+                && f.payload_as::<Diagnostic>()
+                    .is_ok_and(|d| d.code == "terminal_resized")
+        })
+        .await;
+    let resized: Diagnostic = resized_frame.payload_as().expect("Diagnostic");
+    let resized_details: serde_json::Value =
+        serde_json::from_str(&resized.details).expect("details JSON");
+    assert_eq!(resized_details["terminal_id"], terminal_id);
+    assert_eq!(resized_details["columns"], 120);
+    assert_eq!(resized_details["rows"], 40);
+
+    // 4. Detach cleanly terminates the PTY and emits terminal_closed.
+    assert!(wire.daemon.detach_terminal(&session));
+    let (closed_frame, _) = wire
+        .until(|f| {
+            f.type_url == type_url::event::DIAGNOSTIC
+                && f.payload_as::<Diagnostic>()
+                    .is_ok_and(|d| d.code == "terminal_closed")
+        })
+        .await;
+    let closed: Diagnostic = closed_frame.payload_as().expect("Diagnostic");
+    let closed_details: serde_json::Value =
+        serde_json::from_str(&closed.details).expect("details JSON");
+    assert_eq!(closed_details["terminal_id"], terminal_id);
+
+    let _ = std::fs::remove_dir_all(&wire.root);
+}
+
+#[tokio::test]
+async fn attach_terminal_rejects_unknown_session_and_oversized_dimensions() {
+    let mut wire = connect("attach_err", None, None).await;
+    let session = wire.open_session().await;
+
+    // Unknown session -> ErrorCode::UnknownCommand.
+    wire.send(
+        type_url::command::ATTACH_TERMINAL,
+        "sess-missing",
+        &AttachTerminal {
+            session_id: "sess-missing".into(),
+            terminal_columns: 80,
+            terminal_rows: 24,
+        },
+    )
+    .await;
+    let (err_frame, _) = wire
+        .until(|f| f.type_url == type_url::envelope::ERROR_RESPONSE)
+        .await;
+    let err: ErrorResponse = err_frame.payload_as().expect("ErrorResponse");
+    assert_eq!(err.code, ErrorCode::UnknownCommand);
+    assert!(err.message.contains("no session"), "{}", err.message);
+
+    // Oversized dimensions -> ErrorCode::InvalidFrame.
+    wire.send(
+        type_url::command::ATTACH_TERMINAL,
+        &session,
+        &AttachTerminal {
+            session_id: session.clone(),
+            terminal_columns: 5000,
+            terminal_rows: 24,
+        },
+    )
+    .await;
+    let (err_frame, _) = wire
+        .until(|f| f.type_url == type_url::envelope::ERROR_RESPONSE)
+        .await;
+    let err: ErrorResponse = err_frame.payload_as().expect("ErrorResponse");
+    assert_eq!(err.code, ErrorCode::InvalidFrame);
+    assert!(err.message.contains("maximum"), "{}", err.message);
 
     let _ = std::fs::remove_dir_all(&wire.root);
 }

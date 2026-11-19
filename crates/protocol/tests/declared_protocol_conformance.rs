@@ -295,6 +295,7 @@ fn every_implemented_message_carries_exactly_its_declared_fields() {
     assert_fields_match::<ApproveAction>("commands.proto", "ApproveAction");
     assert_fields_match::<RejectAction>("commands.proto", "RejectAction");
     assert_fields_match::<SpawnChild>("commands.proto", "SpawnChild");
+    assert_fields_match::<AttachTerminal>("commands.proto", "AttachTerminal");
     assert_fields_match::<SessionCreated>("envelope.proto", "SessionCreated");
     assert_fields_match::<MessageDelta>("events.proto", "MessageDelta");
     assert_fields_match::<ToolProposed>("events.proto", "ToolProposed");

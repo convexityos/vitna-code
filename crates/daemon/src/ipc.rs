@@ -28,6 +28,7 @@
 //! got the order wrong learns why rather than seeing a closed socket and
 //! guessing.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -35,16 +36,17 @@ use tokio::sync::mpsc;
 
 use vitna_orchestration::ApprovalDecision;
 use vitna_protocol::messages::{
-    ApproveAction, CancelRun, CreateSession, ErrorCode, ErrorResponse, HandshakeRequest,
-    HandshakeResponse, PauseRun, RejectAction, ResumeRun, SessionCreated, SpawnChild, SteerRun,
-    SubmitTurn, SubscribeEvents,
+    ApproveAction, AttachTerminal, CancelRun, CreateSession, Diagnostic, ErrorCode, ErrorResponse,
+    HandshakeRequest, HandshakeResponse, PauseRun, RejectAction, ResumeRun, SessionCreated,
+    SpawnChild, SteerRun, SubmitTurn, SubscribeEvents, ToolOutput,
 };
 use vitna_protocol::{
     type_url, ProtocolEnvelope, MAX_FRAME_SIZE_BYTES, PROTOCOL_VERSION_MAJOR,
     PROTOCOL_VERSION_MINOR,
 };
+use vitna_runner::PtyEvent;
 
-use crate::{AnswerRefused, DaemonServer};
+use crate::{AnswerRefused, DaemonServer, TerminalError};
 
 /// How many frames may wait for the write half before a producer blocks.
 ///
@@ -319,6 +321,60 @@ async fn stream_events(
     }
 }
 
+/// Streams sanitized PTY output chunks for an attached terminal as declared
+/// `ToolOutput` control frames until the PTY closes or the client disconnects.
+async fn stream_terminal_output(
+    out: Outbound,
+    session_id: String,
+    terminal_id: String,
+    mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
+) {
+    loop {
+        match rx.recv().await {
+            Ok(PtyEvent::Output(chunk)) => {
+                let body = ToolOutput {
+                    tool_call_id: terminal_id.clone(),
+                    stream: "stdout".to_string(),
+                    chunk,
+                };
+                let Ok(envelope) = ProtocolEnvelope::carrying(
+                    type_url::event::TOOL_OUTPUT,
+                    session_id.clone(),
+                    String::new(),
+                    CONTROL_SEQUENCE,
+                    String::new(),
+                    &body,
+                ) else {
+                    return;
+                };
+                if out.send(envelope).await.is_err() {
+                    return;
+                }
+            }
+            Ok(PtyEvent::Closed) | Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                let closed = Diagnostic {
+                    level: "info".to_string(),
+                    code: "terminal_closed".to_string(),
+                    message: format!("terminal {terminal_id} closed"),
+                    details: serde_json::json!({ "terminal_id": terminal_id }).to_string(),
+                };
+                if let Ok(envelope) = ProtocolEnvelope::carrying(
+                    type_url::event::DIAGNOSTIC,
+                    session_id,
+                    String::new(),
+                    CONTROL_SEQUENCE,
+                    String::new(),
+                    &closed,
+                ) {
+                    let _ = out.send(envelope).await;
+                }
+                return;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+        }
+    }
+}
+
 /// Serves one connection until the client hangs up.
 pub async fn serve_connection<S>(stream: S, daemon: Arc<DaemonServer>) -> std::io::Result<()>
 where
@@ -336,6 +392,7 @@ where
     });
 
     let mut shook_hands = false;
+    let mut attached_terminals: HashSet<String> = HashSet::new();
 
     while let Some(request) = read_frame(&mut reader).await? {
         let sent = match request.type_url.as_str() {
@@ -605,6 +662,90 @@ where
                     Ok(_child_run_id) => Ok(()),
                     Err(why) => {
                         out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::ATTACH_TERMINAL => {
+                let mut body: AttachTerminal = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                if body.session_id.is_empty() {
+                    body.session_id = request.session_id.clone();
+                }
+                match daemon.attach_terminal(&body) {
+                    Ok(attachment) => {
+                        let rx = attachment.pty.subscribe_output();
+                        let code = if attachment.created {
+                            "terminal_attached"
+                        } else {
+                            "terminal_resized"
+                        };
+                        let diag = Diagnostic {
+                            level: "info".to_string(),
+                            code: code.to_string(),
+                            message: format!(
+                                "{} {} ({}x{})",
+                                if attachment.created {
+                                    "attached terminal"
+                                } else {
+                                    "resized terminal"
+                                },
+                                attachment.terminal_id,
+                                attachment.columns,
+                                attachment.rows
+                            ),
+                            details: serde_json::json!({
+                                "terminal_id": attachment.terminal_id,
+                                "columns": attachment.columns,
+                                "rows": attachment.rows,
+                                "cwd": attachment.cwd.to_string_lossy(),
+                            })
+                            .to_string(),
+                        };
+                        let reply_result = match ProtocolEnvelope::carrying(
+                            type_url::event::DIAGNOSTIC,
+                            attachment.session_id.clone(),
+                            String::new(),
+                            CONTROL_SEQUENCE,
+                            request.idempotency_key.clone(),
+                            &diag,
+                        ) {
+                            Ok(envelope) => out.send(envelope).await,
+                            Err(e) => {
+                                out.send(error_for(&request, ErrorCode::Internal, e.to_string()))
+                                    .await
+                            }
+                        };
+                        if reply_result.is_ok()
+                            && attached_terminals.insert(attachment.terminal_id.clone())
+                        {
+                            tokio::spawn(stream_terminal_output(
+                                out.clone(),
+                                attachment.session_id,
+                                attachment.terminal_id,
+                                rx,
+                            ));
+                        }
+                        reply_result
+                    }
+                    Err(TerminalError::UnknownSession(msg)) => {
+                        out.send(error_for(&request, ErrorCode::UnknownCommand, msg))
+                            .await
+                    }
+                    Err(TerminalError::InvalidDimensions(msg)) => {
+                        out.send(error_for(&request, ErrorCode::InvalidFrame, msg))
+                            .await
+                    }
+                    Err(TerminalError::SpawnFailed(msg)) => {
+                        out.send(error_for(&request, ErrorCode::Internal, msg))
                             .await
                     }
                 }

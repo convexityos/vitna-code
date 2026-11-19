@@ -7,11 +7,13 @@
 
 pub mod fake;
 pub mod journal;
+pub mod pty;
 pub mod tree;
 
 use async_trait::async_trait;
 pub use fake::{FakeRunner, FaultInjectionMode, RunnerFault};
 pub use journal::{ActionJournal, ActionState, JournalEntry};
+pub use pty::{PtyConfig, PtyEvent, PtySession};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};

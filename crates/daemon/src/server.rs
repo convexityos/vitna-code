@@ -57,6 +57,8 @@ pub struct DaemonServer {
     pub run_depths: Arc<Mutex<HashMap<String, u32>>>,
     /// Local-only egress and metric collector (zero network I/O).
     pub telemetry: Arc<TelemetryCollector>,
+    /// Active interactive PTY sessions keyed by session_id.
+    pub terminals: Arc<Mutex<HashMap<String, Arc<vitna_runner::PtySession>>>>,
 }
 
 impl DaemonServer {
@@ -127,6 +129,7 @@ impl DaemonServer {
             active_controls: Arc::new(Mutex::new(HashMap::new())),
             run_depths: Arc::new(Mutex::new(HashMap::new())),
             telemetry: Arc::new(TelemetryCollector::new()),
+            terminals: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

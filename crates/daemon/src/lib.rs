@@ -4,9 +4,11 @@ pub mod ipc;
 pub mod key;
 pub mod launch;
 pub mod server;
+pub mod terminal;
 pub mod turns;
 
 pub use server::{DaemonServer, SessionInfo};
+pub use terminal::{TerminalAttachment, TerminalError};
 pub use turns::{AnswerRefused, ModelRoute};
 
 #[cfg(test)]

@@ -457,6 +457,17 @@ pub struct AgentCompleted {
     pub result_artifact_digest: String,
 }
 
+/// `commands.proto`: attach or resize an interactive PTY terminal bound to a session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachTerminal {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub terminal_columns: u32,
+    #[serde(default)]
+    pub terminal_rows: u32,
+}
+
 /// `events.proto`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
