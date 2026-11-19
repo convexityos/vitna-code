@@ -87,6 +87,10 @@ pub struct OrchestrationEngine {
     pub routing_reason: String,
     /// Cooperative cancel/steer/pause signals for an active turn.
     pub control: Option<Arc<RunControl>>,
+    /// Optional Trust Level 5 untrusted workspace skill instructions block.
+    pub skill_instructions: Option<String>,
+    /// Names of verified workspace skills included in this run's context.
+    pub loaded_skills: Vec<String>,
 }
 
 /// How long a person has to answer an approval before it is refused.
@@ -172,6 +176,8 @@ impl OrchestrationEngine {
             completion_state: "completed_with_evidence".to_string(),
             routing_reason: "pinned_profile".to_string(),
             control: None,
+            skill_instructions: None,
+            loaded_skills: Vec::new(),
         }
     }
 
@@ -185,6 +191,29 @@ impl OrchestrationEngine {
     /// Attaches cooperative run-control signals (cancel, steer, pause, resume).
     pub fn with_control(mut self, control: Arc<RunControl>) -> Self {
         self.control = Some(control);
+        self
+    }
+
+    /// Registers additional brokered tools (such as external MCP tool bridges)
+    /// without ever allowing an external tool to shadow an existing built-in tool.
+    pub fn with_extra_tools(mut self, tools: Vec<Arc<dyn vitna_tools::Tool>>) -> Self {
+        for tool in tools {
+            if self.tool_registry.get(tool.name()).is_none() {
+                self.tool_registry.register(tool);
+            }
+        }
+        self
+    }
+
+    /// Attaches verified Trust Level 5 workspace skill instructions rendered as
+    /// untrusted repository context.
+    pub fn with_skill_instructions(
+        mut self,
+        block: String,
+        skill_names: Vec<String>,
+    ) -> Self {
+        self.skill_instructions = Some(block);
+        self.loaded_skills = skill_names;
         self
     }
 

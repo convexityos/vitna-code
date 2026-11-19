@@ -256,11 +256,18 @@ impl DaemonServer {
             )
             .continuing_at(next_sequence)
             .with_control(Arc::clone(&control))
+            .with_extra_tools(self.mcp_tools())
             .with_approver(Arc::new(WireApprover {
                 pending: self.approvals.clone(),
                 run_id: run_id.clone(),
                 control: Arc::clone(&control),
             }));
+            if let Ok(skills) = vitna_skills::SkillRegistry::discover_in_workspace(&session.workspace_root) {
+                if let Some(block) = skills.render_untrusted_prompt_block() {
+                    let names = skills.skills().iter().map(|s| s.name.clone()).collect();
+                    engine = engine.with_skill_instructions(block, names);
+                }
+            }
             engine.routing_reason = route.routing_reason.clone();
             engine.approval_timeout_ms = self.approval_timeout_ms;
             engine.record_event(
@@ -381,11 +388,20 @@ impl DaemonServer {
         )
         .continuing_at(next_sequence)
         .with_control(Arc::clone(&control))
+        .with_extra_tools(self.mcp_tools())
         .with_approver(Arc::new(WireApprover {
             pending: self.approvals.clone(),
             run_id: child_run_id.clone(),
             control: Arc::clone(&control),
         }));
+        if let Ok(skills) =
+            vitna_skills::SkillRegistry::discover_in_workspace(&isolated.agent_workspace_root)
+        {
+            if let Some(block) = skills.render_untrusted_prompt_block() {
+                let names = skills.skills().iter().map(|s| s.name.clone()).collect();
+                engine = engine.with_skill_instructions(block, names);
+            }
+        }
         engine.routing_reason = route.routing_reason.clone();
         engine.approval_timeout_ms = self.approval_timeout_ms;
 

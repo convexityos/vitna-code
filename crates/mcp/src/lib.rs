@@ -5,7 +5,7 @@ pub mod client;
 pub mod protocol;
 pub mod transport;
 
-pub use broker::McpToolBridge;
+pub use broker::{discover_and_bridge_tools, namespaced_tool_name, McpToolBridge};
 pub use client::McpClient;
 pub use protocol::{
     JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpContentItem,

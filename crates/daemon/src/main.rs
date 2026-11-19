@@ -45,6 +45,27 @@ struct Args {
     /// The lane every turn asks the runtime for, such as vitna/code.
     #[arg(long)]
     lane: Option<String>,
+
+    /// Direct customer-held provider (`anthropic` or `openai`) using an API key
+    /// stored in the OS keychain (`vitna auth set <provider>`). Requires --model.
+    #[arg(long)]
+    provider: Option<String>,
+
+    /// Model SKU for --provider (for example `claude-sonnet-4-20250514` or `gpt-4o`).
+    #[arg(long)]
+    model: Option<String>,
+
+    /// Optional custom HTTP/HTTPS API endpoint override for --provider.
+    #[arg(long)]
+    base_url: Option<String>,
+
+    /// Attach a Streamable HTTP MCP server (`<name>=<url>`). Repeatable.
+    #[arg(long)]
+    mcp_http: Vec<String>,
+
+    /// Attach a local stdio MCP server (`<name>=<program> [args...]`). Repeatable.
+    #[arg(long)]
+    mcp_stdio: Vec<String>,
 }
 
 #[tokio::main]
@@ -61,8 +82,10 @@ async fn main() {
 
 async fn run() -> Result<(), String> {
     let args = Args::parse();
-    let launch =
-        Launch::resolve(args.endpoint, args.store)?.with_runtime(args.runtime_url, args.lane)?;
+    let launch = Launch::resolve(args.endpoint, args.store)?
+        .with_runtime(args.runtime_url, args.lane)?
+        .with_direct_provider(args.provider, args.model, args.base_url)?
+        .with_mcp_servers(args.mcp_http, args.mcp_stdio)?;
 
     let announce = launch.endpoint.clone();
     launch::run(&launch, move || {
