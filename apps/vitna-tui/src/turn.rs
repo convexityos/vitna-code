@@ -2,8 +2,8 @@
 //! each tool call with what it printed and what it asked.
 //!
 //! Nothing fills this yet, and the terminal says so rather than pretending.
-//! vitna-coded answers the handshake and streams a session's events, and it
-//! serves no `SubmitTurn`, so there is no way to start a turn over the wire.
+//! vitna-coded serves `SubmitTurn` since 2026-10-19 (ADR-0007), and this
+//! terminal does not send it yet, so no turn reaches these shapes.
 //! The client this replaces invented one: a canned reply, a diff of a file
 //! nobody wrote, and a receipt path for a receipt nobody signed. The shapes
 //! below follow the declared events (`MessageDelta`, `ToolProposed`,
@@ -42,6 +42,7 @@ pub enum Phase {
 
 #[derive(Debug, Clone)]
 pub struct Tool {
+    pub call_id: String,
     pub name: String,
     pub target: Option<String>,
     pub effect: String,
@@ -138,6 +139,7 @@ pub const CHOICES: [Choice; 5] = [
 /// because the digest is what gets approved.
 #[derive(Debug, Clone)]
 pub struct Approval {
+    pub approval_id: String,
     pub description: String,
     pub digest: String,
     pub runs_as: String,
@@ -205,6 +207,7 @@ mod tests {
 
     fn approval(opened: Instant) -> Approval {
         Approval {
+            approval_id: "apr-test".into(),
             description: "Write 12 lines to src/lib.rs".into(),
             digest: "ab".repeat(32),
             runs_as: String::new(),

@@ -458,7 +458,10 @@ async fn a_declared_but_unimplemented_command_says_so() {
 
     send(
         &mut stream,
-        type_url::command::APPROVE_ACTION,
+        // All 12 commands in commands.proto are now served; send a declared
+        // event type_url in command position to verify declared-but-unserved
+        // messages are still distinguished from undeclared typos.
+        type_url::event::PLAN_CHANGED,
         &fx.session_id,
         &serde_json::json!({}),
     )

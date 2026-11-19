@@ -249,6 +249,7 @@ pub(crate) fn receipt(
         },
         runner_execution_statements: statements,
         child_receipt_roots: Vec::new(),
+        device_public_key: None,
         device_signature: String::new(),
     };
     receipt

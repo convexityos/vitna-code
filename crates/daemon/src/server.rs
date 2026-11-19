@@ -1,13 +1,24 @@
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use vitna_orchestration::{OrchestrationConfig, OrchestrationEngine, StepType};
+use vitna_orchestration::{
+    OrchestrationConfig, OrchestrationEngine, RunControl, StepType, APPROVAL_TIMEOUT_MS,
+};
+use vitna_protocol::messages::MessageDelta;
+use vitna_protocol::type_url;
+use vitna_providers::ProviderMessage;
+
+use crate::turns::{ModelRoute, PendingApprovals};
 use vitna_receipts::VitnaRunReceiptV1;
 use vitna_runner::{ProcessRunner, Runner};
 use vitna_store::EventStore;
+use vitna_telemetry::TelemetryCollector;
+
+static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
@@ -19,12 +30,6 @@ pub struct SessionInfo {
     /// entry of `runs`; see [`DaemonServer::register_run`].
     pub latest_run_id: Option<String>,
     /// Every run in this session, in the order they started.
-    ///
-    /// The event store indexes events by run, and the table that would map a
-    /// session to its runs is never written, so a subscriber following a
-    /// session reads its runs from here. Knowing only the latest run was not
-    /// enough: a late subscriber was replayed that run alone, and a session's
-    /// earlier runs were on disk and unreachable.
     #[serde(default)]
     pub runs: Vec<String>,
 }
@@ -35,16 +40,114 @@ pub struct DaemonServer {
     pub sessions: Arc<Mutex<HashMap<String, SessionInfo>>>,
     pub runner: Arc<dyn Runner>,
     pub signing_key: Arc<SigningKey>,
+    /// The model a turn reaches. `None` refuses `SubmitTurn`.
+    pub route: Option<ModelRoute>,
+    /// Approvals waiting for an operator, by approval id.
+    pub approvals: PendingApprovals,
+    /// How long an approval waits before it is refused.
+    pub approval_timeout_ms: u64,
+    /// Each session's conversation so far: every turn's prompt and the
+    /// model's last message. Rebuilt from the durable event store on startup.
+    pub histories: Arc<Mutex<HashMap<String, Vec<ProviderMessage>>>>,
+    /// Sessions with a turn running now.
+    pub active_turns: Arc<Mutex<HashSet<String>>>,
+    /// Cooperative cancel/steer/pause handles for currently running runs, by run_id.
+    pub active_controls: Arc<Mutex<HashMap<String, Arc<RunControl>>>>,
+    /// Nesting depth of runs (0 for top-level turns, parent_depth + 1 for SpawnChild).
+    pub run_depths: Arc<Mutex<HashMap<String, u32>>>,
+    /// Local-only egress and metric collector (zero network I/O).
+    pub telemetry: Arc<TelemetryCollector>,
+    /// Active interactive PTY sessions keyed by session_id.
+    pub terminals: Arc<Mutex<HashMap<String, Arc<vitna_runner::PtySession>>>>,
+    /// Staged isolated child-workspace changesets awaiting ApplyChangeSet.
+    pub pending_changesets: Arc<Mutex<HashMap<String, crate::changesets::StagedChangeSet>>>,
 }
 
 impl DaemonServer {
     pub fn new(store: EventStore, runner: Arc<dyn Runner>, signing_key: SigningKey) -> Self {
+        let mut restored_sessions = HashMap::new();
+        let mut restored_histories: HashMap<String, Vec<ProviderMessage>> = HashMap::new();
+
+        if let Ok(stored) = store.load_sessions() {
+            for s in stored {
+                let mut history = Vec::new();
+                for run_id in &s.runs {
+                    if let Ok(events) = store.get_events(run_id, 0) {
+                        let mut prompt: Option<String> = None;
+                        let mut last_model_message_id: Option<String> = None;
+                        let mut last_model_text: Option<String> = None;
+                        for ev in events {
+                            if ev.type_url == vitna_orchestration::audit::TURN_STARTED {
+                                if let Ok(v) =
+                                    serde_json::from_slice::<serde_json::Value>(&ev.encrypted_payload)
+                                {
+                                    if let Some(p) = v.get("prompt").and_then(|p| p.as_str()) {
+                                        prompt = Some(p.to_string());
+                                    }
+                                }
+                            } else if ev.type_url == type_url::event::MESSAGE_DELTA {
+                                if let Ok(delta) =
+                                    serde_json::from_slice::<MessageDelta>(&ev.encrypted_payload)
+                                {
+                                    if delta.role == "model" && !delta.delta_text.is_empty() {
+                                        if last_model_message_id.as_deref()
+                                            == Some(delta.message_id.as_str())
+                                        {
+                                            if let Some(existing) = last_model_text.as_mut() {
+                                                existing.push_str(&delta.delta_text);
+                                            }
+                                        } else {
+                                            last_model_message_id = Some(delta.message_id);
+                                            last_model_text = Some(delta.delta_text);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if let (Some(user_text), Some(model_text)) = (prompt, last_model_text) {
+                            history.push(ProviderMessage::user(user_text));
+                            history.push(ProviderMessage::assistant(model_text, Vec::new()));
+                        }
+                    }
+                }
+                if !history.is_empty() {
+                    restored_histories.insert(s.session_id.clone(), history);
+                }
+                let latest_run_id = s.runs.last().cloned();
+                restored_sessions.insert(
+                    s.session_id.clone(),
+                    SessionInfo {
+                        session_id: s.session_id,
+                        workspace_root: PathBuf::from(s.workspace_root),
+                        created_at_ms: s.created_at_ms,
+                        status: s.status,
+                        latest_run_id,
+                        runs: s.runs,
+                    },
+                );
+            }
+        }
+
         Self {
             store: Arc::new(Mutex::new(store)),
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+            sessions: Arc::new(Mutex::new(restored_sessions)),
             runner,
             signing_key: Arc::new(signing_key),
+            route: None,
+            approvals: Arc::new(Mutex::new(HashMap::new())),
+            approval_timeout_ms: APPROVAL_TIMEOUT_MS,
+            histories: Arc::new(Mutex::new(restored_histories)),
+            active_turns: Arc::new(Mutex::new(HashSet::new())),
+            active_controls: Arc::new(Mutex::new(HashMap::new())),
+            run_depths: Arc::new(Mutex::new(HashMap::new())),
+            telemetry: Arc::new(TelemetryCollector::new()),
+            terminals: Arc::new(Mutex::new(HashMap::new())),
+            pending_changesets: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn telemetry(&self) -> Arc<TelemetryCollector> {
+        Arc::clone(&self.telemetry)
     }
 
     /// Initializes a daemon server with a persistent SQLite WAL event store and
@@ -88,7 +191,7 @@ impl DaemonServer {
         hex::encode(self.signing_key.verifying_key().to_bytes())
     }
 
-    /// Creates a new workspace-bound session.
+    /// Creates a new workspace-bound session and persists it to the event store.
     pub fn create_session<P: AsRef<Path>>(&self, workspace_root: P) -> Result<SessionInfo, String> {
         let ws = workspace_root.as_ref().to_path_buf();
         if !ws.exists() {
@@ -100,16 +203,29 @@ impl DaemonServer {
             .unwrap_or_default()
             .as_millis() as u64;
 
-        let session_id = format!("sess-{}", now_ms);
+        let seq = SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let session_id = format!("sess-{now_ms}-{seq}");
 
         let info = SessionInfo {
             session_id: session_id.clone(),
-            workspace_root: ws,
+            workspace_root: ws.clone(),
             created_at_ms: now_ms,
             status: "active".to_string(),
             latest_run_id: None,
             runs: Vec::new(),
         };
+
+        {
+            let store = self.store.lock().map_err(|e| e.to_string())?;
+            store
+                .save_session(
+                    &session_id,
+                    &ws.to_string_lossy(),
+                    now_ms,
+                    &info.status,
+                )
+                .map_err(|e| format!("Failed to persist session: {e}"))?;
+        }
 
         let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         sessions.insert(session_id, info.clone());
@@ -123,24 +239,23 @@ impl DaemonServer {
         sessions.get(session_id).cloned()
     }
 
-    /// Records that `run_id` belongs to `session_id`, as the session's latest.
-    ///
-    /// Called when a run STARTS, before it records anything. A subscriber
-    /// decides whether a live event belongs to the session it is following by
-    /// asking this list, so a run registered only once it had finished, which
-    /// is how this used to work, streamed nothing live while it ran: its
-    /// events arrived before the session knew the run was its own.
-    ///
-    /// The one way to register a run, for the daemon and for tests alike. A
-    /// test fixture that named a run by setting a field directly, in an order
-    /// production never used, is what kept that defect invisible.
+    /// Records that `run_id` belongs to `session_id`, durably and in memory, as
+    /// the session's latest.
     pub fn register_run(&self, session_id: &str, run_id: &str) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
-        let session = sessions
-            .get_mut(session_id)
-            .ok_or_else(|| format!("Session not found: {session_id}"))?;
-        session.runs.push(run_id.to_string());
-        session.latest_run_id = Some(run_id.to_string());
+        let ordinal = {
+            let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+            let session = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| format!("Session not found: {session_id}"))?;
+            let ord = session.runs.len() as u64;
+            session.runs.push(run_id.to_string());
+            session.latest_run_id = Some(run_id.to_string());
+            ord
+        };
+        let store = self.store.lock().map_err(|e| e.to_string())?;
+        store
+            .register_session_run(session_id, run_id, ordinal)
+            .map_err(|e| format!("Failed to persist run registration: {e}"))?;
         Ok(())
     }
 
@@ -175,6 +290,15 @@ impl DaemonServer {
         // Newest session first.
         list.sort_by_key(|s| std::cmp::Reverse(s.created_at_ms));
         list
+    }
+
+    /// Finds the session that owns `run_id`, if any.
+    pub fn session_for_run(&self, run_id: &str) -> Option<SessionInfo> {
+        let sessions = self.sessions.lock().ok()?;
+        sessions
+            .values()
+            .find(|s| s.runs.iter().any(|r| r == run_id))
+            .cloned()
     }
 
     /// Executes a durable task run end-to-end within the specified session.
@@ -236,7 +360,7 @@ impl DaemonServer {
 
         // Record initial user task prompt in event store
         engine.record_event(
-            "vitna.v1.TurnStarted",
+            vitna_orchestration::audit::TURN_STARTED,
             &serde_json::json!({
                 "prompt": prompt,
                 "session_id": session_id,

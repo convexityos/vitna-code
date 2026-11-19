@@ -15,9 +15,11 @@
 //! and everything that wants to send, the command dispatcher and every live
 //! subscription, holds a handle to that queue.
 //!
-//! That is also what makes an approval gate possible later. A daemon that can
-//! only answer the frame in front of it cannot ask a question and wait, which
-//! is why the approval path currently aborts a run instead of pausing it.
+//! That is also what makes the approval gate possible. A daemon that can only
+//! answer the frame in front of it cannot ask a question and wait. A turn that
+//! reaches a mutating action announces `ApprovalRequested` on the session's
+//! stream and waits, and `ApproveAction` or `RejectAction` arriving on any
+//! connection answers it (ADR-0007).
 //!
 //! # What a client must do first
 //!
@@ -26,20 +28,25 @@
 //! got the order wrong learns why rather than seeing a closed socket and
 //! guessing.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 
+use vitna_orchestration::ApprovalDecision;
 use vitna_protocol::messages::{
-    ErrorCode, ErrorResponse, HandshakeRequest, HandshakeResponse, SubscribeEvents,
+    ApplyChangeSet, ApproveAction, AttachTerminal, CancelRun, CreateSession, Diagnostic,
+    ErrorCode, ErrorResponse, HandshakeRequest, HandshakeResponse, PauseRun, RejectAction,
+    ResumeRun, SessionCreated, SpawnChild, SteerRun, SubmitTurn, SubscribeEvents, ToolOutput,
 };
 use vitna_protocol::{
     type_url, ProtocolEnvelope, MAX_FRAME_SIZE_BYTES, PROTOCOL_VERSION_MAJOR,
     PROTOCOL_VERSION_MINOR,
 };
+use vitna_runner::PtyEvent;
 
-use crate::DaemonServer;
+use crate::{AnswerRefused, ApplyChangeSetError, DaemonServer, TerminalError};
 
 /// How many frames may wait for the write half before a producer blocks.
 ///
@@ -103,15 +110,25 @@ fn error_for(
     code: ErrorCode,
     message: impl Into<String>,
 ) -> ProtocolEnvelope {
+    // Empty unless the error belongs to a specific action. The client pins an
+    // error to a pending approval through this field and shows anything else
+    // as a diagnostic, so a wrong guess here would attach a refusal to the
+    // wrong decision.
+    error_for_action(request, code, message, "")
+}
+
+/// A refusal that answers one approval, pinned to it by `action_id`.
+fn error_for_action(
+    request: &ProtocolEnvelope,
+    code: ErrorCode,
+    message: impl Into<String>,
+    action_id: &str,
+) -> ProtocolEnvelope {
     let body = ErrorResponse {
         code,
         message: message.into(),
         error_details: String::new(),
-        // Empty unless the error belongs to a specific action. The client
-        // pins an error to a pending approval through this field and shows
-        // anything else as a diagnostic, so a wrong guess here would attach a
-        // refusal to the wrong decision.
-        action_id: String::new(),
+        action_id: action_id.to_string(),
     };
     ProtocolEnvelope::carrying(
         type_url::envelope::ERROR_RESPONSE,
@@ -304,6 +321,60 @@ async fn stream_events(
     }
 }
 
+/// Streams sanitized PTY output chunks for an attached terminal as declared
+/// `ToolOutput` control frames until the PTY closes or the client disconnects.
+async fn stream_terminal_output(
+    out: Outbound,
+    session_id: String,
+    terminal_id: String,
+    mut rx: tokio::sync::broadcast::Receiver<PtyEvent>,
+) {
+    loop {
+        match rx.recv().await {
+            Ok(PtyEvent::Output(chunk)) => {
+                let body = ToolOutput {
+                    tool_call_id: terminal_id.clone(),
+                    stream: "stdout".to_string(),
+                    chunk,
+                };
+                let Ok(envelope) = ProtocolEnvelope::carrying(
+                    type_url::event::TOOL_OUTPUT,
+                    session_id.clone(),
+                    String::new(),
+                    CONTROL_SEQUENCE,
+                    String::new(),
+                    &body,
+                ) else {
+                    return;
+                };
+                if out.send(envelope).await.is_err() {
+                    return;
+                }
+            }
+            Ok(PtyEvent::Closed) | Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                let closed = Diagnostic {
+                    level: "info".to_string(),
+                    code: "terminal_closed".to_string(),
+                    message: format!("terminal {terminal_id} closed"),
+                    details: serde_json::json!({ "terminal_id": terminal_id }).to_string(),
+                };
+                if let Ok(envelope) = ProtocolEnvelope::carrying(
+                    type_url::event::DIAGNOSTIC,
+                    session_id,
+                    String::new(),
+                    CONTROL_SEQUENCE,
+                    String::new(),
+                    &closed,
+                ) {
+                    let _ = out.send(envelope).await;
+                }
+                return;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+        }
+    }
+}
+
 /// Serves one connection until the client hangs up.
 pub async fn serve_connection<S>(stream: S, daemon: Arc<DaemonServer>) -> std::io::Result<()>
 where
@@ -321,6 +392,7 @@ where
     });
 
     let mut shook_hands = false;
+    let mut attached_terminals: HashSet<String> = HashSet::new();
 
     while let Some(request) = read_frame(&mut reader).await? {
         let sent = match request.type_url.as_str() {
@@ -390,6 +462,428 @@ where
                 Ok(())
             }
 
+            type_url::command::CREATE_SESSION => {
+                let body: CreateSession = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                if body.workspace_path.trim().is_empty() {
+                    out.send(error_for(
+                        &request,
+                        ErrorCode::InvalidFrame,
+                        "CreateSession needs a workspace_path",
+                    ))
+                    .await
+                } else {
+                    match daemon.create_session(&body.workspace_path) {
+                        Err(why) => {
+                            out.send(error_for(&request, ErrorCode::InvalidFrame, why))
+                                .await
+                        }
+                        Ok(session) => {
+                            let reply = SessionCreated {
+                                session_id: session.session_id.clone(),
+                                workspace_path: session
+                                    .workspace_root
+                                    .to_string_lossy()
+                                    .into_owned(),
+                                // Echoed, not applied: see `CreateSession`.
+                                initial_mode: body.initial_mode.clone(),
+                            };
+                            match ProtocolEnvelope::carrying(
+                                type_url::envelope::SESSION_CREATED,
+                                session.session_id.clone(),
+                                String::new(),
+                                CONTROL_SEQUENCE,
+                                request.idempotency_key.clone(),
+                                &reply,
+                            ) {
+                                Ok(envelope) => out.send(envelope).await,
+                                Err(e) => {
+                                    out.send(error_for(
+                                        &request,
+                                        ErrorCode::Internal,
+                                        e.to_string(),
+                                    ))
+                                    .await
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            type_url::command::SUBMIT_TURN => {
+                let body: SubmitTurn = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                let session_id = if body.session_id.is_empty() {
+                    request.session_id.clone()
+                } else {
+                    body.session_id.clone()
+                };
+                match daemon.submit_turn_with_attachments(
+                    &session_id,
+                    &body.prompt,
+                    &body.attached_file_paths,
+                ) {
+                    // No declared reply: the turn's events, beginning with
+                    // the run moving to running_model, are the answer, on
+                    // the session's subscription.
+                    Ok(_run_id) => Ok(()),
+                    Err(why) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::CANCEL_RUN => {
+                let body: CancelRun = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                let run_id = if body.run_id.is_empty() {
+                    request.run_id.clone()
+                } else {
+                    body.run_id.clone()
+                };
+                match daemon.cancel_run(&run_id, &body.reason) {
+                    Ok(()) => Ok(()),
+                    Err(why) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::STEER_RUN => {
+                let body: SteerRun = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                let run_id = if body.run_id.is_empty() {
+                    request.run_id.clone()
+                } else {
+                    body.run_id.clone()
+                };
+                match daemon.steer_run(&run_id, &body.feedback) {
+                    Ok(()) => Ok(()),
+                    Err(why) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::PAUSE_RUN => {
+                let body: PauseRun = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                let run_id = if body.run_id.is_empty() {
+                    request.run_id.clone()
+                } else {
+                    body.run_id.clone()
+                };
+                match daemon.pause_run(&run_id, &body.reason) {
+                    Ok(()) => Ok(()),
+                    Err(why) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::RESUME_RUN => {
+                let body: ResumeRun = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                let run_id = if body.run_id.is_empty() {
+                    request.run_id.clone()
+                } else {
+                    body.run_id.clone()
+                };
+                match daemon.resume_run(&run_id) {
+                    Ok(()) => Ok(()),
+                    Err(why) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::SPAWN_CHILD => {
+                let mut body: SpawnChild = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                if body.parent_run_id.is_empty() {
+                    body.parent_run_id = request.run_id.clone();
+                }
+                match daemon.spawn_child(&body) {
+                    Ok(_child_run_id) => Ok(()),
+                    Err(why) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::ATTACH_TERMINAL => {
+                let mut body: AttachTerminal = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                if body.session_id.is_empty() {
+                    body.session_id = request.session_id.clone();
+                }
+                match daemon.attach_terminal(&body) {
+                    Ok(attachment) => {
+                        let rx = attachment.pty.subscribe_output();
+                        let code = if attachment.created {
+                            "terminal_attached"
+                        } else {
+                            "terminal_resized"
+                        };
+                        let diag = Diagnostic {
+                            level: "info".to_string(),
+                            code: code.to_string(),
+                            message: format!(
+                                "{} {} ({}x{})",
+                                if attachment.created {
+                                    "attached terminal"
+                                } else {
+                                    "resized terminal"
+                                },
+                                attachment.terminal_id,
+                                attachment.columns,
+                                attachment.rows
+                            ),
+                            details: serde_json::json!({
+                                "terminal_id": attachment.terminal_id,
+                                "columns": attachment.columns,
+                                "rows": attachment.rows,
+                                "cwd": attachment.cwd.to_string_lossy(),
+                            })
+                            .to_string(),
+                        };
+                        let reply_result = match ProtocolEnvelope::carrying(
+                            type_url::event::DIAGNOSTIC,
+                            attachment.session_id.clone(),
+                            String::new(),
+                            CONTROL_SEQUENCE,
+                            request.idempotency_key.clone(),
+                            &diag,
+                        ) {
+                            Ok(envelope) => out.send(envelope).await,
+                            Err(e) => {
+                                out.send(error_for(&request, ErrorCode::Internal, e.to_string()))
+                                    .await
+                            }
+                        };
+                        if reply_result.is_ok()
+                            && attached_terminals.insert(attachment.terminal_id.clone())
+                        {
+                            tokio::spawn(stream_terminal_output(
+                                out.clone(),
+                                attachment.session_id,
+                                attachment.terminal_id,
+                                rx,
+                            ));
+                        }
+                        reply_result
+                    }
+                    Err(TerminalError::UnknownSession(msg)) => {
+                        out.send(error_for(&request, ErrorCode::UnknownCommand, msg))
+                            .await
+                    }
+                    Err(TerminalError::InvalidDimensions(msg)) => {
+                        out.send(error_for(&request, ErrorCode::InvalidFrame, msg))
+                            .await
+                    }
+                    Err(TerminalError::SpawnFailed(msg)) => {
+                        out.send(error_for(&request, ErrorCode::Internal, msg))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::APPLY_CHANGE_SET => {
+                let body: ApplyChangeSet = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                match daemon.apply_changeset(&body) {
+                    Ok(applied) => {
+                        let diag = Diagnostic {
+                            level: "info".to_string(),
+                            code: "changeset_applied".to_string(),
+                            message: format!(
+                                "applied changeset {} ({} file(s))",
+                                applied.change_set_id,
+                                applied.merge.applied_files.len()
+                            ),
+                            details: serde_json::json!({
+                                "change_set_id": applied.change_set_id,
+                                "diff_digest": applied.diff_digest,
+                                "applied_files": applied.merge.applied_files,
+                            })
+                            .to_string(),
+                        };
+                        match ProtocolEnvelope::carrying(
+                            type_url::event::DIAGNOSTIC,
+                            applied.session_id,
+                            applied.run_id,
+                            CONTROL_SEQUENCE,
+                            request.idempotency_key.clone(),
+                            &diag,
+                        ) {
+                            Ok(envelope) => out.send(envelope).await,
+                            Err(e) => {
+                                out.send(error_for(&request, ErrorCode::Internal, e.to_string()))
+                                    .await
+                            }
+                        }
+                    }
+                    Err(ApplyChangeSetError::InvalidRequest(msg)) => {
+                        out.send(error_for(&request, ErrorCode::InvalidFrame, msg))
+                            .await
+                    }
+                    Err(ApplyChangeSetError::NotFound(msg)) => {
+                        out.send(error_for(&request, ErrorCode::UnknownCommand, msg))
+                            .await
+                    }
+                    Err(err @ ApplyChangeSetError::CheckoutMismatch(_))
+                    | Err(err @ ApplyChangeSetError::BaseCommitMismatch(_))
+                    | Err(err @ ApplyChangeSetError::Conflict(_)) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, err.to_string()))
+                            .await
+                    }
+                    Err(ApplyChangeSetError::ApplyFailed(msg)) => {
+                        out.send(error_for(&request, ErrorCode::Internal, msg))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::APPROVE_ACTION | type_url::command::REJECT_ACTION => {
+                let approving = request.type_url == type_url::command::APPROVE_ACTION;
+                let parsed = if approving {
+                    request.payload_as::<ApproveAction>().map(|b| {
+                        let scope = b.scope.clone();
+                        (b.approval_id, b.action_digest, Ok::<_, String>(scope))
+                    })
+                } else {
+                    request
+                        .payload_as::<RejectAction>()
+                        .map(|b| (b.approval_id, b.action_digest, Err::<String, _>(b.reason)))
+                };
+                let (approval_id, action_digest, answer) = match parsed {
+                    Ok(p) => p,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                let decision = match answer {
+                    Ok(scope) if scope.is_empty() || scope == "once" => {
+                        Some(ApprovalDecision::Approved)
+                    }
+                    // Declared, and each would approve actions nobody has seen
+                    // yet. Refused, and the request stays waiting for a "once".
+                    Ok(_) => None,
+                    Err(reason) => Some(ApprovalDecision::Rejected(if reason.trim().is_empty() {
+                        "the operator refused this action".to_string()
+                    } else {
+                        format!("the operator refused this action: {reason}")
+                    })),
+                };
+                match decision {
+                    None => {
+                        out.send(error_for_action(
+                            &request,
+                            ErrorCode::PolicyDenied,
+                            "only scope \"once\" is served; \"session\" and \"project\" are declared and not implemented",
+                            &approval_id,
+                        ))
+                        .await
+                    }
+                    Some(decision) => match daemon.answer_approval(&approval_id, &action_digest, decision) {
+                        Ok(()) => Ok(()),
+                        Err(AnswerRefused::NotWaiting) => {
+                            out.send(error_for_action(
+                                &request,
+                                ErrorCode::PolicyDenied,
+                                format!(
+                                    "nothing is waiting under {approval_id}: it was answered, timed out, or never asked"
+                                ),
+                                &approval_id,
+                            ))
+                            .await
+                        }
+                        Err(AnswerRefused::DigestMismatch) => {
+                            out.send(error_for_action(
+                                &request,
+                                ErrorCode::PolicyDenied,
+                                "that digest is not the action waiting for approval; it is still waiting",
+                                &approval_id,
+                            ))
+                            .await
+                        }
+                    },
+                }
+            }
+
             other => {
                 let message = if type_url::is_declared(other) {
                     format!("{other} is declared but this daemon does not serve it yet")
@@ -443,26 +937,37 @@ where
 }
 
 #[cfg(windows)]
+fn create_owner_only_pipe(
+    endpoint: &str,
+    first_instance: bool,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let mut opts = ServerOptions::new();
+    opts.first_pipe_instance(first_instance)
+        .reject_remote_clients(true);
+    crate::key::windows_acl::with_owner_only_pipe_security_attributes(|attrs| {
+        // SAFETY: `attrs` points to a live `SECURITY_ATTRIBUTES` populated with
+        // an owner-only protected DACL for the duration of this call.
+        unsafe { opts.create_with_security_attributes_raw(endpoint, attrs) }
+    })
+}
+
+#[cfg(windows)]
 pub async fn serve<F>(daemon: Arc<DaemonServer>, endpoint: &str, on_ready: F) -> std::io::Result<()>
 where
     F: FnOnce(),
 {
-    use tokio::net::windows::named_pipe::ServerOptions;
-
-    // first_pipe_instance stops another process from squatting the name we
-    // publish. What it does NOT do is tighten the DACL, which is the system
-    // default here: restricting it to the owner needs windows-sys and is not
-    // done yet. Stated rather than implied, because a reader would otherwise
-    // take this line as the access control.
-    let mut server = ServerOptions::new()
-        .first_pipe_instance(true)
-        .create(endpoint)?;
+    // Both first_pipe_instance (preventing name squatting) and a protected
+    // owner-only DACL (D:P(A;;GA;;;{user_sid})) with reject_remote_clients(true)
+    // are applied atomically at pipe creation.
+    let mut server = create_owner_only_pipe(endpoint, true)?;
     on_ready();
 
     loop {
         server.connect().await?;
         let connected = server;
-        server = ServerOptions::new().create(endpoint)?;
+        server = create_owner_only_pipe(endpoint, false)?;
 
         let daemon = Arc::clone(&daemon);
         tokio::spawn(async move {

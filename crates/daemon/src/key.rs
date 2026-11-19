@@ -163,6 +163,13 @@ fn foreign_trustees(dacl: &str, user: &[&str]) -> Option<Vec<String>> {
     Some(foreign)
 }
 
+/// Protected owner-only SDDL DACL for a Windows named pipe: denies inheritance
+/// (`P`) and grants Generic All (`GA`) strictly to `user_sid`.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn owner_only_pipe_sddl(user_sid: &str) -> String {
+    format!("D:P(A;;GA;;;{user_sid})")
+}
+
 #[cfg(unix)]
 fn create_owner_only(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -411,6 +418,39 @@ pub(crate) mod windows_acl {
             Ok(take_wide(text))
         }
     }
+
+    /// Builds a protected owner-only `SECURITY_ATTRIBUTES` (`D:P(A;;GA;;;{sid})`)
+    /// for creating a Windows named pipe and frees the security descriptor once
+    /// `create` returns.
+    pub fn with_owner_only_pipe_security_attributes<T>(
+        create: impl FnOnce(*mut std::ffi::c_void) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let user = current_user_sid()?;
+        let sddl_str = super::owner_only_pipe_sddl(&user);
+        let sddl = wide(OsStr::new(&sddl_str));
+        // SAFETY: `sd` is allocated by Windows and freed via `LocalFree` on every
+        // exit path after `create` finishes borrowing `&mut attributes`.
+        unsafe {
+            let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+            if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut sd,
+                null_mut(),
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let mut attributes = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: sd,
+                bInheritHandle: 0,
+            };
+            let result = create((&mut attributes as *mut SECURITY_ATTRIBUTES).cast());
+            LocalFree(sd);
+            result
+        }
+    }
 }
 
 #[cfg(test)]
@@ -557,5 +597,17 @@ mod tests {
         let admin = "S-1-5-21-1-2-3-500";
         assert_eq!(foreign_trustees("D:P(A;;FA;;;LA)", &[admin, "LA"]), Some(vec![]));
         assert_eq!(foreign_trustees("D:P(A;;FA;;;LA)", &me), Some(vec!["LA".to_string()]));
+    }
+
+    #[test]
+    fn owner_only_pipe_sddl_grants_only_current_user() {
+        let user = "S-1-5-21-1-2-3-1001";
+        let sddl = owner_only_pipe_sddl(user);
+        assert!(sddl.starts_with("D:P("), "DACL must be protected: {sddl}");
+        assert_eq!(foreign_trustees(&sddl, &[user]), Some(vec![]));
+        assert_eq!(
+            foreign_trustees(&sddl, &["S-1-5-21-1-2-3-9999"]),
+            Some(vec![user.to_string()])
+        );
     }
 }

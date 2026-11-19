@@ -20,6 +20,14 @@ vitna-git-workspaces.workspace = true
 # code `vitna verify` runs, rather than by a second parser in this crate.
 vitna-receipt-verify.workspace = true
 
+[dev-dependencies]
+async-trait.workspace = true
+vitna-daemon.workspace = true
+vitna-providers.workspace = true
+vitna-receipts.workspace = true
+vitna-runner.workspace = true
+vitna-store.workspace = true
+
 [[bin]]
 name = "vitna-tui"
 path = "src/main.rs"

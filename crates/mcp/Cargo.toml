@@ -12,8 +12,13 @@ tracing.workspace = true
 vitna-policy.workspace = true
 vitna-tools.workspace = true
 async-trait.workspace = true
+reqwest.workspace = true
 sha2.workspace = true
 hex.workspace = true
 
 [dev-dependencies]
+vitna-orchestration.workspace = true
+vitna-providers.workspace = true
+vitna-receipts.workspace = true
 vitna-runner.workspace = true
+vitna-store.workspace = true

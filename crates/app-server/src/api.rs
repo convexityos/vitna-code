@@ -215,6 +215,7 @@ pub(crate) async fn handle(state: &State, peer: SocketAddr, request: Request<Inc
         "fs/remove" => remove(state, &token, &request),
         "run" => run(state, &token, request).await,
         "receipt" => make_receipt(state, &token, &session_id, request).await,
+        "receipts" => list_receipts(state),
         "routines" => read_routines(state).await,
         "ledger" => read_ledger(state).await,
         "prices" => prices(state, request).await,
@@ -826,6 +827,117 @@ async fn make_receipt(
             refusal(StatusCode::INTERNAL_SERVER_ERROR, "failed", reason)
         }
     }
+}
+
+/// The most receipt files listed and verified in a single `/api/v1/receipts` call.
+const MAX_RECEIPTS_LISTED: usize = 200;
+
+fn list_receipts(state: &State) -> Reply {
+    let entries = match state.files.list(".vitna/receipts", false) {
+        Ok(entries) => entries,
+        Err(FileError::Missing) => {
+            return json_reply(
+                StatusCode::OK,
+                json!({
+                    "receipts": [],
+                    "left_out": 0,
+                    "public_key": state.public_key,
+                }),
+            );
+        }
+        Err(e) => return file_refusal(e),
+    };
+
+    let mut json_files: Vec<String> = entries
+        .into_iter()
+        .filter(|e| e.kind == EntryKind::File && e.name.ends_with(".json"))
+        .map(|e| e.name)
+        .collect();
+    json_files.sort();
+
+    let total = json_files.len();
+    let left_out = total.saturating_sub(MAX_RECEIPTS_LISTED);
+    let mut rows = Vec::with_capacity(total.min(MAX_RECEIPTS_LISTED));
+
+    for file in json_files.into_iter().take(MAX_RECEIPTS_LISTED) {
+        let rel_path = format!(".vitna/receipts/{file}");
+        let bytes = match state.files.read(&rel_path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                rows.push(json!({
+                    "file": file,
+                    "readable": false,
+                    "is_valid": false,
+                    "signature_verified": false,
+                    "errors": [format!("could not read receipt: {e}")],
+                }));
+                continue;
+            }
+        };
+        let receipt: vitna_receipts::VitnaRunReceiptV1 = match serde_json::from_slice(&bytes) {
+            Ok(receipt) => receipt,
+            Err(e) => {
+                rows.push(json!({
+                    "file": file,
+                    "readable": false,
+                    "is_valid": false,
+                    "signature_verified": false,
+                    "errors": [format!("invalid receipt JSON: {e}")],
+                }));
+                continue;
+            }
+        };
+        match vitna_receipt_verify::ReceiptVerifier::verify_receipt(
+            &receipt,
+            Some(&state.public_key),
+        ) {
+            Ok(report) => {
+                rows.push(json!({
+                    "file": file,
+                    "readable": true,
+                    "run_id": receipt.run_id,
+                    "session_id": receipt.session_id,
+                    "completion_state": receipt.completion_state,
+                    "isolation_label": receipt.isolation_label,
+                    "provider": receipt.model_selection.provider,
+                    "model_sku": receipt.model_selection.model_sku,
+                    "evidence_count": receipt.evidence_items.len(),
+                    "files_modified": receipt.changeset.files_modified.len(),
+                    "device_public_key": receipt.device_public_key,
+                    "signature_verified": report.signature_verified,
+                    "is_valid": report.is_valid,
+                    "errors": report.errors,
+                }));
+            }
+            Err(e) => {
+                rows.push(json!({
+                    "file": file,
+                    "readable": true,
+                    "run_id": receipt.run_id,
+                    "session_id": receipt.session_id,
+                    "completion_state": receipt.completion_state,
+                    "isolation_label": receipt.isolation_label,
+                    "provider": receipt.model_selection.provider,
+                    "model_sku": receipt.model_selection.model_sku,
+                    "evidence_count": receipt.evidence_items.len(),
+                    "files_modified": receipt.changeset.files_modified.len(),
+                    "device_public_key": receipt.device_public_key,
+                    "signature_verified": false,
+                    "is_valid": false,
+                    "errors": [format!("verification failed: {e}")],
+                }));
+            }
+        }
+    }
+
+    json_reply(
+        StatusCode::OK,
+        json!({
+            "receipts": rows,
+            "left_out": left_out,
+            "public_key": state.public_key,
+        }),
+    )
 }
 
 #[cfg(test)]

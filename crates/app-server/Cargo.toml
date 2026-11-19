@@ -19,8 +19,6 @@ serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 vitna-receipts.workspace = true
+vitna-receipt-verify.workspace = true
 vitna-runner.workspace = true
 vitna-tools.workspace = true
-
-[dev-dependencies]
-vitna-receipt-verify.workspace = true

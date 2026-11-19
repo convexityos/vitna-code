@@ -2,6 +2,8 @@
 //!
 //! Non-interactive command-line interface and machine runner for Vitna Code.
 
+mod commands;
+
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -36,15 +38,63 @@ enum Commands {
         /// command is refused rather than run unprotected.
         #[arg(long)]
         allow_unsandboxed: bool,
+        /// A local vitna-runtime URL (loopback only, e.g. http://127.0.0.1:8787)
+        /// for running a live model-driven agent turn. Requires --lane.
+        #[arg(long)]
+        runtime_url: Option<String>,
+        /// The vitna-runtime lane alias (e.g. vitna/code). Requires --runtime-url.
+        #[arg(long)]
+        lane: Option<String>,
+        /// Optional SQLite store path (defaults to <workspace>/.vitna/store.db).
+        #[arg(long)]
+        store: Option<PathBuf>,
     },
-    /// Resume an existing session
-    Resume { session_id: Option<String> },
-    /// Review changes or diffs against evidence
-    Review { path_or_ref: Option<String> },
-    /// Apply an approved change set to the primary checkout
-    Apply { change_set_id: String },
+    /// Resume an existing session from the persisted store or submit a follow-up turn
+    Resume {
+        session_id: Option<String>,
+        /// Optional SQLite store path (defaults to .vitna/store.db or ~/.vitna/daemon.db).
+        #[arg(long)]
+        store: Option<PathBuf>,
+        /// Submit a follow-up prompt to a running daemon for this session.
+        #[arg(long)]
+        prompt: Option<String>,
+        /// Override the daemon IPC endpoint when sending --prompt.
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Review working-tree changes against signed receipt evidence
+    Review {
+        path_or_ref: Option<String>,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate preimages and apply an approved change set to the primary checkout
+    Apply {
+        change_set_id: String,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Source workspace directory holding the verified postimage files to apply.
+        #[arg(long)]
+        source: Option<PathBuf>,
+        /// Validate preimages only without modifying any files on disk.
+        #[arg(long, alias = "dry-run")]
+        check: bool,
+    },
     /// List active and previous sessions
-    Sessions,
+    Sessions {
+        /// Optional SQLite store path (defaults to .vitna/store.db or ~/.vitna/daemon.db).
+        #[arg(long)]
+        store: Option<PathBuf>,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
     /// Receipt operations
     Receipt {
         #[command(subcommand)]
@@ -59,7 +109,7 @@ enum Commands {
         #[arg(long)]
         key: Option<String>,
     },
-    /// Check local environment and daemon health
+    /// Check local environment, sandbox backend, and daemon health
     Doctor,
     /// Start the local daemon: the same daemon, endpoint and journal as vitna-coded
     Serve {
@@ -71,6 +121,13 @@ enum Commands {
         /// still works.
         #[arg(long, alias = "db")]
         store: Option<PathBuf>,
+        /// A vitna-runtime on this machine, such as http://127.0.0.1:8787.
+        /// Turns are refused until it and --lane are given.
+        #[arg(long)]
+        runtime_url: Option<String>,
+        /// The lane every turn asks the runtime for, such as vitna/code.
+        #[arg(long)]
+        lane: Option<String>,
     },
     /// Open a folder in the Vitna Code interface, served from this machine
     ///
@@ -116,13 +173,27 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum ReceiptCommands {
-    /// Show receipt for a specific run
-    Show { run_id: String },
-    /// Export receipt for a specific run
+    /// Show and verify the receipt for a specific run
+    Show {
+        run_id: String,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        #[arg(long)]
+        key: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Export receipt for a specific run with explicit redaction level
     Export {
         run_id: String,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Redaction level: none (verbatim signed receipt), standard, or strict.
         #[arg(long, default_value = "standard")]
         redaction: String,
+        /// Optional output file path (defaults to stdout).
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -143,15 +214,100 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             auto_approve,
             verify_cmd,
             allow_unsandboxed,
+            runtime_url,
+            lane,
+            store,
             ..
+        }) => match (runtime_url, lane) {
+            (Some(url), Some(lane_name)) => {
+                if let Err(e) = commands::run_live_runtime_turn(commands::LiveRunOptions {
+                    task: &task,
+                    workspace: &workspace,
+                    store_arg: store.as_deref(),
+                    runtime_url: &url,
+                    lane_name: &lane_name,
+                    auto_approve,
+                    verify_cmd,
+                    allow_unsandboxed,
+                })
+                .await
+                {
+                    eprintln!("vitna run: {e}");
+                    std::process::exit(1);
+                }
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                eprintln!("vitna run: --runtime-url and --lane must be provided together.");
+                std::process::exit(1);
+            }
+            (None, None) => {
+                run_task_cli(
+                    &task,
+                    &workspace,
+                    store.as_deref(),
+                    auto_approve,
+                    verify_cmd,
+                    allow_unsandboxed,
+                )
+                .await?;
+            }
+        },
+        Some(Commands::Sessions { store, json }) => {
+            if let Err(e) = commands::run_list_sessions(store.as_deref(), json) {
+                eprintln!("vitna sessions: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Resume {
+            session_id,
+            store,
+            prompt,
+            endpoint,
+            json,
         }) => {
-            run_task_cli(&task, &workspace, auto_approve, verify_cmd, allow_unsandboxed).await?;
+            if let Err(e) = commands::run_resume(
+                session_id.as_deref(),
+                store.as_deref(),
+                prompt.as_deref(),
+                endpoint.as_deref(),
+                json,
+            )
+            .await
+            {
+                eprintln!("vitna resume: {e}");
+                std::process::exit(1);
+            }
         }
-        Some(Commands::Sessions) => {
-            run_list_sessions()?;
+        Some(Commands::Review {
+            path_or_ref,
+            workspace,
+            json,
+        }) => {
+            if let Err(e) = commands::run_review(path_or_ref.as_deref(), &workspace, json) {
+                eprintln!("vitna review: {e}");
+                std::process::exit(1);
+            }
         }
-        Some(Commands::Serve { endpoint, store }) => {
-            if let Err(e) = serve(endpoint, store).await {
+        Some(Commands::Apply {
+            change_set_id,
+            workspace,
+            source,
+            check,
+        }) => {
+            if let Err(e) =
+                commands::run_apply(&change_set_id, &workspace, source.as_deref(), check)
+            {
+                eprintln!("vitna apply: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Serve {
+            endpoint,
+            store,
+            runtime_url,
+            lane,
+        }) => {
+            if let Err(e) = serve(endpoint, store, runtime_url, lane).await {
                 // One line naming what failed, as vitna-coded prints it. A
                 // daemon that dies quietly looks, from a client, like one that
                 // was never started.
@@ -179,22 +335,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 (path, record)
             });
-            if let Err(e) = run_app(folder, port, ui, allow_unsandboxed, no_open, routines, priced).await {
+            if let Err(e) =
+                run_app(folder, port, ui, allow_unsandboxed, no_open, routines, priced).await
+            {
                 eprintln!("vitna app: {e}");
                 std::process::exit(1);
             }
         }
         Some(Commands::Receipt { sub }) => match sub {
-            ReceiptCommands::Show { run_id } => {
-                println!("Displaying receipt for run: {}", run_id);
+            ReceiptCommands::Show {
+                run_id,
+                workspace,
+                key,
+                json,
+            } => {
+                if let Err(e) =
+                    commands::run_receipt_show(&run_id, &workspace, key.as_deref(), json)
+                {
+                    eprintln!("vitna receipt show: {e}");
+                    std::process::exit(1);
+                }
             }
-            ReceiptCommands::Export { run_id, redaction } => {
-                println!("Exporting receipt for run {} with redaction {}", run_id, redaction);
+            ReceiptCommands::Export {
+                run_id,
+                workspace,
+                redaction,
+                out,
+            } => {
+                if let Err(e) = commands::run_receipt_export(
+                    &run_id,
+                    &workspace,
+                    &redaction,
+                    out.as_deref(),
+                ) {
+                    eprintln!("vitna receipt export: {e}");
+                    std::process::exit(1);
+                }
             }
         },
-        Some(cmd) => {
-            println!("Command {:?} executed.", cmd);
-        }
         None => {
             println!("Vitna Code. Run 'vitna --help' for available commands.");
         }
@@ -209,9 +387,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// listening on local session channel" and bound nothing, so every client that
 /// probed the declared endpoint found no daemon. The release scripts ship
 /// `vitna` and not `vitna-coded`, so for an installed copy this is the door.
-async fn serve(endpoint: Option<String>, store: Option<PathBuf>) -> Result<(), String> {
+async fn serve(
+    endpoint: Option<String>,
+    store: Option<PathBuf>,
+    runtime_url: Option<String>,
+    lane: Option<String>,
+) -> Result<(), String> {
     vitna_daemon::launch::logging();
-    let launch = vitna_daemon::launch::Launch::resolve(endpoint, store)?;
+    let launch = vitna_daemon::launch::Launch::resolve(endpoint, store)?.with_runtime(runtime_url, lane)?;
     let announce = launch.endpoint.clone();
     vitna_daemon::launch::run(&launch, move || {
         // Printed once the endpoint is bound, so it is true when it is read.
@@ -389,7 +572,22 @@ async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => println!("[FAIL] Device Signing Key: {}", e),
     }
 
-    println!("\nAll systems verified for Vitna local-first operation.");
+    // 5. OS Sandbox Backend probe
+    let probe_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+    match vitna_runner::sandbox_status(&probe_dir, false) {
+        Ok((backend, enforcement)) => {
+            println!("[OK] Sandbox Backend: {backend} ({enforcement})");
+        }
+        Err(reason) => {
+            println!("[WARN] Sandbox Backend: unavailable ({reason})");
+        }
+    }
+
+    // 6. Daemon IPC Endpoint handshake probe
+    let (_listening, daemon_status) = commands::probe_daemon_endpoint().await;
+    println!("{daemon_status}");
+
+    println!("\nDoctor audit complete.");
     Ok(())
 }
 
@@ -445,6 +643,13 @@ fn run_verify(receipt_path: &str, key: Option<&str>) -> Result<(), Box<dyn std::
                     let report = vitna_receipt_verify::ReceiptVerifier::verify_receipt(&verified.receipt, Some(&public))?;
                     if report.signature_verified {
                         "verified against this device's key".to_string()
+                    } else if report
+                        .errors
+                        .iter()
+                        .any(|e| e.contains("different device key"))
+                    {
+                        "signed by a different device key (pass --key with the signer's public key)"
+                            .to_string()
                     } else {
                         "not this device's key: signed on another device, or changed since it was signed. Check it with --key and the signer's public key".to_string()
                     }
@@ -472,6 +677,7 @@ fn run_verify(receipt_path: &str, key: Option<&str>) -> Result<(), Box<dyn std::
 async fn run_task_cli(
     task: &str,
     workspace: &Path,
+    store_arg: Option<&Path>,
     auto_approve: bool,
     verify_cmd: Option<String>,
     allow_unsandboxed: bool,
@@ -481,7 +687,10 @@ async fn run_task_cli(
     println!("Task:      {}", task);
     println!("Workspace: {}", workspace.display());
 
-    let db_path = workspace.join(".vitna").join("store.db");
+    let db_path = match store_arg {
+        Some(p) => p.to_path_buf(),
+        None => workspace.join(".vitna").join("store.db"),
+    };
     let daemon = DaemonServer::open_default(&db_path)?;
 
     let session = daemon.create_session(workspace)?;
@@ -512,28 +721,6 @@ async fn run_task_cli(
     }
     println!("Device Signature: {}", receipt.device_signature);
     println!("Receipt Path:     .vitna/receipts/{}.json", receipt.run_id);
-
-    Ok(())
-}
-
-fn run_list_sessions() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Vitna Sessions (Local Workspace)");
-    println!("--------------------------------");
-    let db_path = Path::new(".vitna").join("store.db");
-    if !db_path.exists() {
-        println!("No local .vitna/store.db found in current directory.");
-        return Ok(());
-    }
-
-    let daemon = DaemonServer::open_default(&db_path)?;
-    let sessions = daemon.list_sessions();
-    if sessions.is_empty() {
-        println!("No active sessions recorded.");
-    } else {
-        for s in sessions {
-            println!("- Session ID: {} (Status: {})", s.session_id, s.status);
-        }
-    }
 
     Ok(())
 }

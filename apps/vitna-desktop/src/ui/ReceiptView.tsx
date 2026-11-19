@@ -229,8 +229,16 @@ function SignatureLine({ check }: { check: SignatureCheck | null }) {
       return <Check tone="ok" title="Signature verified with this key" detail={['Ed25519 over the canonical receipt, checked in this window.']} />;
     case 'invalid':
       return <Check tone="rust" title="Signature does not match" detail={['Either a signed field changed, or this is not the key that signed it.']} />;
+    case 'wrong_key':
+      return (
+        <Check
+          tone="rust"
+          title="Signed by a different device key"
+          detail={[`The receipt names device key ${shortDigest(check.embeddedKey, 16)}, which does not match the key supplied above.`]}
+        />
+      );
     case 'not_checked':
-      return <Check tone="plain" title="Signature not checked" detail={['A receipt does not carry its signing key. Add the device public key above.']} />;
+      return <Check tone="plain" title="Signature not checked" detail={['Add the trusted device public key above to verify the signature.']} />;
     case 'no_signature':
       return <Check tone="rust" title="Not signed" detail={['device_signature is empty.']} />;
     case 'placeholder':

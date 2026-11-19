@@ -2,13 +2,21 @@
 
 use std::cell::Cell;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use tokio::sync::mpsc::UnboundedSender;
+use vitna_protocol::messages::{
+    run_state, tool_status, ApprovalRequested, Diagnostic, DiffChanged, ErrorResponse,
+    MessageDelta, RunStateChanged, ToolFinished, ToolOutput, ToolProposed, ToolStarted,
+};
+use vitna_protocol::{type_url, ProtocolEnvelope};
 
 use crate::ledger::Ledger;
-use crate::link::Link;
+use crate::link::{Link, OutboundCmd};
 use crate::place::{self, Branch};
-use crate::turn;
+use crate::text::clean;
+use crate::{theme, turn};
 
 /// What the terminal is looking at, above the composer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +31,8 @@ pub enum Screen {
 #[derive(Debug)]
 pub enum Update {
     Link(Link),
+    SessionReady(String),
+    Wire(ProtocolEnvelope),
     Branch(Branch),
     Ledger(Ledger),
 }
@@ -30,12 +40,17 @@ pub enum Update {
 /// Rows or runs one Page Up or Page Down moves.
 const PAGE: isize = 10;
 
-/// Work the loop should start, because a key asked for it.
+/// Maximum lines retained per tool output block in the terminal view.
+const MAX_TOOL_OUTPUT_LINES: usize = 200;
+
+/// Work the loop should start, because a key or wire transition asked for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ask {
     Nothing,
     /// Look for the daemon again and re-read the receipts.
     Refresh,
+    /// Re-read the receipts directory after a live run finishes.
+    RefreshLedger,
 }
 
 pub struct App {
@@ -43,10 +58,20 @@ pub struct App {
     pub folder: String,
     pub branch: Branch,
     pub link: Link,
+    /// The daemon session id once `SessionCreated` and `SubscribeEvents` complete.
+    pub session_id: Option<String>,
+    /// The most recently observed run id in this session.
+    pub active_run_id: Option<String>,
+    /// True while a turn is in flight on the daemon.
+    pub run_active: bool,
+    /// Channel to send outbound protocol commands to the daemon connection task.
+    pub cmd_tx: Option<UnboundedSender<OutboundCmd>>,
     /// None until the receipts directory has been read once.
     pub ledger: Option<Ledger>,
-    /// The turn on screen. Empty: nothing on the wire can start one yet.
+    /// The turn on screen, populated strictly from live daemon events.
     pub turn: Vec<turn::Entry>,
+    /// Tracks the active streaming model message_id so token deltas append inline.
+    pub last_model_message_id: Option<String>,
     pub draft: Vec<char>,
     /// The cursor, as a char index into `draft`.
     pub cursor: usize,
@@ -58,7 +83,7 @@ pub struct App {
     /// How far the stage could scroll, as the last frame measured it, so a
     /// held arrow stops at the end instead of counting on past it.
     pub scroll_room: Cell<usize>,
-    /// Why the last Enter did not send, until the next keystroke.
+    /// Why the last Enter did not send, or daemon refusal feedback, until the next keystroke.
     pub notice: Option<String>,
     pub help: bool,
     pub quit: bool,
@@ -71,8 +96,13 @@ impl App {
             root,
             branch: Branch::Reading,
             link: Link::Probing,
+            session_id: None,
+            active_run_id: None,
+            run_active: false,
+            cmd_tx: None,
             ledger: None,
             turn: Vec::new(),
+            last_model_message_id: None,
             draft: Vec::new(),
             cursor: 0,
             screen: Screen::Home,
@@ -86,9 +116,34 @@ impl App {
     }
 
     pub fn update(&mut self, update: Update) {
+        let _ = self.apply_update(update);
+    }
+
+    pub fn apply_update(&mut self, update: Update) -> Ask {
         match update {
-            Update::Link(link) => self.link = link,
-            Update::Branch(branch) => self.branch = branch,
+            Update::Link(link) => {
+                if !link.is_open() {
+                    self.session_id = None;
+                    self.run_active = false;
+                }
+                self.link = link;
+                Ask::Nothing
+            }
+            Update::SessionReady(id) => {
+                self.session_id = Some(id);
+                Ask::Nothing
+            }
+            Update::Wire(env) => {
+                if self.fold_wire(env) {
+                    Ask::RefreshLedger
+                } else {
+                    Ask::Nothing
+                }
+            }
+            Update::Branch(branch) => {
+                self.branch = branch;
+                Ask::Nothing
+            }
             Update::Ledger(ledger) => {
                 let n = ledger.entries.len();
                 self.selected = self.selected.min(n.saturating_sub(1));
@@ -98,8 +153,278 @@ impl App {
                     }
                 }
                 self.ledger = Some(ledger);
+                Ask::Nothing
             }
         }
+    }
+
+    /// Folds one declared protocol frame from the daemon into the visible turn.
+    /// Returns `true` when a run reaches a terminal state so the caller can
+    /// re-read `.vitna/receipts/`.
+    fn fold_wire(&mut self, env: ProtocolEnvelope) -> bool {
+        if !env.run_id.is_empty() {
+            self.active_run_id = Some(env.run_id.clone());
+        }
+        match env.type_url.as_str() {
+            type_url::event::MESSAGE_DELTA => {
+                if let Ok(delta) = env.payload_as::<MessageDelta>() {
+                    let text = clean(&delta.delta_text);
+                    if text.is_empty() {
+                        return false;
+                    }
+                    if delta.role == "user" {
+                        self.last_model_message_id = None;
+                        self.turn.push(turn::Entry::You(text));
+                    } else if delta.role == "model" {
+                        let same_message = !delta.message_id.is_empty()
+                            && self.last_model_message_id.as_deref()
+                                == Some(delta.message_id.as_str());
+                        if let Some(turn::Entry::Model(existing)) = self.turn.last_mut() {
+                            if !same_message && !existing.is_empty() && !existing.ends_with('\n') {
+                                existing.push('\n');
+                            }
+                            existing.push_str(&text);
+                        } else {
+                            self.turn.push(turn::Entry::Model(text));
+                        }
+                        self.last_model_message_id = if delta.message_id.is_empty() {
+                            None
+                        } else {
+                            Some(delta.message_id)
+                        };
+                    } else {
+                        self.last_model_message_id = None;
+                        self.turn.push(turn::Entry::Note {
+                            tone: theme::FAINT,
+                            text,
+                        });
+                    }
+                }
+                false
+            }
+            type_url::event::TOOL_PROPOSED => {
+                self.last_model_message_id = None;
+                if let Ok(p) = env.payload_as::<ToolProposed>() {
+                    let target = extract_target(&p.raw_arguments_json).map(|t| clean(&t));
+                    self.turn.push(turn::Entry::Tool(Box::new(turn::Tool {
+                        call_id: p.tool_call_id,
+                        name: clean(&p.tool_name),
+                        target,
+                        effect: clean(&p.effect_class),
+                        phase: turn::Phase::Proposed,
+                        status: None,
+                        output: Vec::new(),
+                        diff: None,
+                        approval: None,
+                    })));
+                }
+                false
+            }
+            type_url::event::APPROVAL_REQUESTED => {
+                if let Ok(req) = env.payload_as::<ApprovalRequested>() {
+                    let approval = turn::Approval {
+                        approval_id: req.approval_id,
+                        description: clean(&req.description),
+                        digest: clean(&req.action_digest),
+                        runs_as: clean(&req.executable_identity),
+                        cwd: clean(&req.canonical_cwd),
+                        mounts: req.bound_mounts.iter().map(|s| clean(s)).collect(),
+                        env: req.environment_names.iter().map(|s| clean(s)).collect(),
+                        cursor: 0,
+                        opened: Instant::now(),
+                        answer: None,
+                    };
+                    if let Some(tool) = self.find_tool_mut(&req.tool_call_id) {
+                        tool.phase = turn::Phase::Waiting;
+                        tool.approval = Some(approval);
+                    } else {
+                        self.turn.push(turn::Entry::Tool(Box::new(turn::Tool {
+                            call_id: req.tool_call_id,
+                            name: "action".to_string(),
+                            target: None,
+                            effect: "write".to_string(),
+                            phase: turn::Phase::Waiting,
+                            status: None,
+                            output: Vec::new(),
+                            diff: None,
+                            approval: Some(approval),
+                        })));
+                    }
+                    self.scroll = 0;
+                }
+                false
+            }
+            type_url::event::TOOL_STARTED => {
+                if let Ok(started) = env.payload_as::<ToolStarted>() {
+                    if let Some(tool) = self.find_tool_mut(&started.tool_call_id) {
+                        tool.phase = turn::Phase::Running;
+                        tool.approval = None;
+                    }
+                }
+                false
+            }
+            type_url::event::TOOL_OUTPUT => {
+                if let Ok(out) = env.payload_as::<ToolOutput>() {
+                    let text = String::from_utf8_lossy(&out.chunk);
+                    if let Some(tool) = self.find_tool_mut(&out.tool_call_id) {
+                        for line in text.lines() {
+                            if tool.output.len() >= MAX_TOOL_OUTPUT_LINES {
+                                break;
+                            }
+                            tool.output.push(clean(line));
+                        }
+                    }
+                }
+                false
+            }
+            type_url::event::TOOL_FINISHED => {
+                if let Ok(fin) = env.payload_as::<ToolFinished>() {
+                    if let Some(tool) = self.find_tool_mut(&fin.tool_call_id) {
+                        tool.approval = None;
+                        tool.phase = match fin.status.as_str() {
+                            tool_status::COMPLETED => turn::Phase::Done,
+                            tool_status::CANCELLED => turn::Phase::Skipped,
+                            _ => turn::Phase::Failed,
+                        };
+                        tool.status = Some(format!(
+                            "exit {} \u{b7} {} ms",
+                            fin.exit_code, fin.duration_ms
+                        ));
+                    }
+                }
+                false
+            }
+            type_url::event::DIFF_CHANGED => {
+                if let Ok(diff) = env.payload_as::<DiffChanged>() {
+                    let parsed = parse_file_diff(&diff);
+                    if let Some(tool) = self.last_tool_mut() {
+                        tool.diff = Some(parsed);
+                    }
+                }
+                false
+            }
+            type_url::event::RUN_STATE_CHANGED => {
+                if let Ok(state) = env.payload_as::<RunStateChanged>() {
+                    match state.new_state.as_str() {
+                        run_state::COMPLETED | run_state::FAILED | run_state::CANCELLED => {
+                            self.run_active = false;
+                            // Clear any dangling approval prompt if the run ended.
+                            for entry in &mut self.turn {
+                                if let turn::Entry::Tool(t) = entry {
+                                    t.approval = None;
+                                }
+                            }
+                            if state.new_state == run_state::FAILED
+                                || state.new_state == run_state::CANCELLED
+                            {
+                                let reason = clean(&state.reason);
+                                let text = if reason.is_empty() {
+                                    format!("Run {}.", state.new_state)
+                                } else {
+                                    format!("Run {}: {}", state.new_state, reason)
+                                };
+                                self.turn.push(turn::Entry::Note {
+                                    tone: theme::RUST,
+                                    text,
+                                });
+                            }
+                            return true;
+                        }
+                        run_state::PAUSED => {
+                            let reason = clean(&state.reason);
+                            self.notice = Some(if reason.is_empty() {
+                                "Run paused.".to_string()
+                            } else {
+                                format!("Run paused: {reason}")
+                            });
+                        }
+                        _ => {
+                            self.run_active = true;
+                        }
+                    }
+                }
+                false
+            }
+            type_url::event::DIAGNOSTIC => {
+                if let Ok(diag) = env.payload_as::<Diagnostic>() {
+                    let tone = if diag.level == "error" {
+                        theme::RUST
+                    } else {
+                        theme::FAINT
+                    };
+                    self.turn.push(turn::Entry::Note {
+                        tone,
+                        text: clean(&diag.message),
+                    });
+                }
+                false
+            }
+            type_url::envelope::ERROR_RESPONSE => {
+                if let Ok(err) = env.payload_as::<ErrorResponse>() {
+                    self.notice = Some(clean(&err.message));
+                    if !err.action_id.is_empty() {
+                        // A refusal on an approval (e.g., wider scope rejected)
+                        // leaves the request waiting on the daemon, so re-open
+                        // the approval choices for another answer.
+                        for entry in self.turn.iter_mut().rev() {
+                            if let turn::Entry::Tool(t) = entry {
+                                if let Some(a) = t.approval.as_mut() {
+                                    if a.approval_id == err.action_id {
+                                        a.answer = None;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } else if self.active_run_id.is_none() {
+                        self.run_active = false;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn find_tool_mut(&mut self, call_id: &str) -> Option<&mut turn::Tool> {
+        let idx = if !call_id.is_empty() {
+            self.turn
+                .iter()
+                .rposition(|e| matches!(e, turn::Entry::Tool(t) if t.call_id == call_id))
+        } else {
+            None
+        }
+        .or_else(|| {
+            self.turn
+                .iter()
+                .rposition(|e| matches!(e, turn::Entry::Tool(_)))
+        })?;
+        match &mut self.turn[idx] {
+            turn::Entry::Tool(tool) => Some(tool),
+            _ => None,
+        }
+    }
+
+    fn last_tool_mut(&mut self) -> Option<&mut turn::Tool> {
+        for entry in self.turn.iter_mut().rev() {
+            if let turn::Entry::Tool(tool) = entry {
+                return Some(tool);
+            }
+        }
+        None
+    }
+
+    fn pending_approval_mut(&mut self) -> Option<&mut turn::Approval> {
+        for entry in self.turn.iter_mut().rev() {
+            if let turn::Entry::Tool(tool) = entry {
+                if let Some(a) = tool.approval.as_mut() {
+                    if a.answer.is_none() {
+                        return Some(a);
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn runs(&self) -> usize {
@@ -107,6 +432,12 @@ impl App {
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Ask {
+        self.key_at(key, Instant::now())
+    }
+
+    /// Processes a single key event at `now` (injectable for deterministic tests
+    /// of approval arming).
+    pub fn key_at(&mut self, key: KeyEvent, now: Instant) -> Ask {
         // Windows reports a release for every press. Only presses and the
         // repeats of a held key act, or every character would type twice.
         if key.kind == KeyEventKind::Release {
@@ -127,14 +458,74 @@ impl App {
             }
         }
 
-        match key.code {
-            KeyCode::Char('c') if command => {
-                if self.draft.is_empty() {
-                    self.quit = true;
+        // Ctrl+C always works even while an approval box is waiting.
+        if matches!(key.code, KeyCode::Char('c')) && command {
+            if !self.draft.is_empty() {
+                self.clear_draft();
+            } else if self.run_active {
+                if let (Some(run_id), Some(tx)) = (&self.active_run_id, &self.cmd_tx) {
+                    let _ = tx.send(OutboundCmd::CancelRun {
+                        run_id: run_id.clone(),
+                        reason: "cancelled from vitna-tui".to_string(),
+                    });
+                    self.notice = Some("Cancelling run...".to_string());
                 } else {
-                    self.clear_draft();
+                    self.quit = true;
+                }
+            } else {
+                self.quit = true;
+            }
+            return Ask::Nothing;
+        }
+
+        // When an unanswered approval is open, route keys to it first so
+        // `y`, `n`, `1-5`, arrows, and Enter answer the approval rather than
+        // typing into the composer.
+        let approval_cmd = if let Some(approval) = self.pending_approval_mut() {
+            let chosen = approval.key(key, now);
+            let cmd = chosen.map(|ans| {
+                let id = approval.approval_id.clone();
+                let digest = approval.digest.clone();
+                match ans {
+                    turn::Answer::ApproveOnce => OutboundCmd::ApproveAction {
+                        approval_id: id,
+                        action_digest: digest,
+                        scope: "once".to_string(),
+                    },
+                    turn::Answer::ApproveSession => OutboundCmd::ApproveAction {
+                        approval_id: id,
+                        action_digest: digest,
+                        scope: "session".to_string(),
+                    },
+                    turn::Answer::ApproveProject => OutboundCmd::ApproveAction {
+                        approval_id: id,
+                        action_digest: digest,
+                        scope: "project".to_string(),
+                    },
+                    turn::Answer::Reject | turn::Answer::RejectWithReason => {
+                        OutboundCmd::RejectAction {
+                            approval_id: id,
+                            action_digest: digest,
+                            reason: String::new(),
+                        }
+                    }
+                }
+            });
+            Some(cmd)
+        } else {
+            None
+        };
+
+        if let Some(maybe_cmd) = approval_cmd {
+            if let Some(cmd) = maybe_cmd {
+                if let Some(tx) = &self.cmd_tx {
+                    let _ = tx.send(cmd);
                 }
             }
+            return Ask::Nothing;
+        }
+
+        match key.code {
             KeyCode::Char('d') if command => {
                 if self.draft.is_empty() {
                     self.quit = true;
@@ -143,6 +534,7 @@ impl App {
             KeyCode::Char('r') if command => {
                 self.notice = None;
                 self.link = Link::Probing;
+                self.session_id = None;
                 return Ask::Refresh;
             }
             KeyCode::Char('u') if command => {
@@ -159,7 +551,7 @@ impl App {
             KeyCode::Enter => {
                 if !self.draft.iter().all(|c| c.is_whitespace()) {
                     self.submit();
-                } else if self.screen == Screen::Home && self.runs() > 0 {
+                } else if self.screen == Screen::Home && self.runs() > 0 && self.turn.is_empty() {
                     self.screen = Screen::Run(self.selected);
                     self.scroll = 0;
                 }
@@ -167,6 +559,9 @@ impl App {
             KeyCode::Esc => {
                 if self.notice.is_some() {
                     self.notice = None;
+                } else if !self.turn.is_empty() && !self.run_active {
+                    self.turn.clear();
+                    self.scroll = 0;
                 } else if let Screen::Run(i) = self.screen {
                     self.screen = Screen::Home;
                     self.selected = i;
@@ -291,15 +686,38 @@ impl App {
         self.notice = None;
     }
 
-    /// Enter, with something typed. Nothing can take a turn yet, so the draft
-    /// stays where it is and the terminal says why, in words that match what
-    /// it actually found. A disabled send that will not say why is the thing
-    /// this product exists not to ship.
+    /// Enter, with something typed. When connected with an open daemon session,
+    /// dispatches `SubmitTurn` over the wire. Otherwise keeps the draft intact
+    /// and states why it was not sent.
     fn submit(&mut self) {
+        if matches!(self.link, Link::Open { .. }) && self.session_id.is_some() {
+            if self.run_active {
+                self.notice = Some("Not sent. A turn is already running.".to_string());
+                return;
+            }
+            if let Some(tx) = &self.cmd_tx {
+                let prompt: String = self.draft.iter().collect();
+                if tx
+                    .send(OutboundCmd::SubmitTurn {
+                        prompt: prompt.trim().to_string(),
+                    })
+                    .is_ok()
+                {
+                    self.draft.clear();
+                    self.cursor = 0;
+                    self.scroll = 0;
+                    self.run_active = true;
+                    self.active_run_id = None;
+                    self.notice = None;
+                    return;
+                }
+            }
+        }
+
         self.notice = Some(
             match &self.link {
                 Link::Open { .. } => {
-                    "Not sent. vitna-coded answered, and it takes no turns over the wire yet."
+                    "Not sent. Daemon answered, waiting for the session to open."
                 }
                 Link::Absent { .. } => {
                     "Not sent. The daemon is not running, so there is nothing to send to."
@@ -309,6 +727,54 @@ impl App {
             }
             .to_string(),
         );
+    }
+}
+
+fn extract_target(raw_args: &[u8]) -> Option<String> {
+    let val: serde_json::Value = serde_json::from_slice(raw_args).ok()?;
+    for key in ["path", "command", "pattern", "query"] {
+        if let Some(s) = val.get(key).and_then(|v| v.as_str()) {
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn parse_file_diff(diff: &DiffChanged) -> turn::FileDiff {
+    let path = diff
+        .modified_files
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "workspace".to_string());
+    let mut additions = 0usize;
+    let mut deletions = 0usize;
+    let mut lines = Vec::new();
+    for line in diff.diff_text.lines() {
+        let cleaned = clean(line);
+        if cleaned.starts_with("@@") {
+            lines.push(turn::DiffLine::Hunk(cleaned));
+        } else if let Some(rest) = cleaned.strip_prefix('+') {
+            if !cleaned.starts_with("+++") {
+                additions += 1;
+                lines.push(turn::DiffLine::Add(rest.to_string()));
+            }
+        } else if let Some(rest) = cleaned.strip_prefix('-') {
+            if !cleaned.starts_with("---") {
+                deletions += 1;
+                lines.push(turn::DiffLine::Del(rest.to_string()));
+            }
+        } else if let Some(rest) = cleaned.strip_prefix(' ') {
+            lines.push(turn::DiffLine::Same(rest.to_string()));
+        }
+    }
+    turn::FileDiff {
+        path: clean(&path),
+        status: "modified".to_string(),
+        additions,
+        deletions,
+        lines,
     }
 }
 

@@ -17,6 +17,7 @@ import { canonicalBytes, type Receipt } from './receipt';
 export type SignatureCheck =
   | { status: 'valid' }
   | { status: 'invalid' }
+  | { status: 'wrong_key'; embeddedKey: string }
   | { status: 'not_checked' }
   | { status: 'no_signature' }
   | { status: 'placeholder' }
@@ -57,6 +58,10 @@ export async function checkDeviceSignature(receipt: Receipt, publicKeyHex: strin
   if (!key || key.length !== 32) {
     return { status: 'bad_key', detail: 'an Ed25519 public key is 32 bytes, written as 64 hex characters' };
   }
+  const suppliedHex = bytesToHex(key);
+  const embeddedKey = receipt.device_public_key?.trim() ?? '';
+  const keyMismatch = embeddedKey !== '' && embeddedKey.toLowerCase() !== suppliedHex;
+
   const signature = hexToBytes(receipt.device_signature) as Uint8Array;
 
   const subtle = globalThis.crypto?.subtle;
@@ -74,5 +79,8 @@ export async function checkDeviceSignature(receipt: Receipt, publicKeyHex: strin
   }
 
   const ok = await subtle.verify({ name: 'Ed25519' }, imported, signature, canonicalBytes(receipt));
+  if (keyMismatch) {
+    return { status: 'wrong_key', embeddedKey };
+  }
   return { status: ok ? 'valid' : 'invalid' };
 }

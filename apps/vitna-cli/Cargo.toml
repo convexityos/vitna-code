@@ -19,6 +19,11 @@ vitna-receipts.workspace = true
 vitna-receipt-verify.workspace = true
 vitna-store.workspace = true
 vitna-git-workspaces.workspace = true
+vitna-git-broker.workspace = true
+vitna-tools.workspace = true
+vitna-providers.workspace = true
+vitna-orchestration.workspace = true
+sha2.workspace = true
 hex.workspace = true
 
 [[bin]]

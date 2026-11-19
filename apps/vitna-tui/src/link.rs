@@ -7,12 +7,20 @@
 //! never as connected. ADR-0005 keeps the daemon off TCP, so there is no port
 //! to fall back to, and nothing here tries one.
 
+use std::path::PathBuf;
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::mpsc::UnboundedReceiver;
 
-use vitna_protocol::messages::{HandshakeRequest, HandshakeResponse};
+use vitna_protocol::messages::{
+    ApproveAction, CancelRun, CreateSession, ErrorResponse, HandshakeRequest, HandshakeResponse,
+    RejectAction, SessionCreated, SubmitTurn, SubscribeEvents,
+};
 use vitna_protocol::{type_url, ProtocolEnvelope, MAX_FRAME_SIZE_BYTES};
+
+use crate::app::Update;
 
 /// Long enough for a daemon under load, short enough that a pipe which opens
 /// and never answers does not leave the terminal looking forever.
@@ -47,6 +55,28 @@ impl Link {
     }
 }
 
+/// Commands the TUI sends to a connected daemon session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutboundCmd {
+    SubmitTurn {
+        prompt: String,
+    },
+    ApproveAction {
+        approval_id: String,
+        action_digest: String,
+        scope: String,
+    },
+    RejectAction {
+        approval_id: String,
+        action_digest: String,
+        reason: String,
+    },
+    CancelRun {
+        run_id: String,
+        reason: String,
+    },
+}
+
 /// Asks every declared endpoint in turn and reports the first real answer.
 pub async fn probe() -> Link {
     let endpoints = vitna_protocol::endpoint::candidates();
@@ -59,10 +89,10 @@ pub async fn probe() -> Link {
         };
     }
     for endpoint in &endpoints {
-        let Some(stream) = connect(endpoint).await else {
+        let Some(mut stream) = connect(endpoint).await else {
             continue;
         };
-        return match tokio::time::timeout(PATIENCE, handshake(stream)).await {
+        return match tokio::time::timeout(PATIENCE, handshake_io(&mut stream)).await {
             Ok(Ok(reply)) if reply.accepted => Link::Open {
                 version: format!(
                     "{}.{}",
@@ -95,6 +125,291 @@ pub async fn probe() -> Link {
     }
 }
 
+/// Connects to the first responding daemon endpoint, opens a workspace-bound
+/// session, subscribes to its event stream, and bridges commands and events
+/// until either side closes.
+pub async fn connect_session(
+    workspace: PathBuf,
+    updates: Sender<Update>,
+    cmds: UnboundedReceiver<OutboundCmd>,
+) {
+    let endpoints = vitna_protocol::endpoint::candidates();
+    if endpoints.is_empty() {
+        let why = vitna_protocol::endpoint::preferred()
+            .err()
+            .unwrap_or_else(|| "no endpoint is declared for this platform".to_string());
+        let _ = updates.send(Update::Link(Link::Absent {
+            why: crate::text::clean(&why),
+        }));
+        return;
+    }
+    for endpoint in &endpoints {
+        let Some(stream) = connect(endpoint).await else {
+            continue;
+        };
+        drive_stream(stream, workspace, updates, cmds).await;
+        return;
+    }
+    let _ = updates.send(Update::Link(Link::Absent {
+        why: "nothing is listening at the declared endpoint".to_string(),
+    }));
+}
+
+/// Drives the full declared protocol lifecycle over any duplex byte stream:
+/// HandshakeRequest -> CreateSession -> SubscribeEvents -> duplex event/command pump.
+pub async fn drive_stream<S>(
+    mut stream: S,
+    workspace: PathBuf,
+    updates: Sender<Update>,
+    mut cmds: UnboundedReceiver<OutboundCmd>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let reply = match tokio::time::timeout(PATIENCE, handshake_io(&mut stream)).await {
+        Ok(Ok(reply)) if reply.accepted => reply,
+        Ok(Ok(reply)) => {
+            let _ = updates.send(Update::Link(Link::Trouble {
+                what: crate::text::clean(&if reply.rejection_reason.is_empty() {
+                    "the daemon refused the handshake and gave no reason".to_string()
+                } else {
+                    format!(
+                        "the daemon refused the handshake: {}",
+                        reply.rejection_reason
+                    )
+                }),
+            }));
+            return;
+        }
+        Ok(Err(e)) => {
+            let _ = updates.send(Update::Link(Link::Trouble {
+                what: crate::text::clean(&format!("the handshake failed: {e}")),
+            }));
+            return;
+        }
+        Err(_) => {
+            let _ = updates.send(Update::Link(Link::Trouble {
+                what: format!(
+                    "the daemon did not answer the handshake within {} seconds",
+                    PATIENCE.as_secs()
+                ),
+            }));
+            return;
+        }
+    };
+
+    let version = format!(
+        "{}.{}",
+        reply.selected_version_major, reply.selected_version_minor
+    );
+    let _ = updates.send(Update::Link(Link::Open { version }));
+
+    // Open a workspace-bound session.
+    let create = ProtocolEnvelope::carrying(
+        type_url::command::CREATE_SESSION,
+        "",
+        "",
+        0,
+        "vitna-tui-create",
+        &CreateSession {
+            workspace_path: workspace.to_string_lossy().into_owned(),
+            title: String::new(),
+            initial_mode: "build".to_string(),
+            idempotency_key: "vitna-tui-create".to_string(),
+        },
+    );
+    let create = match create {
+        Ok(env) => env,
+        Err(e) => {
+            let _ = updates.send(Update::Link(Link::Trouble {
+                what: crate::text::clean(&format!("could not encode CreateSession: {e}")),
+            }));
+            return;
+        }
+    };
+    if let Err(e) = write_envelope(&mut stream, &create).await {
+        let _ = updates.send(Update::Link(Link::Trouble {
+            what: crate::text::clean(&format!("could not send CreateSession: {e}")),
+        }));
+        return;
+    }
+
+    let created_env = match tokio::time::timeout(PATIENCE, read_envelope(&mut stream)).await {
+        Ok(Ok(Some(env))) => env,
+        Ok(Ok(None)) => {
+            let _ = updates.send(Update::Link(Link::Absent {
+                why: "the daemon closed the connection before creating a session".to_string(),
+            }));
+            return;
+        }
+        Ok(Err(e)) => {
+            let _ = updates.send(Update::Link(Link::Trouble {
+                what: crate::text::clean(&format!("failed reading SessionCreated: {e}")),
+            }));
+            return;
+        }
+        Err(_) => {
+            let _ = updates.send(Update::Link(Link::Trouble {
+                what: "the daemon did not answer CreateSession in time".to_string(),
+            }));
+            return;
+        }
+    };
+
+    let session_id = if created_env.type_url == type_url::envelope::SESSION_CREATED {
+        match created_env.payload_as::<SessionCreated>() {
+            Ok(sc) if !sc.session_id.is_empty() => sc.session_id,
+            Ok(_) => {
+                let _ = updates.send(Update::Link(Link::Trouble {
+                    what: "the daemon returned an empty session id".to_string(),
+                }));
+                return;
+            }
+            Err(e) => {
+                let _ = updates.send(Update::Link(Link::Trouble {
+                    what: crate::text::clean(&format!("bad SessionCreated payload: {e}")),
+                }));
+                return;
+            }
+        }
+    } else if created_env.type_url == type_url::envelope::ERROR_RESPONSE {
+        let msg = created_env
+            .payload_as::<ErrorResponse>()
+            .map(|e| e.message)
+            .unwrap_or_else(|_| "the daemon refused CreateSession".to_string());
+        let _ = updates.send(Update::Link(Link::Trouble {
+            what: crate::text::clean(&msg),
+        }));
+        return;
+    } else {
+        let _ = updates.send(Update::Link(Link::Trouble {
+            what: crate::text::clean(&format!(
+                "expected SessionCreated, got {}",
+                created_env.type_url
+            )),
+        }));
+        return;
+    };
+
+    // Subscribe to the session's live event stream before announcing SessionReady.
+    if let Ok(sub) = ProtocolEnvelope::carrying(
+        type_url::command::SUBSCRIBE_EVENTS,
+        &session_id,
+        "",
+        0,
+        "vitna-tui-sub",
+        &SubscribeEvents {
+            session_id: session_id.clone(),
+            resume_after_sequence: 0,
+        },
+    ) {
+        if let Err(e) = write_envelope(&mut stream, &sub).await {
+            let _ = updates.send(Update::Link(Link::Trouble {
+                what: crate::text::clean(&format!("could not subscribe to events: {e}")),
+            }));
+            return;
+        }
+    }
+
+    let _ = updates.send(Update::SessionReady(session_id.clone()));
+
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    let session_for_writer = session_id.clone();
+    let writer_task = tokio::spawn(async move {
+        let mut seq: u64 = 1;
+        while let Some(cmd) = cmds.recv().await {
+            let key = format!("tui-{seq}");
+            seq = seq.saturating_add(1);
+            let env = match cmd {
+                OutboundCmd::SubmitTurn { prompt } => ProtocolEnvelope::carrying(
+                    type_url::command::SUBMIT_TURN,
+                    &session_for_writer,
+                    "",
+                    0,
+                    &key,
+                    &SubmitTurn {
+                        session_id: session_for_writer.clone(),
+                        prompt,
+                        attached_file_paths: Vec::new(),
+                        idempotency_key: key.clone(),
+                    },
+                ),
+                OutboundCmd::ApproveAction {
+                    approval_id,
+                    action_digest,
+                    scope,
+                } => ProtocolEnvelope::carrying(
+                    type_url::command::APPROVE_ACTION,
+                    &session_for_writer,
+                    "",
+                    0,
+                    &key,
+                    &ApproveAction {
+                        approval_id,
+                        action_digest,
+                        scope,
+                    },
+                ),
+                OutboundCmd::RejectAction {
+                    approval_id,
+                    action_digest,
+                    reason,
+                } => ProtocolEnvelope::carrying(
+                    type_url::command::REJECT_ACTION,
+                    &session_for_writer,
+                    "",
+                    0,
+                    &key,
+                    &RejectAction {
+                        approval_id,
+                        action_digest,
+                        reason,
+                    },
+                ),
+                OutboundCmd::CancelRun { run_id, reason } => ProtocolEnvelope::carrying(
+                    type_url::command::CANCEL_RUN,
+                    &session_for_writer,
+                    &run_id,
+                    0,
+                    &key,
+                    &CancelRun {
+                        run_id: run_id.clone(),
+                        reason,
+                    },
+                ),
+            };
+            if let Ok(env) = env {
+                if write_envelope(&mut writer, &env).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    loop {
+        match read_envelope(&mut reader).await {
+            Ok(Some(env)) => {
+                if updates.send(Update::Wire(env)).is_err() {
+                    break;
+                }
+            }
+            Ok(None) => {
+                let _ = updates.send(Update::Link(Link::Absent {
+                    why: "the daemon disconnected".to_string(),
+                }));
+                break;
+            }
+            Err(e) => {
+                let _ = updates.send(Update::Link(Link::Trouble {
+                    what: crate::text::clean(&format!("daemon stream error: {e}")),
+                }));
+                break;
+            }
+        }
+    }
+
+    writer_task.abort();
+}
+
 #[cfg(windows)]
 async fn connect(endpoint: &str) -> Option<tokio::net::windows::named_pipe::NamedPipeClient> {
     tokio::net::windows::named_pipe::ClientOptions::new()
@@ -107,8 +422,45 @@ async fn connect(endpoint: &str) -> Option<tokio::net::UnixStream> {
     tokio::net::UnixStream::connect(endpoint).await.ok()
 }
 
+async fn write_envelope<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    envelope: &ProtocolEnvelope,
+) -> Result<(), String> {
+    let frame = envelope.encode_frame().map_err(|e| e.to_string())?;
+    writer.write_all(&frame).await.map_err(|e| e.to_string())?;
+    writer.flush().await.map_err(|e| e.to_string())
+}
+
+async fn read_envelope<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<Option<ProtocolEnvelope>, String> {
+    let mut len = [0u8; 4];
+    match reader.read_exact(&mut len).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    }
+    let len = u32::from_be_bytes(len);
+    if len > MAX_FRAME_SIZE_BYTES {
+        return Err(format!(
+            "frame claims {len} bytes, over the {MAX_FRAME_SIZE_BYTES} limit"
+        ));
+    }
+    let mut body = vec![0u8; len as usize];
+    reader.read_exact(&mut body).await.map_err(|e| e.to_string())?;
+    let env: ProtocolEnvelope = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+    Ok(Some(env))
+}
+
+#[cfg(test)]
 async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
     mut stream: S,
+) -> Result<HandshakeResponse, String> {
+    handshake_io(&mut stream).await
+}
+
+async fn handshake_io<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
 ) -> Result<HandshakeResponse, String> {
     let request = ProtocolEnvelope::carrying(
         type_url::envelope::HANDSHAKE_REQUEST,
@@ -123,9 +475,7 @@ async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
         },
     )
     .map_err(|e| e.to_string())?;
-    let frame = request.encode_frame().map_err(|e| e.to_string())?;
-    stream.write_all(&frame).await.map_err(|e| e.to_string())?;
-    stream.flush().await.map_err(|e| e.to_string())?;
+    write_envelope(stream, &request).await?;
 
     let mut len = [0u8; 4];
     stream

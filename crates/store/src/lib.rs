@@ -122,6 +122,15 @@ pub struct RunSummary {
     pub total_events: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredSession {
+    pub session_id: String,
+    pub workspace_root: String,
+    pub created_at_ms: u64,
+    pub status: String,
+    pub runs: Vec<String>,
+}
+
 /// How many appended events the broadcast holds for a subscriber that has
 /// stopped reading.
 ///
@@ -184,8 +193,81 @@ impl EventStore {
     }
 
     pub fn apply_migrations(&self) -> SqliteResult<()> {
-        let sql = include_str!("../migrations/0001_initial_schema.sql");
-        self.conn.execute_batch(sql)
+        let sql_0001 = include_str!("../migrations/0001_initial_schema.sql");
+        self.conn.execute_batch(sql_0001)?;
+        let sql_0002 = include_str!("../migrations/0002_daemon_sessions.sql");
+        self.conn.execute_batch(sql_0002)
+    }
+
+    /// Persists a daemon session record so it survives daemon restarts.
+    pub fn save_session(
+        &self,
+        session_id: &str,
+        workspace_root: &str,
+        created_at_ms: u64,
+        status: &str,
+    ) -> SqliteResult<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO daemon_sessions (session_id, workspace_root, created_at_ms, status)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![session_id, workspace_root, created_at_ms, status],
+        )?;
+        Ok(())
+    }
+
+    /// Persists ordered membership of `run_id` inside `session_id`.
+    pub fn register_session_run(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        ordinal: u64,
+    ) -> SqliteResult<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO daemon_session_runs (session_id, run_id, ordinal)
+             VALUES (?1, ?2, ?3)",
+            params![session_id, run_id, ordinal],
+        )?;
+        Ok(())
+    }
+
+    /// Loads every persisted daemon session together with its ordered run list.
+    pub fn load_sessions(&self) -> SqliteResult<Vec<StoredSession>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id, workspace_root, created_at_ms, status
+             FROM daemon_sessions
+             ORDER BY created_at_ms DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+
+        let mut sessions = Vec::new();
+        for row in rows {
+            let (session_id, workspace_root, created_at_ms, status) = row?;
+            let mut run_stmt = self.conn.prepare(
+                "SELECT run_id FROM daemon_session_runs
+                 WHERE session_id = ?1
+                 ORDER BY ordinal ASC",
+            )?;
+            let run_rows = run_stmt.query_map(params![&session_id], |r| r.get::<_, String>(0))?;
+            let mut runs = Vec::new();
+            for r in run_rows {
+                runs.push(r?);
+            }
+            sessions.push(StoredSession {
+                session_id,
+                workspace_root,
+                created_at_ms,
+                status,
+                runs,
+            });
+        }
+        Ok(sessions)
     }
 
     pub fn append_event(&self, event: &EventRecord) -> SqliteResult<()> {
@@ -334,21 +416,49 @@ impl EventStore {
             } else if event.type_url.contains("ToolFinished") {
                 current_state = ReplayedRunState::RunningModel;
             } else if event.type_url.contains("RunStateChanged") {
-                // If the event payload indicates completed/failed, map state
-                if event
-                    .encrypted_payload
-                    .windows(9)
-                    .any(|w| w == b"completed")
-                {
-                    current_state = ReplayedRunState::Completed;
-                } else if event.encrypted_payload.windows(6).any(|w| w == b"failed") {
-                    current_state = ReplayedRunState::Failed;
-                } else if event
-                    .encrypted_payload
-                    .windows(20)
-                    .any(|w| w == b"needs_reconciliation")
-                {
-                    current_state = ReplayedRunState::NeedsReconciliation;
+                // Prefer the declared JSON `new_state` field when present; fall
+                // back to raw byte checks for legacy fixture payloads.
+                let parsed_state = serde_json::from_slice::<serde_json::Value>(&event.encrypted_payload)
+                    .ok()
+                    .and_then(|v| v.get("new_state").and_then(|s| s.as_str()).map(str::to_string));
+                match parsed_state.as_deref() {
+                    Some("completed") => current_state = ReplayedRunState::Completed,
+                    Some("failed") => current_state = ReplayedRunState::Failed,
+                    Some("cancelled") => current_state = ReplayedRunState::Cancelled,
+                    Some("paused") => current_state = ReplayedRunState::Paused,
+                    Some("running_model") => current_state = ReplayedRunState::RunningModel,
+                    Some("waiting_for_approval") => {
+                        current_state = ReplayedRunState::WaitingForApproval
+                    }
+                    Some("running_tool") => current_state = ReplayedRunState::RunningTool,
+                    Some("needs_reconciliation") => {
+                        current_state = ReplayedRunState::NeedsReconciliation
+                    }
+                    _ => {
+                        if event
+                            .encrypted_payload
+                            .windows(9)
+                            .any(|w| w == b"completed")
+                        {
+                            current_state = ReplayedRunState::Completed;
+                        } else if event.encrypted_payload.windows(6).any(|w| w == b"failed") {
+                            current_state = ReplayedRunState::Failed;
+                        } else if event
+                            .encrypted_payload
+                            .windows(9)
+                            .any(|w| w == b"cancelled")
+                        {
+                            current_state = ReplayedRunState::Cancelled;
+                        } else if event.encrypted_payload.windows(6).any(|w| w == b"paused") {
+                            current_state = ReplayedRunState::Paused;
+                        } else if event
+                            .encrypted_payload
+                            .windows(20)
+                            .any(|w| w == b"needs_reconciliation")
+                        {
+                            current_state = ReplayedRunState::NeedsReconciliation;
+                        }
+                    }
                 }
             }
 
@@ -446,5 +556,43 @@ mod tests {
 
         let summary = store.replay_run("run-002").expect("replay must complete");
         assert_eq!(summary.state, ReplayedRunState::NeedsReconciliation);
+    }
+
+    #[test]
+    fn test_session_persistence_roundtrip() {
+        let dir = std::env::temp_dir().join(format!(
+            "vitna_store_sessions_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let db = dir.join("sessions.db");
+        let _ = std::fs::remove_file(&db);
+
+        {
+            let store = EventStore::open(&db).expect("open db");
+            store
+                .save_session("sess-a", "/tmp/ws-a", 1000, "active")
+                .expect("save sess-a");
+            store
+                .register_session_run("sess-a", "run-1", 0)
+                .expect("register run-1");
+            store
+                .register_session_run("sess-a", "run-2", 1)
+                .expect("register run-2");
+            store
+                .save_session("sess-b", "/tmp/ws-b", 2000, "active")
+                .expect("save sess-b");
+        }
+
+        let reopened = EventStore::open(&db).expect("reopen db");
+        let loaded = reopened.load_sessions().expect("load sessions");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].session_id, "sess-b");
+        assert!(loaded[0].runs.is_empty());
+        assert_eq!(loaded[1].session_id, "sess-a");
+        assert_eq!(loaded[1].workspace_root, "/tmp/ws-a");
+        assert_eq!(loaded[1].runs, vec!["run-1", "run-2"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

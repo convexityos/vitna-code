@@ -264,4 +264,99 @@ describe('VitnaClient failure paths', () => {
     // Nothing but the handshake was ever sent.
     expect(transport.sent.map((e) => e.type_url.split('.').at(-1))).toEqual(['HandshakeRequest']);
   });
+
+  it('creates a session via CreateSession/SessionCreated and subscribes to it', async () => {
+    const { decodeCommandPayload, encodeEvent } = await import('../protocol/codec');
+    const transport = new Scripted((envelope) => {
+      const { kind, body } = decodeCommandPayload(envelope);
+      if (kind === 'HandshakeRequest') {
+        return encodeEvent(
+          {
+            kind: 'HandshakeResponse',
+            body: {
+              selected_version_major: 1,
+              selected_version_minor: 0,
+              daemon_build_commit: 'test',
+              accepted: true,
+              rejection_reason: '',
+            },
+          },
+          { session_id: '', run_id: '', sequence: 0, idempotency_key: '' },
+        );
+      }
+      if (kind === 'CreateSession') {
+        return encodeEvent(
+          {
+            kind: 'SessionCreated',
+            body: {
+              session_id: 'sess-created-42',
+              workspace_path: String(body.workspace_path ?? ''),
+              initial_mode: String(body.initial_mode ?? 'build'),
+            },
+          },
+          { session_id: 'sess-created-42', run_id: '', sequence: 0, idempotency_key: '' },
+        );
+      }
+      return null;
+    });
+    // Start with no initial host session so start() does not auto-subscribe.
+    Object.defineProperty(transport, 'session', { value: null });
+
+    const client = new VitnaClient(transport, { onLink: () => {}, onEnvelope: () => {} });
+    await client.start();
+    const created = await client.createSession('/repo/demo', 'inspect', 'Demo');
+    expect(created).toEqual({
+      session_id: 'sess-created-42',
+      workspace_path: '/repo/demo',
+      initial_mode: 'inspect',
+    });
+    expect(transport.sent.map((e) => e.type_url.split('.').at(-1))).toEqual([
+      'HandshakeRequest',
+      'CreateSession',
+      'SubscribeEvents',
+    ]);
+    expect(transport.sent[2]?.session_id).toBe('sess-created-42');
+  });
+
+  it('rejects createSession when the daemon returns an ErrorResponse', async () => {
+    const { decodeCommandPayload, encodeEvent } = await import('../protocol/codec');
+    const transport = new Scripted((envelope) => {
+      const { kind } = decodeCommandPayload(envelope);
+      if (kind === 'HandshakeRequest') {
+        return encodeEvent(
+          {
+            kind: 'HandshakeResponse',
+            body: {
+              selected_version_major: 1,
+              selected_version_minor: 0,
+              daemon_build_commit: 'test',
+              accepted: true,
+              rejection_reason: '',
+            },
+          },
+          { session_id: '', run_id: '', sequence: 0, idempotency_key: '' },
+        );
+      }
+      if (kind === 'CreateSession') {
+        return encodeEvent(
+          {
+            kind: 'ErrorResponse',
+            body: {
+              code: 'ERROR_CODE_POLICY_DENIED',
+              message: 'workspace path does not exist',
+              error_details: '',
+              action_id: '',
+            },
+          },
+          { session_id: '', run_id: '', sequence: 0, idempotency_key: '' },
+        );
+      }
+      return null;
+    });
+    Object.defineProperty(transport, 'session', { value: null });
+
+    const client = new VitnaClient(transport, { onLink: () => {}, onEnvelope: () => {} });
+    await client.start();
+    await expect(client.createSession('/nonexistent')).rejects.toThrow('workspace path does not exist');
+  });
 });

@@ -1030,3 +1030,88 @@ async fn past_sixty_four_definitions_the_rest_are_counted_and_without_the_flag_t
         (404, "no_routines")
     );
 }
+
+#[tokio::test]
+async fn receipts_endpoint_lists_and_verifies_signed_and_tampered_receipts() {
+    let h = Harness::start("receipts_list").await;
+    let token = h.session().await;
+    let t = Some(token.as_str());
+
+    // Empty workspace returns an empty list cleanly.
+    let empty = h.api(t, "receipts", "", b"").await;
+    assert_eq!(empty.status, 200, "{}", empty.text());
+    let empty_json = empty.json();
+    assert_eq!(empty_json["receipts"].as_array().unwrap().len(), 0);
+    assert_eq!(empty_json["left_out"].as_u64(), Some(0));
+
+    // Create a signed receipt via /api/v1/receipt.
+    let created = h
+        .api(
+            t,
+            "receipt",
+            "",
+            br#"{"provider":"openai","model":"gpt-5","summary":"checked"}"#,
+        )
+        .await;
+    assert_eq!(created.status, 200, "{}", created.text());
+    let created_json = created.json();
+    let run_id = created_json["run_id"].as_str().unwrap().to_string();
+    let pub_key = created_json["public_key"].as_str().unwrap().to_string();
+
+    let listed = h.api(t, "receipts", "", b"").await;
+    assert_eq!(listed.status, 200, "{}", listed.text());
+    let listed_json = listed.json();
+    let rows = listed_json["receipts"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["run_id"].as_str(), Some(run_id.as_str()));
+    assert_eq!(rows[0]["readable"].as_bool(), Some(true));
+    assert_eq!(rows[0]["is_valid"].as_bool(), Some(true));
+    assert_eq!(rows[0]["signature_verified"].as_bool(), Some(true));
+    assert_eq!(rows[0]["device_public_key"].as_str(), Some(pub_key.as_str()));
+
+    // Tamper with the receipt on disk and verify /api/v1/receipts flags it honestly.
+    let receipt_file = h
+        .folder()
+        .join(".vitna")
+        .join("receipts")
+        .join(format!("{run_id}.json"));
+    let original = std::fs::read_to_string(&receipt_file).unwrap();
+    let tampered = original.replace("\"gpt-5\"", "\"tampered-model\"");
+    std::fs::write(&receipt_file, tampered).unwrap();
+
+    // Also drop a malformed JSON file to ensure unreadable entries are reported honestly.
+    std::fs::write(
+        h.folder().join(".vitna").join("receipts").join("zz-corrupt.json"),
+        "{not valid json",
+    )
+    .unwrap();
+
+    let after = h.api(t, "receipts", "", b"").await;
+    assert_eq!(after.status, 200, "{}", after.text());
+    let after_rows = after.json()["receipts"].as_array().cloned().unwrap();
+    assert_eq!(after_rows.len(), 2);
+
+    let tampered_row = after_rows
+        .iter()
+        .find(|r| r["run_id"].as_str() == Some(run_id.as_str()))
+        .expect("tampered receipt row");
+    assert_eq!(tampered_row["is_valid"].as_bool(), Some(false));
+    assert_eq!(tampered_row["signature_verified"].as_bool(), Some(false));
+    assert!(
+        tampered_row["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e.as_str().unwrap_or("").contains("payload tampered"))
+    );
+
+    let corrupt_row = after_rows
+        .iter()
+        .find(|r| r["file"].as_str() == Some("zz-corrupt.json"))
+        .expect("corrupt receipt row");
+    assert_eq!(corrupt_row["readable"].as_bool(), Some(false));
+    assert_eq!(corrupt_row["is_valid"].as_bool(), Some(false));
+
+    // Requires an authenticated session.
+    assert_eq!(h.api(None, "receipts", "", b"").await.status, 401);
+}
