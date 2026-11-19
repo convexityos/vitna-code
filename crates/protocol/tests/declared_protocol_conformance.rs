@@ -294,11 +294,14 @@ fn every_implemented_message_carries_exactly_its_declared_fields() {
     assert_fields_match::<CancelRun>("commands.proto", "CancelRun");
     assert_fields_match::<ApproveAction>("commands.proto", "ApproveAction");
     assert_fields_match::<RejectAction>("commands.proto", "RejectAction");
+    assert_fields_match::<SpawnChild>("commands.proto", "SpawnChild");
     assert_fields_match::<SessionCreated>("envelope.proto", "SessionCreated");
     assert_fields_match::<MessageDelta>("events.proto", "MessageDelta");
     assert_fields_match::<ToolProposed>("events.proto", "ToolProposed");
     assert_fields_match::<ToolOutput>("events.proto", "ToolOutput");
     assert_fields_match::<DiffChanged>("events.proto", "DiffChanged");
+    assert_fields_match::<AgentSpawned>("events.proto", "AgentSpawned");
+    assert_fields_match::<AgentCompleted>("events.proto", "AgentCompleted");
     assert_fields_match::<UsageUpdated>("events.proto", "UsageUpdated");
     assert_fields_match::<RunStateChanged>("events.proto", "RunStateChanged");
     assert_fields_match::<Diagnostic>("events.proto", "Diagnostic");

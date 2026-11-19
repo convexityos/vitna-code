@@ -20,8 +20,8 @@ use tokio::io::{
 };
 use vitna_daemon::{ipc, DaemonServer, ModelRoute};
 use vitna_protocol::messages::{
-    ApprovalRequested, ErrorCode, ErrorResponse, HandshakeRequest, RunStateChanged, SessionCreated,
-    ToolFinished,
+    AgentCompleted, AgentSpawned, ApprovalRequested, ErrorCode, ErrorResponse, HandshakeRequest,
+    RunStateChanged, SessionCreated, SpawnChild, ToolFinished,
 };
 use vitna_protocol::{type_url, ProtocolEnvelope, PROTOCOL_VERSION_MAJOR};
 use vitna_providers::{
@@ -813,4 +813,167 @@ async fn session_and_conversation_history_survive_daemon_restart() {
         .map(|m| m.content.as_str())
         .collect();
     assert_eq!(sent, vec!["first prompt", "Answer one.", "second prompt"]);
+}
+
+#[tokio::test]
+async fn spawn_child_runs_in_isolated_workspace_and_emits_declared_events() {
+    let mut script = vec![say("Parent done.")];
+    script.extend(write_then_done("child_only.txt"));
+    let mut wire = connect("spawn_child_iso", Some(script), None).await;
+    let session = wire.open_session().await;
+
+    // 1. Run parent turn to establish parent_run_id.
+    wire.submit(&session, "parent task").await;
+    let (parent_final, _) = wire.final_state().await;
+    assert_eq!(parent_final.new_state, "completed");
+    let parent_run_id = parent_final.run_id.clone();
+
+    // 2. Spawn a child agent over the wire.
+    wire.send(
+        type_url::command::SPAWN_CHILD,
+        &session,
+        &SpawnChild {
+            parent_run_id: parent_run_id.clone(),
+            goal: "write isolated child file".into(),
+            requested_mode: "build".into(),
+            token_budget: 4000,
+            max_nesting_depth: 1,
+            idempotency_key: "spawn-1".into(),
+        },
+    )
+    .await;
+
+    // 3. Receive AgentSpawned first, then ApprovalRequested for child's write_file.
+    let (spawn_frame, _) = wire
+        .until(|f| f.type_url == type_url::event::AGENT_SPAWNED)
+        .await;
+    let spawned: AgentSpawned = spawn_frame.payload_as().expect("AgentSpawned");
+    assert_eq!(spawned.parent_run_id, parent_run_id);
+    assert_eq!(spawned.goal, "write isolated child file");
+    assert!(!spawned.child_run_id.is_empty());
+    let child_ws = PathBuf::from(&spawned.agent_workspace_path);
+    assert!(child_ws.exists(), "isolated child workspace should exist");
+    assert_ne!(child_ws, wire.root);
+
+    let approval = wire.approval().await;
+    wire.send(
+        type_url::command::APPROVE_ACTION,
+        &session,
+        &json!({
+            "approval_id": approval.approval_id,
+            "action_digest": approval.action_digest,
+            "scope": "once"
+        }),
+    )
+    .await;
+
+    // 4. Child completes, emitting AgentCompleted before terminal RunStateChanged.
+    let (child_final, before) = wire.final_state().await;
+    assert_eq!(child_final.run_id, spawned.child_run_id);
+    assert_eq!(child_final.new_state, "completed");
+
+    let completed_frame = before
+        .iter()
+        .find(|f| f.type_url == type_url::event::AGENT_COMPLETED)
+        .expect("AgentCompleted must be emitted");
+    let completed: AgentCompleted = completed_frame.payload_as().expect("AgentCompleted");
+    assert_eq!(completed.child_run_id, spawned.child_run_id);
+    assert_eq!(completed.result_artifact_digest.len(), 64);
+
+    // 5. Invariant 8: write landed only in the isolated child workspace, never primary.
+    assert_eq!(
+        std::fs::read_to_string(child_ws.join("child_only.txt")).expect("child file"),
+        "written\n"
+    );
+    assert!(
+        !wire.root.join("child_only.txt").exists(),
+        "primary workspace must remain untouched by child writes"
+    );
+
+    // 6. Child receipt is signed and verifies offline.
+    let receipt_path = child_ws
+        .join(".vitna/receipts")
+        .join(format!("{}.json", spawned.child_run_id));
+    let receipt_bytes = std::fs::read(&receipt_path).expect("child receipt file");
+    let receipt: vitna_receipts::VitnaRunReceiptV1 =
+        serde_json::from_slice(&receipt_bytes).expect("parse child receipt");
+    let report = ReceiptVerifier::verify_receipt(&receipt, None).expect("verify child receipt");
+    assert!(report.is_valid, "child receipt must verify: {:?}", report.errors);
+
+    let _ = std::fs::remove_dir_all(&wire.root);
+}
+
+#[tokio::test]
+async fn spawn_child_enforces_nesting_depth_and_validates_parent() {
+    let mut wire = connect("spawn_child_refuse", Some(vec![say("Parent done.")]), None).await;
+    let session = wire.open_session().await;
+
+    wire.submit(&session, "parent task").await;
+    let (parent_final, _) = wire.final_state().await;
+    let parent_run_id = parent_final.run_id;
+
+    // 1. max_nesting_depth == 0 is refused.
+    wire.send(
+        type_url::command::SPAWN_CHILD,
+        &session,
+        &SpawnChild {
+            parent_run_id: parent_run_id.clone(),
+            goal: "should be refused".into(),
+            requested_mode: "build".into(),
+            token_budget: 1000,
+            max_nesting_depth: 0,
+            idempotency_key: "sc-depth".into(),
+        },
+    )
+    .await;
+    let (err_frame, _) = wire
+        .until(|f| f.type_url == type_url::envelope::ERROR_RESPONSE)
+        .await;
+    let err: ErrorResponse = err_frame.payload_as().expect("ErrorResponse");
+    assert_eq!(err.code, ErrorCode::PolicyDenied);
+    assert!(err.message.contains("max_nesting_depth"), "{}", err.message);
+
+    // 2. Unknown parent_run_id is refused.
+    wire.send(
+        type_url::command::SPAWN_CHILD,
+        &session,
+        &SpawnChild {
+            parent_run_id: "run-does-not-exist".into(),
+            goal: "orphan child".into(),
+            requested_mode: "build".into(),
+            token_budget: 1000,
+            max_nesting_depth: 2,
+            idempotency_key: "sc-orphan".into(),
+        },
+    )
+    .await;
+    let (err_frame, _) = wire
+        .until(|f| f.type_url == type_url::envelope::ERROR_RESPONSE)
+        .await;
+    let err: ErrorResponse = err_frame.payload_as().expect("ErrorResponse");
+    assert_eq!(err.code, ErrorCode::PolicyDenied);
+    assert!(err.message.contains("Parent run not found"), "{}", err.message);
+
+    // 3. Empty goal is refused.
+    wire.send(
+        type_url::command::SPAWN_CHILD,
+        &session,
+        &SpawnChild {
+            parent_run_id,
+            goal: "   ".into(),
+            requested_mode: "build".into(),
+            token_budget: 1000,
+            max_nesting_depth: 2,
+            idempotency_key: "sc-empty".into(),
+        },
+    )
+    .await;
+    let (err_frame, _) = wire
+        .until(|f| f.type_url == type_url::envelope::ERROR_RESPONSE)
+        .await;
+    let err: ErrorResponse = err_frame.payload_as().expect("ErrorResponse");
+    assert_eq!(err.code, ErrorCode::PolicyDenied);
+    assert!(err.message.contains("goal"), "{}", err.message);
+
+    let _ = std::fs::remove_dir_all(&wire.root);
 }

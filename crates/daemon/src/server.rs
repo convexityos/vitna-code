@@ -16,6 +16,7 @@ use crate::turns::{ModelRoute, PendingApprovals};
 use vitna_receipts::VitnaRunReceiptV1;
 use vitna_runner::{ProcessRunner, Runner};
 use vitna_store::EventStore;
+use vitna_telemetry::TelemetryCollector;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -52,6 +53,10 @@ pub struct DaemonServer {
     pub active_turns: Arc<Mutex<HashSet<String>>>,
     /// Cooperative cancel/steer/pause handles for currently running runs, by run_id.
     pub active_controls: Arc<Mutex<HashMap<String, Arc<RunControl>>>>,
+    /// Nesting depth of runs (0 for top-level turns, parent_depth + 1 for SpawnChild).
+    pub run_depths: Arc<Mutex<HashMap<String, u32>>>,
+    /// Local-only egress and metric collector (zero network I/O).
+    pub telemetry: Arc<TelemetryCollector>,
 }
 
 impl DaemonServer {
@@ -120,7 +125,13 @@ impl DaemonServer {
             histories: Arc::new(Mutex::new(restored_histories)),
             active_turns: Arc::new(Mutex::new(HashSet::new())),
             active_controls: Arc::new(Mutex::new(HashMap::new())),
+            run_depths: Arc::new(Mutex::new(HashMap::new())),
+            telemetry: Arc::new(TelemetryCollector::new()),
         }
+    }
+
+    pub fn telemetry(&self) -> Arc<TelemetryCollector> {
+        Arc::clone(&self.telemetry)
     }
 
     /// Initializes a daemon server with a persistent SQLite WAL event store and
@@ -263,6 +274,15 @@ impl DaemonServer {
         // Newest session first.
         list.sort_by_key(|s| std::cmp::Reverse(s.created_at_ms));
         list
+    }
+
+    /// Finds the session that owns `run_id`, if any.
+    pub fn session_for_run(&self, run_id: &str) -> Option<SessionInfo> {
+        let sessions = self.sessions.lock().ok()?;
+        sessions
+            .values()
+            .find(|s| s.runs.iter().any(|r| r == run_id))
+            .cloned()
     }
 
     /// Executes a durable task run end-to-end within the specified session.

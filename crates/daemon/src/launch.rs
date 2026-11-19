@@ -120,8 +120,11 @@ pub async fn run<F: FnOnce()>(launch: &Launch, on_ready: F) -> Result<(), String
     match &launch.route {
         Some(lane) => {
             tracing::info!(runtime = %lane.endpoint, lane = %lane.lane, "turns go to a vitna-runtime lane");
+            let telemetry = server.telemetry();
             server = server.with_route(ModelRoute {
-                provider: Arc::new(RuntimeLaneProvider::new(lane.clone())),
+                provider: Arc::new(
+                    RuntimeLaneProvider::new(lane.clone()).with_telemetry(telemetry),
+                ),
                 model: lane.lane.clone(),
                 routing_reason: format!("runtime_lane:{}", lane.lane),
             });

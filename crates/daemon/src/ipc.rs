@@ -36,8 +36,8 @@ use tokio::sync::mpsc;
 use vitna_orchestration::ApprovalDecision;
 use vitna_protocol::messages::{
     ApproveAction, CancelRun, CreateSession, ErrorCode, ErrorResponse, HandshakeRequest,
-    HandshakeResponse, PauseRun, RejectAction, ResumeRun, SessionCreated, SteerRun, SubmitTurn,
-    SubscribeEvents,
+    HandshakeResponse, PauseRun, RejectAction, ResumeRun, SessionCreated, SpawnChild, SteerRun,
+    SubmitTurn, SubscribeEvents,
 };
 use vitna_protocol::{
     type_url, ProtocolEnvelope, MAX_FRAME_SIZE_BYTES, PROTOCOL_VERSION_MAJOR,
@@ -581,6 +581,28 @@ where
                 };
                 match daemon.resume_run(&run_id) {
                     Ok(()) => Ok(()),
+                    Err(why) => {
+                        out.send(error_for(&request, ErrorCode::PolicyDenied, why))
+                            .await
+                    }
+                }
+            }
+
+            type_url::command::SPAWN_CHILD => {
+                let mut body: SpawnChild = match request.payload_as() {
+                    Ok(b) => b,
+                    Err(why) => {
+                        let _ = out
+                            .send(error_for(&request, ErrorCode::InvalidFrame, why))
+                            .await;
+                        continue;
+                    }
+                };
+                if body.parent_run_id.is_empty() {
+                    body.parent_run_id = request.run_id.clone();
+                }
+                match daemon.spawn_child(&body) {
+                    Ok(_child_run_id) => Ok(()),
                     Err(why) => {
                         out.send(error_for(&request, ErrorCode::PolicyDenied, why))
                             .await

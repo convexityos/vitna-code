@@ -12,12 +12,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
+use vitna_git_workspaces::AgentWorkspaceManager;
 use vitna_orchestration::{
     ApprovalDecision, ApprovalRequest, Approver, OrchestrationConfig, OrchestrationEngine,
     RunControl, MAX_ROUNDS,
 };
-use vitna_protocol::messages::{run_state, Diagnostic};
+use vitna_protocol::messages::{
+    run_state, AgentCompleted, AgentSpawned, Diagnostic, SpawnChild,
+};
 use vitna_protocol::type_url;
 use vitna_providers::{Provider, ProviderMessage};
 use vitna_tools::workspace_files::WorkspaceFiles;
@@ -283,6 +287,9 @@ impl DaemonServer {
         if let Ok(mut controls) = self.active_controls.lock() {
             controls.insert(run_id.clone(), control);
         }
+        if let Ok(mut depths) = self.run_depths.lock() {
+            depths.insert(run_id.clone(), 0);
+        }
 
         let prior = self
             .histories
@@ -298,6 +305,217 @@ impl DaemonServer {
                 .await;
         });
         Ok(run_id)
+    }
+
+    /// Spawns a child agent run in its own isolated disposable workspace
+    /// (`AgentWorkspaceManager::create_isolated_workspace`), enforcing nesting
+    /// depth limits and Invariant 8 (no shared mutable workspace for writers).
+    pub fn spawn_child(&self, req: &SpawnChild) -> Result<String, String> {
+        let route = self.route.clone().ok_or_else(|| {
+            "this daemon has no model route. Start it with --runtime-url and --lane naming a \
+             vitna-runtime lane on this machine"
+                .to_string()
+        })?;
+        if req.parent_run_id.trim().is_empty() {
+            return Err("SpawnChild needs a parent_run_id".to_string());
+        }
+        if req.goal.trim().is_empty() {
+            return Err("SpawnChild needs a non-empty goal".to_string());
+        }
+        let session = self
+            .session_for_run(&req.parent_run_id)
+            .ok_or_else(|| format!("Parent run not found: {}", req.parent_run_id))?;
+
+        let parent_depth = self
+            .run_depths
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get(&req.parent_run_id)
+            .copied()
+            .unwrap_or(0);
+        let child_depth = parent_depth.saturating_add(1);
+        if req.max_nesting_depth == 0 || child_depth > req.max_nesting_depth {
+            return Err(format!(
+                "SpawnChild nesting depth {child_depth} exceeds max_nesting_depth {}",
+                req.max_nesting_depth
+            ));
+        }
+
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let child_run_id = format!(
+            "run-child-{}-{}",
+            now_ms,
+            TURN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+
+        let isolated = AgentWorkspaceManager::create_isolated_workspace(
+            &session.workspace_root,
+            &child_run_id,
+        )?;
+
+        let next_sequence = self.next_session_sequence(&session.session_id)?;
+        self.register_run(&session.session_id, &child_run_id)?;
+
+        let control = Arc::new(RunControl::new());
+        let config = OrchestrationConfig {
+            session_id: session.session_id.clone(),
+            run_id: child_run_id.clone(),
+            workspace_root: isolated.agent_workspace_root.clone(),
+            auto_approve: false,
+            model_sku: route.model.clone(),
+            provider_name: route.provider.name().to_string(),
+            sandbox_guarantee: "guarded".to_string(),
+            verification_command: None,
+            allow_unsandboxed: false,
+        };
+
+        let mut engine = OrchestrationEngine::new(
+            config,
+            self.store.clone(),
+            self.runner.clone(),
+            (*self.signing_key).clone(),
+        )
+        .continuing_at(next_sequence)
+        .with_control(Arc::clone(&control))
+        .with_approver(Arc::new(WireApprover {
+            pending: self.approvals.clone(),
+            run_id: child_run_id.clone(),
+            control: Arc::clone(&control),
+        }));
+        engine.routing_reason = route.routing_reason.clone();
+        engine.approval_timeout_ms = self.approval_timeout_ms;
+
+        engine.record_event(
+            type_url::event::AGENT_SPAWNED,
+            &AgentSpawned {
+                child_run_id: child_run_id.clone(),
+                parent_run_id: req.parent_run_id.clone(),
+                goal: req.goal.clone(),
+                agent_workspace_path: isolated
+                    .agent_workspace_root
+                    .to_string_lossy()
+                    .into_owned(),
+            },
+        )?;
+
+        if let Ok(mut controls) = self.active_controls.lock() {
+            controls.insert(child_run_id.clone(), control);
+        }
+        if let Ok(mut depths) = self.run_depths.lock() {
+            depths.insert(child_run_id.clone(), child_depth);
+        }
+
+        let daemon = self.clone();
+        let goal = req.goal.clone();
+        let child_id_task = child_run_id.clone();
+        tokio::spawn(async move {
+            daemon
+                .drive_child_turn(engine, route, child_id_task, goal)
+                .await;
+        });
+
+        Ok(child_run_id)
+    }
+
+    async fn drive_child_turn(
+        &self,
+        mut engine: OrchestrationEngine,
+        route: ModelRoute,
+        child_run_id: String,
+        goal: String,
+    ) {
+        let outcome = engine
+            .run_agent_turn(route.provider.as_ref(), &[], &goal, MAX_ROUNDS)
+            .await;
+        let receipt = engine.finalize_run().await;
+
+        let (completion_state, result_artifact_digest, final_state, reason) =
+            match (&outcome, &receipt) {
+                (_, Err(e)) => {
+                    let _ = engine.record_event(
+                        type_url::event::DIAGNOSTIC,
+                        &Diagnostic {
+                            level: "error".to_string(),
+                            code: "receipt_failed".to_string(),
+                            message: format!("child receipt could not be signed: {e}"),
+                            details: String::new(),
+                        },
+                    );
+                    (
+                        "failed".to_string(),
+                        String::new(),
+                        run_state::FAILED,
+                        format!("receipt failed: {e}"),
+                    )
+                }
+                (Err(e), Ok(r)) => {
+                    let digest = r
+                        .to_canonical_bytes()
+                        .map(|b| hex::encode(Sha256::digest(&b)))
+                        .unwrap_or_default();
+                    (
+                        r.completion_state.clone(),
+                        digest,
+                        run_state::FAILED,
+                        e.clone(),
+                    )
+                }
+                (Ok(turn), Ok(r)) if turn.cancelled => {
+                    let digest = r
+                        .to_canonical_bytes()
+                        .map(|b| hex::encode(Sha256::digest(&b)))
+                        .unwrap_or_default();
+                    (
+                        r.completion_state.clone(),
+                        digest,
+                        run_state::CANCELLED,
+                        turn.cancel_reason
+                            .clone()
+                            .unwrap_or_else(|| "cancelled by operator".to_string()),
+                    )
+                }
+                (Ok(turn), Ok(r)) if turn.hit_round_limit => {
+                    let digest = r
+                        .to_canonical_bytes()
+                        .map(|b| hex::encode(Sha256::digest(&b)))
+                        .unwrap_or_default();
+                    (
+                        r.completion_state.clone(),
+                        digest,
+                        run_state::FAILED,
+                        format!("stopped at the round limit of {MAX_ROUNDS}"),
+                    )
+                }
+                (Ok(_), Ok(r)) => {
+                    let digest = r
+                        .to_canonical_bytes()
+                        .map(|b| hex::encode(Sha256::digest(&b)))
+                        .unwrap_or_default();
+                    (
+                        r.completion_state.clone(),
+                        digest,
+                        run_state::COMPLETED,
+                        "child agent finished".to_string(),
+                    )
+                }
+            };
+
+        let _ = engine.record_event(
+            type_url::event::AGENT_COMPLETED,
+            &AgentCompleted {
+                child_run_id: child_run_id.clone(),
+                completion_state,
+                result_artifact_digest,
+            },
+        );
+        let _ = engine.set_run_state(final_state, &reason);
+
+        if let Ok(mut controls) = self.active_controls.lock() {
+            controls.remove(&child_run_id);
+        }
     }
 
     /// Cancels an active run cooperatively.

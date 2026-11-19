@@ -416,6 +416,47 @@ pub mod run_state {
     pub const CANCELLED: &str = "cancelled";
 }
 
+/// `commands.proto`: spawn an isolated child agent run linked to a parent run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnChild {
+    #[serde(default)]
+    pub parent_run_id: String,
+    #[serde(default)]
+    pub goal: String,
+    #[serde(default)]
+    pub requested_mode: String,
+    #[serde(default)]
+    pub token_budget: u64,
+    #[serde(default)]
+    pub max_nesting_depth: u32,
+    #[serde(default)]
+    pub idempotency_key: String,
+}
+
+/// `events.proto`: emitted when a child agent run is created in its isolated workspace.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSpawned {
+    #[serde(default)]
+    pub child_run_id: String,
+    #[serde(default)]
+    pub parent_run_id: String,
+    #[serde(default)]
+    pub goal: String,
+    #[serde(default)]
+    pub agent_workspace_path: String,
+}
+
+/// `events.proto`: emitted when a spawned child agent run reaches a terminal state.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentCompleted {
+    #[serde(default)]
+    pub child_run_id: String,
+    #[serde(default)]
+    pub completion_state: String,
+    #[serde(default)]
+    pub result_artifact_digest: String,
+}
+
 /// `events.proto`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
