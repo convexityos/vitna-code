@@ -174,9 +174,28 @@ fn base_environment(extra: &[(String, String)]) -> Vec<(String, String)> {
     }
     #[cfg(windows)]
     {
-        // Without these, much of the Win32 surface fails in ways that look like
-        // the command being broken rather than the environment being empty.
-        for key in ["SystemRoot", "SystemDrive", "COMSPEC", "PATHEXT"] {
+        // Without these standard OS location variables, Win32 AppContainer
+        // process initialization fails with ERROR_ENVVAR_NOT_FOUND (203) or
+        // commands fail in ways that look broken rather than missing env.
+        // None of these carry credentials; AppContainer NTFS ACLs still deny
+        // access to host profile directories outside the workspace.
+        for key in [
+            "SystemRoot",
+            "WINDIR",
+            "SystemDrive",
+            "ComSpec",
+            "PATHEXT",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramData",
+            "USERPROFILE",
+            "LOCALAPPDATA",
+            "APPDATA",
+            "OS",
+            "COMPUTERNAME",
+            "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE",
+        ] {
             if let Ok(v) = std::env::var(key) {
                 env.push((key.to_string(), v));
             }

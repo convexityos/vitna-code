@@ -378,14 +378,16 @@ async fn a_sandboxed_command_cannot_write_git_config() {
         )
     };
 
-    let _ = runner(&fx)
+    let out = runner(&fx)
         .run_command(CommandRequest::new(
             command,
             &fx.workspace,
             &fx.workspace,
             30_000,
         ))
-        .await;
+        .await
+        .expect("the command itself should run, even if its write to .git/config is denied");
+    assert_eq!(out.sandbox_backend, backend);
 
     let contents = fs::read_to_string(&config).expect("config still readable");
     assert_eq!(

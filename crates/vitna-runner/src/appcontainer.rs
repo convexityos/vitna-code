@@ -141,7 +141,7 @@ impl Drop for OwnedLocalSid {
 }
 
 struct OwnedAttrList {
-    _backing: Vec<u8>,
+    _backing: Vec<usize>,
     ptr: LPPROC_THREAD_ATTRIBUTE_LIST,
 }
 
@@ -157,7 +157,8 @@ impl OwnedAttrList {
                 unsafe { GetLastError() }
             ));
         }
-        let mut backing = vec![0u8; size];
+        let words = size.div_ceil(std::mem::size_of::<usize>());
+        let mut backing = vec![0usize; words];
         let ptr = backing.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
         let ok = unsafe { InitializeProcThreadAttributeList(ptr, attribute_count, 0, &mut size) };
         if ok == 0 {
@@ -445,10 +446,18 @@ fn open_nul_stdin() -> Result<OwnedHandle, String> {
 }
 
 fn build_unicode_env_block(env: &[(String, String)]) -> Vec<u16> {
-    let mut sorted = env.to_vec();
-    sorted.sort_by_key(|a| a.0.to_ascii_uppercase());
+    // Deduplicate case-insensitively (last writer wins) and drop malformed
+    // entries containing embedded NULs or '=' in the variable name.
+    let mut deduped: std::collections::BTreeMap<String, (String, String)> =
+        std::collections::BTreeMap::new();
+    for (k, v) in env {
+        if k.is_empty() || k.contains('\0') || k.contains('=') || v.contains('\0') {
+            continue;
+        }
+        deduped.insert(k.to_ascii_uppercase(), (k.clone(), v.clone()));
+    }
     let mut block: Vec<u16> = Vec::new();
-    for (k, v) in sorted {
+    for (k, v) in deduped.into_values() {
         block.extend(OsStr::new(&k).encode_wide());
         block.push(b'=' as u16);
         block.extend(OsStr::new(&v).encode_wide());
@@ -459,6 +468,21 @@ fn build_unicode_env_block(env: &[(String, String)]) -> Vec<u16> {
     }
     block.push(0);
     block
+}
+
+/// Resolves 8.3 short paths (such as `C:\Users\RUNNER~1\...` on CI runners) to
+/// their canonical long form while stripping the `\\?\` verbatim prefix that
+/// `cmd.exe` rejects as a current directory.
+fn resolve_long_path(path: &Path) -> PathBuf {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let s = canonical.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        canonical
+    }
 }
 
 fn drain_pipe(handle: SendHandle) -> Vec<u8> {
@@ -505,8 +529,12 @@ pub fn run_in_appcontainer(
     allow_network: bool,
     timeout: Duration,
 ) -> Result<AppContainerOutput, String> {
+    let resolved_ws = resolve_long_path(workspace_root);
+    let resolved_cwd = resolve_long_path(working_dir);
+    let resolved_protected: Vec<PathBuf> = protected.iter().map(|p| resolve_long_path(p)).collect();
+
     let app_sid = ensure_appcontainer_sid(profile_name)?;
-    let _acl_guard = AclGuard::apply(app_sid.0, workspace_root, protected, writable)?;
+    let _acl_guard = AclGuard::apply(app_sid.0, &resolved_ws, &resolved_protected, writable)?;
 
     let mut _net_cap_sid: Option<OwnedLocalSid> = None;
     let mut capabilities: Vec<SID_AND_ATTRIBUTES> = Vec::new();
@@ -572,10 +600,22 @@ pub fn run_in_appcontainer(
     let cmd_exe = resolve_cmd_exe();
     let w_app = wide_null(cmd_exe.as_os_str());
     let mut w_cmdline = wide_str(&format!("cmd.exe /C {command}"));
-    let w_cwd = wide_null(working_dir.as_os_str());
+    let w_cwd = wide_null(resolved_cwd.as_os_str());
 
     let mut effective_env = env.to_vec();
-    let ws_str = workspace_root.to_string_lossy().to_string();
+    let ws_str = resolved_ws.to_string_lossy().to_string();
+    let has_key = |entries: &[(String, String)], target: &str| {
+        entries.iter().any(|(k, _)| k.eq_ignore_ascii_case(target))
+    };
+    if !has_key(&effective_env, "WINDIR") {
+        let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        effective_env.push(("WINDIR".to_string(), windir));
+    }
+    for fallback_key in ["USERPROFILE", "LOCALAPPDATA", "APPDATA"] {
+        if !has_key(&effective_env, fallback_key) {
+            effective_env.push((fallback_key.to_string(), ws_str.clone()));
+        }
+    }
     effective_env.push(("TEMP".to_string(), ws_str.clone()));
     effective_env.push(("TMP".to_string(), ws_str));
     let env_block = build_unicode_env_block(&effective_env);
@@ -618,6 +658,11 @@ pub fn run_in_appcontainer(
             &mut pi,
         )
     };
+    let spawn_err = if created == 0 {
+        unsafe { GetLastError() }
+    } else {
+        0
+    };
 
     // Parent drops write ends and stdin handle immediately whether spawn
     // succeeded or failed so pipe readers never block forever.
@@ -627,8 +672,7 @@ pub fn run_in_appcontainer(
 
     if created == 0 {
         return Err(format!(
-            "CreateProcessW inside AppContainer failed (error {})",
-            unsafe { GetLastError() }
+            "CreateProcessW inside AppContainer failed (error {spawn_err})"
         ));
     }
 
@@ -650,12 +694,11 @@ pub fn run_in_appcontainer(
     // Resume the child now that it is inside both the AppContainer and the Job Object.
     let resume_rc = unsafe { ResumeThread(thread_handle.raw()) };
     if resume_rc == u32::MAX {
+        let resume_err = unsafe { GetLastError() };
         unsafe {
             TerminateProcess(proc_handle.raw(), 1);
         }
-        return Err(format!("ResumeThread failed (error {})", unsafe {
-            GetLastError()
-        }));
+        return Err(format!("ResumeThread failed (error {resume_err})"));
     }
 
     let stdout_reader = std::thread::spawn(move || drain_pipe(stdout_read));
