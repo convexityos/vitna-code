@@ -125,7 +125,7 @@ fn sleep_then_mark(fx: &Fixture, marker: &Path) -> String {
         .expect("write helper script");
         // The inner `%COMSPEC% /c` is a grandchild. Confirmed by hand: killing
         // only the outer cmd.exe leaves it running and the marker still appears.
-        "%COMSPEC% /c grandchild.bat".to_string()
+        "echo [S1] & echo [CD=%CD%] & echo [COMSPEC=%COMSPEC%] & (type grandchild.bat > nul && echo [READ_OK] || echo [READ_FAIL]) & (\"%COMSPEC%\" /c echo [SUB_OK] || echo [SUB_FAIL]) & (cmd.exe /c echo [CMD_OK] || echo [CMD_FAIL]) & (where.exe cmd.exe > nul && echo [WHERE_OK] || echo [WHERE_FAIL]) & \"%COMSPEC%\" /c grandchild.bat".to_string()
     } else {
         format!("sh -c 'sleep 5; echo done > \"{}\"'", m)
     }
