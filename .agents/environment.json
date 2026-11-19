@@ -1,0 +1,3 @@
+{
+  "install": "cargo fetch && npm --prefix apps/vitna-desktop ci --no-audit --no-fund"
+}
