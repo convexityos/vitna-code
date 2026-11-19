@@ -926,4 +926,54 @@ mod tests {
         assert!(!a.help);
         assert_eq!(a.draft.iter().collect::<String>(), "why?");
     }
+
+    #[test]
+    fn streaming_model_deltas_concatenate_inline_and_separate_new_messages() {
+        let mut a = app();
+        let make_delta = |seq: u64, msg_id: &str, role: &str, text: &str| {
+            ProtocolEnvelope::carrying(
+                type_url::event::MESSAGE_DELTA,
+                "sess-1",
+                "run-1",
+                seq,
+                "",
+                &MessageDelta {
+                    message_id: msg_id.to_string(),
+                    role: role.to_string(),
+                    delta_text: text.to_string(),
+                },
+            )
+            .expect("delta envelope")
+        };
+
+        // Chunks sharing message_id concatenate inline without spurious newlines.
+        a.update(Update::Wire(make_delta(1, "msg-round-1", "model", "Hello")));
+        a.update(Update::Wire(make_delta(2, "msg-round-1", "model", ", ")));
+        a.update(Update::Wire(make_delta(3, "msg-round-1", "model", "world!")));
+
+        assert_eq!(a.turn.len(), 1);
+        match &a.turn[0] {
+            turn::Entry::Model(text) => assert_eq!(text, "Hello, world!"),
+            other => panic!("expected Model entry, got {other:?}"),
+        }
+
+        // A new message_id separates onto a new line within the model block.
+        a.update(Update::Wire(make_delta(4, "msg-round-2", "model", "Next")));
+        a.update(Update::Wire(make_delta(5, "msg-round-2", "model", " line")));
+        assert_eq!(a.turn.len(), 1);
+        match &a.turn[0] {
+            turn::Entry::Model(text) => assert_eq!(text, "Hello, world!\nNext line"),
+            other => panic!("expected Model entry, got {other:?}"),
+        }
+
+        // An intervening user turn resets message tracking and opens a fresh Model entry.
+        a.update(Update::Wire(make_delta(6, "user-2", "user", "follow-up")));
+        a.update(Update::Wire(make_delta(7, "msg-round-3", "model", "Done")));
+        assert_eq!(a.turn.len(), 3);
+        match &a.turn[2] {
+            turn::Entry::Model(text) => assert_eq!(text, "Done"),
+            other => panic!("expected fresh Model entry, got {other:?}"),
+        }
+    }
 }
+
