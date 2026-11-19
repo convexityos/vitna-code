@@ -1,5 +1,12 @@
 //! Offline receipt verification engine for Vitna Code.
 
+pub mod provenance;
+
+pub use provenance::{
+    audit_checkpoint, audit_envelope_json, compute_checkpoint_digest, verify_provenance_bundle,
+    CheckpointAudit, EnvelopeAudit, ProvenanceAuditOptions, ProvenanceAuditReport,
+};
+
 use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 use std::fs;
