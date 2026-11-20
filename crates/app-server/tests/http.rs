@@ -1115,3 +1115,122 @@ async fn receipts_endpoint_lists_and_verifies_signed_and_tampered_receipts() {
     // Requires an authenticated session.
     assert_eq!(h.api(None, "receipts", "", b"").await.status, 401);
 }
+
+#[tokio::test]
+async fn receipt_export_endpoint_redacts_strips_signature_and_rejects_traversal() {
+    let h = Harness::start("receipt_export").await;
+    let token = h.session().await;
+    let t = Some(token.as_str());
+
+    // Mutate a file so the receipt carries a non-empty changeset path to redact.
+    let read = h.api(t, "fs/read", "path=src/greet.js", b"").await;
+    assert_eq!(read.status, 200);
+    let pre = read.header("x-vitna-sha256").unwrap().to_string();
+    let written = h
+        .api(
+            t,
+            "fs/write",
+            &format!("path=src/greet.js&expect={pre}"),
+            b"export const hi = 2;\n",
+        )
+        .await;
+    assert_eq!(written.status, 200);
+
+    let created = h
+        .api(
+            t,
+            "receipt",
+            "",
+            br#"{"provider":"openai","model":"gpt-5","summary":"updated greet.js"}"#,
+        )
+        .await;
+    assert_eq!(created.status, 200, "{}", created.text());
+    let run_id = created.json()["run_id"].as_str().unwrap().to_string();
+
+    // 1. Listed receipt exposes egress_count and mandate_spent fields.
+    let listed = h.api(t, "receipts", "", b"").await;
+    assert_eq!(listed.status, 200);
+    let row = &listed.json()["receipts"][0];
+    assert_eq!(row["egress_count"].as_u64(), Some(0));
+    assert!(row["mandate_spent"].is_null());
+
+    // 2. Verbatim ("none") export preserves valid Ed25519 signature.
+    let none_body = serde_json::json!({ "run_id": run_id, "redaction": "none" }).to_string();
+    let none_res = h.api(t, "receipt/export", "", none_body.as_bytes()).await;
+    assert_eq!(none_res.status, 200, "{}", none_res.text());
+    let none_json = none_res.json();
+    assert_eq!(none_json["redaction"].as_str(), Some("none"));
+    assert_eq!(none_json["signature_stripped"].as_bool(), Some(false));
+    let none_receipt: VitnaRunReceiptV1 =
+        serde_json::from_value(none_json["receipt"].clone()).unwrap();
+    let verify_rep = ReceiptVerifier::verify_receipt(&none_receipt, Some(&h.public_key)).unwrap();
+    assert!(verify_rep.is_valid && verify_rep.signature_verified);
+
+    // 3. Standard redaction (default when omitted) redacts paths/fingerprint and strips signature.
+    let std_body = serde_json::json!({ "run_id": run_id }).to_string();
+    let std_res = h.api(t, "receipt/export", "", std_body.as_bytes()).await;
+    assert_eq!(std_res.status, 200, "{}", std_res.text());
+    let std_json = std_res.json();
+    assert_eq!(std_json["redaction"].as_str(), Some("standard"));
+    assert_eq!(std_json["signature_stripped"].as_bool(), Some(true));
+    assert_eq!(
+        std_json["receipt"]["workspace_fingerprint"].as_str(),
+        Some("[REDACTED]")
+    );
+    assert_eq!(
+        std_json["receipt"]["base_commit_sha"].as_str(),
+        Some("[REDACTED]")
+    );
+    assert_eq!(
+        std_json["receipt"]["changeset"]["files_modified"][0]["path"].as_str(),
+        Some("<redacted>/greet.js")
+    );
+    assert_eq!(std_json["receipt"]["device_signature"].as_str(), Some(""));
+    assert!(std_json["receipt"]["device_public_key"].is_null());
+
+    // 4. Strict redaction also strips filenames and evidence descriptions/digests.
+    let strict_body = serde_json::json!({ "run_id": run_id, "redaction": "strict" }).to_string();
+    let strict_res = h.api(t, "receipt/export", "", strict_body.as_bytes()).await;
+    assert_eq!(strict_res.status, 200, "{}", strict_res.text());
+    let strict_json = strict_res.json();
+    assert_eq!(strict_json["redaction"].as_str(), Some("strict"));
+    assert_eq!(strict_json["signature_stripped"].as_bool(), Some(true));
+    assert_eq!(
+        strict_json["receipt"]["changeset"]["files_modified"][0]["path"].as_str(),
+        Some("redacted-file-0")
+    );
+    assert_eq!(
+        strict_json["receipt"]["evidence_items"][0]["description"].as_str(),
+        Some("[REDACTED]")
+    );
+    assert!(strict_json["receipt"]["evidence_items"][0]["artifact_digest"].is_null());
+    assert_eq!(strict_json["receipt"]["device_signature"].as_str(), Some(""));
+
+    // 5. Fail-closed validation: traversal, unknown redaction, missing receipt, and unauthenticated.
+    let trav = h
+        .api(t, "receipt/export", "", br#"{"run_id":"../../outside"}"#)
+        .await;
+    assert_eq!(trav.status, 400);
+
+    let bad_level = h
+        .api(
+            t,
+            "receipt/export",
+            "",
+            serde_json::json!({ "run_id": run_id, "redaction": "partial" })
+                .to_string()
+                .as_bytes(),
+        )
+        .await;
+    assert_eq!(bad_level.status, 400);
+
+    let missing = h
+        .api(t, "receipt/export", "", br#"{"run_id":"does-not-exist"}"#)
+        .await;
+    assert_eq!(missing.status, 404);
+
+    assert_eq!(
+        h.api(None, "receipt/export", "", std_body.as_bytes()).await.status,
+        401
+    );
+}

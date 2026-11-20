@@ -215,6 +215,7 @@ pub(crate) async fn handle(state: &State, peer: SocketAddr, request: Request<Inc
         "fs/remove" => remove(state, &token, &request),
         "run" => run(state, &token, request).await,
         "receipt" => make_receipt(state, &token, &session_id, request).await,
+        "receipt/export" => export_receipt(state, request).await,
         "receipts" => list_receipts(state),
         "routines" => read_routines(state).await,
         "ledger" => read_ledger(state).await,
@@ -829,6 +830,153 @@ async fn make_receipt(
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportReceiptRequest {
+    run_id: String,
+    redaction: Option<String>,
+}
+
+fn validate_export_run_id(raw: &str) -> Result<&str, Reply> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 128
+        || trimmed == "."
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+        || trimmed.contains('\0')
+    {
+        return Err(refusal(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "run_id must be a non-empty identifier without path separators or traversal segments.",
+        ));
+    }
+    Ok(trimmed)
+}
+
+fn safe_export_filename(run_id: &str, level: &str) -> String {
+    let safe_id: String = run_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let stem = if safe_id.is_empty() {
+        "receipt".to_string()
+    } else {
+        safe_id
+    };
+    if level == "none" {
+        format!("{stem}.json")
+    } else {
+        format!("{stem}.{level}.redacted.json")
+    }
+}
+
+async fn export_receipt(state: &State, request: Request<Incoming>) -> Reply {
+    let asked: ExportReceiptRequest = match json_body(request).await {
+        Ok(asked) => asked,
+        Err(reply) => return reply,
+    };
+    let run_id = match validate_export_run_id(&asked.run_id) {
+        Ok(id) => id,
+        Err(reply) => return reply,
+    };
+    let level = asked.redaction.as_deref().unwrap_or("standard");
+    if !matches!(level, "none" | "standard" | "strict") {
+        return refusal(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "redaction must be one of: none, standard, strict.",
+        );
+    }
+
+    let rel_path = format!(".vitna/receipts/{run_id}.json");
+    let bytes = match state.files.read(&rel_path) {
+        Ok(bytes) => bytes,
+        Err(e) => return file_refusal(e),
+    };
+    let mut receipt: vitna_receipts::VitnaRunReceiptV1 = match serde_json::from_slice(&bytes) {
+        Ok(receipt) => receipt,
+        Err(e) => {
+            return refusal(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "corrupt_receipt",
+                format!("Receipt file could not be parsed as vitna-run-receipt-v1: {e}"),
+            );
+        }
+    };
+
+    let filename = safe_export_filename(run_id, level);
+    match level {
+        "none" => json_reply(
+            StatusCode::OK,
+            json!({
+                "run_id": run_id,
+                "redaction": "none",
+                "signature_stripped": false,
+                "filename": filename,
+                "receipt": receipt,
+            }),
+        ),
+        "standard" => {
+            receipt.workspace_fingerprint = "[REDACTED]".to_string();
+            receipt.base_commit_sha = "[REDACTED]".to_string();
+            for f in &mut receipt.changeset.files_modified {
+                let basename = std::path::Path::new(&f.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "file".to_string());
+                f.path = format!("<redacted>/{basename}");
+            }
+            receipt.device_signature.clear();
+            receipt.device_public_key = None;
+            json_reply(
+                StatusCode::OK,
+                json!({
+                    "run_id": run_id,
+                    "redaction": "standard",
+                    "signature_stripped": true,
+                    "filename": filename,
+                    "note": "Redacted receipts cannot carry the original device signature because signed fields were modified.",
+                    "receipt": receipt,
+                }),
+            )
+        }
+        "strict" => {
+            receipt.workspace_fingerprint = "[REDACTED]".to_string();
+            receipt.base_commit_sha = "[REDACTED]".to_string();
+            for (idx, f) in receipt.changeset.files_modified.iter_mut().enumerate() {
+                f.path = format!("redacted-file-{idx}");
+            }
+            for ev in &mut receipt.evidence_items {
+                ev.description = "[REDACTED]".to_string();
+                ev.artifact_digest = None;
+            }
+            receipt.device_signature.clear();
+            receipt.device_public_key = None;
+            json_reply(
+                StatusCode::OK,
+                json!({
+                    "run_id": run_id,
+                    "redaction": "strict",
+                    "signature_stripped": true,
+                    "filename": filename,
+                    "note": "Strictly redacted receipts strip paths, evidence descriptions, artifact digests, and the original device signature.",
+                    "receipt": receipt,
+                }),
+            )
+        }
+        _ => unreachable!(),
+    }
+}
+
 /// The most receipt files listed and verified in a single `/api/v1/receipts` call.
 const MAX_RECEIPTS_LISTED: usize = 200;
 
@@ -887,6 +1035,10 @@ fn list_receipts(state: &State) -> Reply {
                 continue;
             }
         };
+        let mandate_spent = receipt
+            .mandate_provenance
+            .as_ref()
+            .map(|m| format!("{} {}", m.total_spent, m.currency));
         match vitna_receipt_verify::ReceiptVerifier::verify_receipt(
             &receipt,
             Some(&state.public_key),
@@ -903,6 +1055,8 @@ fn list_receipts(state: &State) -> Reply {
                     "model_sku": receipt.model_selection.model_sku,
                     "evidence_count": receipt.evidence_items.len(),
                     "files_modified": receipt.changeset.files_modified.len(),
+                    "egress_count": receipt.egress_calls.len(),
+                    "mandate_spent": mandate_spent,
                     "device_public_key": receipt.device_public_key,
                     "signature_verified": report.signature_verified,
                     "is_valid": report.is_valid,
@@ -921,6 +1075,8 @@ fn list_receipts(state: &State) -> Reply {
                     "model_sku": receipt.model_selection.model_sku,
                     "evidence_count": receipt.evidence_items.len(),
                     "files_modified": receipt.changeset.files_modified.len(),
+                    "egress_count": receipt.egress_calls.len(),
+                    "mandate_spent": mandate_spent,
                     "device_public_key": receipt.device_public_key,
                     "signature_verified": false,
                     "is_valid": false,
