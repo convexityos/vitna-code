@@ -384,6 +384,7 @@ pub fn run_list_sessions(store_arg: Option<&Path>, as_json: bool) -> Result<(), 
                     "workspace_root": s.workspace_root,
                     "created_at_ms": s.created_at_ms,
                     "status": s.status,
+                    "mode": s.mode,
                     "run_count": s.runs.len(),
                     "latest_run_id": s.runs.last(),
                 })
@@ -403,9 +404,10 @@ pub fn run_list_sessions(store_arg: Option<&Path>, as_json: bool) -> Result<(), 
         let latest = s.runs.last().map(String::as_str).unwrap_or("none");
         let label = sanitize_public_id(&s.session_id);
         write_stdout_line(&format!(
-            "- {} [{}] workspace={} runs={} latest_run={}",
+            "- {} [{}] mode={} workspace={} runs={} latest_run={}",
             label,
             s.status,
+            s.mode,
             s.workspace_root,
             s.runs.len(),
             latest
@@ -465,6 +467,7 @@ pub async fn run_resume(
             "session_id": target.session_id,
             "workspace_root": target.workspace_root,
             "status": target.status,
+            "mode": target.mode,
             "created_at_ms": target.created_at_ms,
             "runs": target.runs,
             "latest_run": latest_state.as_ref().map(|r| json!({
@@ -485,6 +488,7 @@ pub async fn run_resume(
     ));
     println!("Workspace:       {}", target.workspace_root);
     println!("Status:          {}", target.status);
+    println!("Mode:            {}", target.mode);
     println!("Recorded Runs:   {}", target.runs.len());
     if let Some(r) = latest_state {
         println!("Latest Run:      {} ({:?})", r.run_id, r.state);
@@ -2460,6 +2464,51 @@ pub async fn run_doctor_audit(
     }
     Ok(())
 }
+
+/// `vitna bench [--fast] [--out <file>] [--json]`
+pub fn run_bench(fast: bool, out_path: Option<&Path>, as_json: bool) -> Result<(), String> {
+    let report = if fast {
+        vitna_evals::BenchmarkSuite::run_with_iterations(25, 10, 25, 25)
+    } else {
+        vitna_evals::BenchmarkSuite::run_all()
+    };
+
+    let json_body = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+    if let Some(path) = out_path {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+            }
+        }
+        fs::write(path, &json_body)
+            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    }
+
+    if as_json {
+        println!("{json_body}");
+        return Ok(());
+    }
+
+    println!("Vitna Code Live Benchmark Suite ({})", report.suite_version);
+    println!("======================================================");
+    println!(
+        "Host:      {} ({}, profile: {})",
+        report.os, report.arch, report.build_profile
+    );
+    println!("Timestamp: {}", report.timestamp_rfc3339);
+    for m in &report.metrics {
+        println!(
+            "  - {:<36} {:>6} ops | {:>10.1} ops/s | {:>8.1} us/op",
+            m.name, m.operations, m.ops_per_sec, m.avg_latency_micros
+        );
+    }
+    if let Some(path) = out_path {
+        println!("Report written -> {}", path.display());
+    }
+    Ok(())
+}
+
 
 
 

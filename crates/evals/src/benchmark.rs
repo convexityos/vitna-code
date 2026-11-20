@@ -181,13 +181,136 @@ impl BenchmarkSuite {
         }
     }
 
-    /// Runs all benchmarks and aggregates into a `BenchmarkReport` stamped with
-    /// live UTC time and host/build metadata.
-    pub fn run_all() -> BenchmarkReport {
+    /// Benchmarks 2-hop Ed25519 `am/1` Agent Mandate delegation chain verification.
+    pub fn bench_mandate_chain_verification(iterations: usize) -> BenchmarkMetric {
+        use std::collections::HashSet;
+        use vitna_policy::generate_policy_signing_key;
+        use vitna_policy::mandate::{
+            did_key_from_verifying_key, jwk_thumbprint_from_verifying_key, sign_mandate_jws,
+            verify_mandate_chain, CnfClaim, Effect, MandateActionRequest, MandateCaveats,
+            MandateClaims, Money, VerifyMandateOptions, DEFAULT_SKEW_SECONDS, PROTOCOL_VERSION,
+        };
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let root_key = generate_policy_signing_key();
+        let root_did = did_key_from_verifying_key(&root_key.verifying_key());
+        let agent_key = generate_policy_signing_key();
+        let agent_did = did_key_from_verifying_key(&agent_key.verifying_key());
+        let agent_jkt = jwk_thumbprint_from_verifying_key(&agent_key.verifying_key());
+        let leaf_key = generate_policy_signing_key();
+        let leaf_did = did_key_from_verifying_key(&leaf_key.verifying_key());
+        let leaf_jkt = jwk_thumbprint_from_verifying_key(&leaf_key.verifying_key());
+        let ledger = "https://ledger.convexityos.com".to_string();
+
+        let root_claims = MandateClaims {
+            v: PROTOCOL_VERSION.to_string(),
+            typ: "mandate".to_string(),
+            jti: "mnd_bench_root".to_string(),
+            iss: root_did.clone(),
+            sub: agent_did.clone(),
+            par: None,
+            iat: now.saturating_sub(60),
+            nbf: now.saturating_sub(60),
+            exp: now + 3600,
+            cnf: CnfClaim { jkt: agent_jkt },
+            ledger: ledger.clone(),
+            cav: MandateCaveats {
+                max_total: Some(Money::new("USD", "5.00")),
+                max_per_txn: Some(Money::new("USD", "1.00")),
+                aud: Some(vec!["api.example.com".to_string()]),
+                resources: Some(vec!["https://api.example.com/*".to_string()]),
+                effect: Some(Effect::Write),
+                currency: Some("USD".to_string()),
+                delegable: Some(true),
+                depth: Some(2),
+                ..Default::default()
+            },
+            st: None,
+        };
+        let child_claims = MandateClaims {
+            v: PROTOCOL_VERSION.to_string(),
+            typ: "mandate".to_string(),
+            jti: "mnd_bench_child".to_string(),
+            iss: agent_did,
+            sub: leaf_did,
+            par: Some("mnd_bench_root".to_string()),
+            iat: now.saturating_sub(30),
+            nbf: now.saturating_sub(30),
+            exp: now + 1800,
+            cnf: CnfClaim { jkt: leaf_jkt },
+            ledger: ledger.clone(),
+            cav: MandateCaveats {
+                max_total: Some(Money::new("USD", "1.00")),
+                max_per_txn: Some(Money::new("USD", "0.25")),
+                aud: Some(vec!["api.example.com".to_string()]),
+                resources: Some(vec!["https://api.example.com/search".to_string()]),
+                effect: Some(Effect::Read),
+                currency: Some("USD".to_string()),
+                delegable: Some(false),
+                depth: Some(0),
+                ..Default::default()
+            },
+            st: None,
+        };
+        let tokens = vec![
+            sign_mandate_jws(&root_claims, &root_key, None),
+            sign_mandate_jws(&child_claims, &agent_key, None),
+        ];
+        let mut trusted = HashSet::new();
+        trusted.insert(root_did);
+        let opts = VerifyMandateOptions {
+            trusted_root_issuers: trusted,
+            ledger,
+            now,
+            skew_seconds: DEFAULT_SKEW_SECONDS,
+            request: Some(MandateActionRequest {
+                resource: "https://api.example.com/search".to_string(),
+                amount: Money::new("USD", "0.05"),
+                effect: Some(Effect::Read),
+                purpose: None,
+                task_id: None,
+            }),
+            step_up_approved: false,
+        };
+
+        let start = Instant::now();
+        for _ in 0..iterations {
+            let verified = verify_mandate_chain(&tokens, &opts).expect("verify mandate chain");
+            assert_eq!(verified.path.len(), 2);
+        }
+        let elapsed = start.elapsed().as_nanos();
+        let elapsed_secs = (elapsed as f64) / 1_000_000_000.0;
+        let ops_per_sec = if elapsed_secs > 0.0 {
+            (iterations as f64) / elapsed_secs
+        } else {
+            0.0
+        };
+        let avg_latency_micros = (elapsed as f64) / (iterations as f64) / 1_000.0;
+
+        BenchmarkMetric {
+            name: "mandate_chain_verification_2_hops".to_string(),
+            operations: iterations,
+            elapsed_nanos: elapsed,
+            ops_per_sec,
+            avg_latency_micros,
+        }
+    }
+
+    /// Runs all benchmarks with explicit iteration counts.
+    pub fn run_with_iterations(
+        receipt_iters: usize,
+        merkle_iters: usize,
+        dag_iters: usize,
+        mandate_iters: usize,
+    ) -> BenchmarkReport {
         let metrics = vec![
-            Self::bench_receipt_verification(500),
-            Self::bench_merkle_root_calculation(100),
-            Self::bench_dag_validation(500),
+            Self::bench_receipt_verification(receipt_iters.max(1)),
+            Self::bench_merkle_root_calculation(merkle_iters.max(1)),
+            Self::bench_dag_validation(dag_iters.max(1)),
+            Self::bench_mandate_chain_verification(mandate_iters.max(1)),
         ];
 
         BenchmarkReport {
@@ -202,6 +325,12 @@ impl BenchmarkSuite {
             },
             metrics,
         }
+    }
+
+    /// Runs all benchmarks and aggregates into a `BenchmarkReport` stamped with
+    /// live UTC time and host/build metadata.
+    pub fn run_all() -> BenchmarkReport {
+        Self::run_with_iterations(500, 100, 500, 200)
     }
 }
 

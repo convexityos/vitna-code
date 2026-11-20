@@ -266,6 +266,18 @@ enum Commands {
         #[command(subcommand)]
         sub: MandateCommands,
     },
+    /// Run live cryptographic receipt, Merkle, DAG, and am/1 mandate benchmarks
+    Bench {
+        /// Run reduced iteration counts for fast CI smoke checks.
+        #[arg(long)]
+        fast: bool,
+        /// Optional path to write the live-stamped JSON benchmark report.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -800,6 +812,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         },
+        Some(Commands::Bench { fast, out, json }) => {
+            if let Err(e) = commands::run_bench(fast, out.as_deref(), json) {
+                eprintln!("vitna bench: {e}");
+                std::process::exit(1);
+            }
+        }
         Some(Commands::Receipt { sub }) => match sub {
             ReceiptCommands::Show {
                 run_id,

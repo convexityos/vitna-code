@@ -748,13 +748,62 @@ impl App {
     /// file attachments) over the wire. Otherwise keeps the draft intact and
     /// states why it was not sent.
     fn submit(&mut self) -> Ask {
-        if matches!(self.link, Link::Open { .. }) && self.session_id.is_some() {
-            let raw: String = self.draft.iter().collect();
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                return Ask::Nothing;
-            }
+        let raw: String = self.draft.iter().collect();
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Ask::Nothing;
+        }
 
+        // `/receipt [run_id]` works offline too because signed receipts live on
+        // disk in `.vitna/receipts/`.
+        if trimmed.starts_with('/') && !trimmed.starts_with("//") {
+            let mut parts = trimmed[1..].splitn(2, char::is_whitespace);
+            let cmd_name = parts.next().unwrap_or("").to_ascii_lowercase();
+            let arg = parts.next().unwrap_or("").trim();
+            if cmd_name == "receipt" {
+                let target_idx = if let Some(ledger) = &self.ledger {
+                    if ledger.entries.is_empty() {
+                        None
+                    } else if arg.is_empty() {
+                        Some(0)
+                    } else {
+                        ledger.entries.iter().position(|entry| match entry {
+                            crate::ledger::Entry::Run(r) => {
+                                r.run_id == arg || r.run_id.starts_with(arg) || r.file == arg
+                            }
+                            crate::ledger::Entry::Unreadable(u) => u.file == arg,
+                        })
+                    }
+                } else {
+                    None
+                };
+
+                self.draft.clear();
+                self.cursor = 0;
+                if let Some(idx) = target_idx {
+                    self.turn.clear();
+                    self.screen = Screen::Run(idx);
+                    self.selected = idx;
+                    self.scroll = 0;
+                    self.notice = None;
+                    return Ask::Nothing;
+                }
+                self.notice = Some(if self.ledger.is_none() {
+                    "Loading receipts from disk...".to_string()
+                } else if arg.is_empty() {
+                    "No receipts recorded in .vitna/receipts yet.".to_string()
+                } else {
+                    format!("No receipt matching '{arg}' found in .vitna/receipts.")
+                });
+                return if self.ledger.is_none() {
+                    Ask::RefreshLedger
+                } else {
+                    Ask::Nothing
+                };
+            }
+        }
+
+        if matches!(self.link, Link::Open { .. }) && self.session_id.is_some() {
             if trimmed.starts_with('/') && !trimmed.starts_with("//") {
                 let mut parts = trimmed[1..].splitn(2, char::is_whitespace);
                 let cmd_name = parts.next().unwrap_or("").to_ascii_lowercase();
@@ -888,7 +937,7 @@ impl App {
                     }
                     other => {
                         self.notice = Some(format!(
-                            "Unknown command /{other}. Commands: /mode, /steer, /pause, /resume, /cancel, /spawn, /apply."
+                            "Unknown command /{other}. Commands: /mode, /receipt, /steer, /pause, /resume, /cancel, /spawn, /apply."
                         ));
                         return Ask::Nothing;
                     }
@@ -1359,6 +1408,61 @@ mod tests {
         .unwrap();
         assert_eq!(a.apply_update(Update::Wire(usage)), Ask::Nothing);
         assert_eq!(a.usage.as_ref().map(|u| u.prompt_tokens), Some(120));
+    }
+
+    #[test]
+    fn receipt_slash_command_opens_receipt_even_offline() {
+        let dir = std::env::temp_dir().join(format!(
+            "vitna_tui_receipt_cmd_{}",
+            std::process::id()
+        ));
+        let receipts = dir.join(".vitna").join("receipts");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&receipts).unwrap();
+        let make_receipt = |run_id: &str| {
+            serde_json::json!({
+                "schema_version": "vitna-run-receipt-v1",
+                "run_id": run_id,
+                "session_id": "sess-1",
+                "workspace_fingerprint": "fp",
+                "base_commit_sha": "0000000000000000000000000000000000000000",
+                "model_selection": { "provider": "fake", "model_sku": "m", "routing_reason": "r" },
+                "event_hash_chain_root": "root",
+                "isolation_label": "guarded",
+                "completion_state": "completed_with_evidence",
+                "evidence_items": [],
+                "changeset": { "files_modified": [], "diff_digest": "d" },
+                "runner_execution_statements": [],
+                "child_receipt_roots": [],
+                "device_signature": "00"
+            })
+            .to_string()
+        };
+        std::fs::write(receipts.join("run-alpha.json"), make_receipt("run-alpha")).unwrap();
+        std::fs::write(receipts.join("run-beta.json"), make_receipt("run-beta")).unwrap();
+
+        let mut a = App::new(dir.clone());
+        a.update(Update::Ledger(crate::ledger::read(&dir)));
+        // Still disconnected (Link::Probing, no daemon): `/receipt` must still work!
+        for c in "/receipt".chars() {
+            a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Ask::Nothing);
+        assert_eq!(a.screen, Screen::Run(0));
+        assert!(a.draft.is_empty());
+
+        // Jump by run_id prefix to the other receipt.
+        let target_id = match &a.ledger.as_ref().unwrap().entries[1] {
+            crate::ledger::Entry::Run(r) => r.run_id.clone(),
+            crate::ledger::Entry::Unreadable(u) => u.file.clone(),
+        };
+        for c in format!("/receipt {target_id}").chars() {
+            a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Ask::Nothing);
+        assert_eq!(a.screen, Screen::Run(1));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
