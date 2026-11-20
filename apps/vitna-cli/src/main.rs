@@ -1534,7 +1534,10 @@ fn run_verify(
     println!("Receipt Checks Passed");
     println!("================================");
     println!("Run ID:            {}", r.run_id);
-    println!("Session ID:        {}", r.session_id);
+    commands::write_stdout_line(&format!(
+        "Session ID:        {}",
+        commands::sanitize_public_id(&r.session_id)
+    ));
     println!("Schema:            {}", r.schema_version);
     println!("Model:             {} ({})", r.model_selection.model_sku, r.model_selection.provider);
     println!("Isolation Label:   {}", r.isolation_label);
@@ -1568,7 +1571,10 @@ async fn run_task_cli(
     let daemon = DaemonServer::open_default(&db_path)?;
 
     let session = daemon.create_session_with_mode(workspace, mode)?;
-    println!("Session:   {}", session.session_id);
+    commands::write_stdout_line(&format!(
+        "Session:   {}",
+        commands::sanitize_public_id(&session.session_id)
+    ));
 
     println!("Starting turn execution...");
     let receipt = daemon
