@@ -97,6 +97,7 @@ pub struct Run {
     pub base_commit: String,
     pub provider: String,
     pub model_sku: String,
+    pub policy_digest: Option<String>,
     pub isolation: String,
     pub completion: String,
     pub evidence: Vec<Evidence>,
@@ -106,8 +107,11 @@ pub struct Run {
     pub mandate_provenance: Option<MandateProvenance>,
     pub children: usize,
     pub signed: bool,
-    /// What the verifier found wrong without a key. Empty means every check it
-    /// can make passed, which is not the same as the signature holding.
+    pub device_public_key: Option<String>,
+    /// `Some(true)` when verified against the embedded `device_public_key`,
+    /// `Some(false)` when that verification failed, or `None` when no embedded key was present.
+    pub signature_verified: Option<bool>,
+    /// What the verifier found wrong. Empty means every check it could make passed.
     pub failed_checks: Vec<String>,
 }
 
@@ -366,6 +370,35 @@ fn read_one(path: &Path, name: &str) -> Entry {
         Err(e) => return unreadable(written, format!("is not a vitna-run-receipt-v1: {e}")),
     };
     let r = verified.receipt;
+    let signed = !r.device_signature.trim().is_empty();
+    let mut failed_checks: Vec<String> = verified.report.errors.iter().map(|e| clean(e)).collect();
+    let mut signature_verified: Option<bool> = None;
+    if signed {
+        if let Some(ref embedded_pk) = r.device_public_key {
+            let trimmed_pk = embedded_pk.trim();
+            if !trimmed_pk.is_empty() {
+                match vitna_receipt_verify::ReceiptVerifier::verify_receipt(&r, Some(trimmed_pk)) {
+                    Ok(sig_report) if sig_report.signature_verified => {
+                        signature_verified = Some(true);
+                    }
+                    Ok(sig_report) => {
+                        signature_verified = Some(false);
+                        for err in sig_report.errors {
+                            let cleaned = clean(&err);
+                            if !failed_checks.contains(&cleaned) {
+                                failed_checks.push(cleaned);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        signature_verified = Some(false);
+                        failed_checks.push(clean(&format!("signature check error: {e}")));
+                    }
+                }
+            }
+        }
+    }
+
     Entry::Run(Box::new(Run {
         file: format!(".vitna/receipts/{file}"),
         written,
@@ -373,6 +406,12 @@ fn read_one(path: &Path, name: &str) -> Entry {
         base_commit: clean(&r.base_commit_sha),
         provider: clean(&r.model_selection.provider),
         model_sku: clean(&r.model_selection.model_sku),
+        policy_digest: r
+            .model_selection
+            .policy_digest
+            .as_deref()
+            .map(clean)
+            .filter(|s| !s.is_empty()),
         isolation: clean(&r.isolation_label),
         completion: clean(&r.completion_state),
         evidence: r
@@ -431,8 +470,14 @@ fn read_one(path: &Path, name: &str) -> Entry {
             spend_count: mp.spend_digests.len(),
         }),
         children: r.child_receipt_roots.len(),
-        signed: !r.device_signature.trim().is_empty(),
-        failed_checks: verified.report.errors.iter().map(|e| clean(e)).collect(),
+        signed,
+        device_public_key: r
+            .device_public_key
+            .as_deref()
+            .map(clean)
+            .filter(|s| !s.is_empty()),
+        signature_verified,
+        failed_checks,
     }))
 }
 
@@ -687,6 +732,66 @@ mod tests {
             !mp.ledger.chars().any(|c| c.is_control()),
             "control chars must be stripped from mandate ledger"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embedded_key_signature_and_policy_digest_are_verified_in_ledger() {
+        let dir = scratch("embedded_sig");
+        let key = vitna_receipts::generate_signing_key();
+        let mut r = vitna_receipts::VitnaRunReceiptV1 {
+            schema_version: "vitna-run-receipt-v1".to_string(),
+            run_id: "run-signed-1".to_string(),
+            session_id: "sess-1".to_string(),
+            workspace_fingerprint: "a".repeat(64),
+            base_commit_sha: "b".repeat(40),
+            model_selection: vitna_receipts::ModelSelectionRecord {
+                provider: "vitna-runtime".to_string(),
+                model_sku: "vitna/code".to_string(),
+                routing_reason: "runtime_lane:vitna/code".to_string(),
+                policy_digest: Some("c".repeat(64)),
+            },
+            event_hash_chain_root: "d".repeat(64),
+            isolation_label: "guarded".to_string(),
+            completion_state: "completed_with_evidence".to_string(),
+            evidence_items: Vec::new(),
+            changeset: vitna_receipts::ChangeSetRecord {
+                files_modified: Vec::new(),
+                diff_digest: "e".repeat(64),
+            },
+            runner_execution_statements: Vec::new(),
+            egress_calls: Vec::new(),
+            child_receipt_roots: Vec::new(),
+            device_public_key: None,
+            mandate_provenance: None,
+            device_signature: String::new(),
+        };
+        r.sign(&key).expect("sign receipt");
+        let valid_path = receipts_dir(&dir).join("run-signed-1.json");
+        fs::write(&valid_path, serde_json::to_string_pretty(&r).unwrap()).unwrap();
+
+        let ledger = read(&dir);
+        let Some(Entry::Run(run)) = ledger.entries.first() else {
+            panic!("expected Run entry");
+        };
+        assert_eq!(run.signature_verified, Some(true));
+        assert!(run.failed_checks.is_empty(), "{:?}", run.failed_checks);
+        assert_eq!(run.policy_digest.as_deref(), Some("c".repeat(64).as_str()));
+        assert!(run.device_public_key.is_some());
+
+        // Tamper with isolation_label and confirm TUI flags the broken signature.
+        r.isolation_label = "strong".to_string();
+        fs::write(&valid_path, serde_json::to_string_pretty(&r).unwrap()).unwrap();
+        let tampered_ledger = read(&dir);
+        let Some(Entry::Run(tampered_run)) = tampered_ledger.entries.first() else {
+            panic!("expected Run entry");
+        };
+        assert_eq!(tampered_run.signature_verified, Some(false));
+        assert!(
+            !tampered_run.failed_checks.is_empty(),
+            "tampered receipt must report failed check"
+        );
+
         let _ = fs::remove_dir_all(&dir);
     }
 }

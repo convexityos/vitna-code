@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useState, type DragEvent } from 'react';
 import { loadSample } from '../app/transportChoice';
+import { checkModelPolicyAgainstReceipt, type PolicyCheck } from '../receipt/policy';
 import { EVIDENCE_GRADES, readReceipt, type Receipt } from '../receipt/receipt';
 import { exportFilename, formatReceiptExport, type RedactionLevel } from '../receipt/redact';
 import { checkDeviceSignature, signatureShape, type SignatureCheck } from '../receipt/verify';
@@ -21,6 +22,8 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
   const [text, setText] = useState('');
   const [source, setSource] = useState('');
   const [key, setKey] = useState('');
+  const [policyText, setPolicyText] = useState('');
+  const [policyCheck, setPolicyCheck] = useState<PolicyCheck | null>(null);
   const [fileError, setFileError] = useState('');
   const [signature, setSignature] = useState<SignatureCheck | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -28,6 +31,7 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
   const [exportNote, setExportNote] = useState('');
   const inputId = useId();
   const keyId = useId();
+  const policyInputId = useId();
 
   const reading = useMemo(() => (text.trim() ? readReceipt(text) : null), [text]);
   const receipt = reading?.receipt ?? null;
@@ -45,6 +49,20 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
       live = false;
     };
   }, [receipt, key]);
+
+  useEffect(() => {
+    let live = true;
+    if (!receipt || !policyText.trim()) {
+      setPolicyCheck(null);
+      return undefined;
+    }
+    void checkModelPolicyAgainstReceipt(policyText, receipt).then((result) => {
+      if (live) setPolicyCheck(result);
+    });
+    return () => {
+      live = false;
+    };
+  }, [receipt, policyText]);
 
   const loadFile = async (file: File) => {
     setFileError('');
@@ -165,6 +183,19 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
             onChange={(e) => setKey(e.target.value)}
           />
 
+          <label className="receipt-label" htmlFor={policyInputId}>
+            <span className="eyebrow">Signed model policy (optional)</span>
+          </label>
+          <textarea
+            id={policyInputId}
+            className="field mono"
+            rows={3}
+            value={policyText}
+            spellCheck={false}
+            placeholder="Paste a vitna-model-policy-v1 JSON to verify policy_digest, route, and sandbox floor."
+            onChange={(e) => setPolicyText(e.target.value)}
+          />
+
           {receipt ? (
             <div className="receipt-sample" aria-label="Export receipt">
               <button type="button" className="pill pill-small" onClick={() => downloadExport('none')}>
@@ -219,11 +250,12 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
                   />
                 ) : null}
                 {receipt ? <SignatureLine check={signature} /> : null}
+                {receipt && policyCheck ? <PolicyLine check={policyCheck} /> : null}
                 {receipt ? (
                   <Check
                     tone="plain"
                     title="Event chain not recomputed"
-                    detail={['A receipt carries the root of its event chain, not the events, so nothing here can rebuild it.']}
+                    detail={['A receipt carries the root of its event chain, not the events. Run `vitna verify --store <store.db>` to replay and verify the SQLite Merkle root.']}
                   />
                 ) : null}
                 {reading.uncovered.length ? (
@@ -259,6 +291,39 @@ function Check({ tone, title, detail }: { tone: 'ok' | 'rust' | 'plain'; title: 
       ))}
     </li>
   );
+}
+
+function PolicyLine({ check }: { check: PolicyCheck }) {
+  switch (check.status) {
+    case 'matched':
+      return (
+        <Check
+          tone="ok"
+          title={`Model policy verified (${check.policyId})`}
+          detail={[
+            `Ed25519 signature valid, digest ${shortDigest(check.policyDigest, 12)} matches receipt, sandbox >= ${check.requiredSandbox}.`,
+          ]}
+        />
+      );
+    case 'mismatch':
+      return (
+        <Check
+          tone="rust"
+          title={`Receipt violates model policy (${check.policyId})`}
+          detail={check.errors}
+        />
+      );
+    case 'invalid':
+      return (
+        <Check
+          tone="rust"
+          title={check.policyId ? `Model policy invalid (${check.policyId})` : 'Model policy invalid'}
+          detail={check.errors}
+        />
+      );
+    case 'unsupported':
+      return <Check tone="rust" title="Model policy could not be checked" detail={[check.detail]} />;
+  }
 }
 
 function SignatureLine({ check }: { check: SignatureCheck | null }) {

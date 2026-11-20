@@ -204,6 +204,7 @@ mod tests {
             base_commit: String::new(),
             provider: "anthropic".into(),
             model_sku: "claude-fable-5-1".into(),
+            policy_digest: None,
             isolation: "guarded".into(),
             completion: "completed_with_evidence".into(),
             evidence: Vec::new(),
@@ -219,6 +220,8 @@ mod tests {
             mandate_provenance: None,
             children: 0,
             signed: true,
+            device_public_key: None,
+            signature_verified: None,
             failed_checks: Vec::new(),
         }
     }
