@@ -5,7 +5,7 @@ fn test_benchmark_suite_execution() {
     let report = BenchmarkSuite::run_all();
 
     assert_eq!(report.suite_version, "vitna-benchmark-v1.0.0");
-    assert_eq!(report.metrics.len(), 3);
+    assert_eq!(report.metrics.len(), 4);
 
     // Must be a live UTC RFC 3339 timestamp, never the old hardcoded stub date.
     assert_ne!(report.timestamp_rfc3339, "2026-09-16T22:00:00Z");
@@ -31,5 +31,6 @@ fn test_benchmark_suite_execution() {
     assert!(json.contains("receipt_verification"));
     assert!(json.contains("merkle_root_calculation_1000_events"));
     assert!(json.contains("dag_kahn_validation_50_nodes"));
+    assert!(json.contains("mandate_chain_verification_2_hops"));
     assert!(json.contains("\"build_profile\""));
 }

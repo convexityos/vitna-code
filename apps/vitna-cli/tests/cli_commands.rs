@@ -1588,6 +1588,108 @@ fn mandate_init_round_trip_cli() {
     let _ = fs::remove_dir_all(&base);
 }
 
+#[test]
+fn bench_cli_writes_live_stamped_report() {
+    let base = temp_dir("bench_cli");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    let out_file = base.join("bench-report.json");
+    let res = run_vitna(
+        &[
+            "bench",
+            "--fast",
+            "--out",
+            out_file.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        res.status.success(),
+        "vitna bench failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&res.stdout),
+        String::from_utf8_lossy(&res.stderr)
+    );
+
+    let stdout_doc: serde_json::Value = serde_json::from_slice(&res.stdout).unwrap();
+    let file_doc: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_file).unwrap()).unwrap();
+    assert_eq!(stdout_doc, file_doc);
+    assert_eq!(file_doc["os"], std::env::consts::OS);
+    assert_eq!(file_doc["arch"], std::env::consts::ARCH);
+    assert_ne!(file_doc["timestamp_rfc3339"], "2026-09-16T22:00:00Z");
+
+    let metrics = file_doc["metrics"].as_array().unwrap();
+    assert_eq!(metrics.len(), 4);
+    let names: Vec<&str> = metrics
+        .iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"receipt_verification"));
+    assert!(names.contains(&"merkle_root_calculation_1000_events"));
+    assert!(names.contains(&"dag_kahn_validation_50_nodes"));
+    assert!(names.contains(&"mandate_chain_verification_2_hops"));
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn sessions_and_resume_surface_persisted_mode_cli() {
+    let base = temp_dir("sessions_mode");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    let db = base.join("store.db");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    // Seed an inspect-mode session directly via EventStore::save_session_with_mode.
+    {
+        let store = vitna_store::EventStore::open(&db).unwrap();
+        store
+            .save_session_with_mode(
+                "sess-inspect-42",
+                ws.to_str().unwrap(),
+                1_700_000_000_000,
+                "active",
+                "inspect",
+            )
+            .unwrap();
+    }
+
+    let listed = run_vitna(
+        &["sessions", "--store", db.to_str().unwrap(), "--json"],
+        &home,
+        &ws,
+    );
+    assert!(listed.status.success());
+    let rows: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(rows[0]["session_id"], "sess-inspect-42");
+    assert_eq!(rows[0]["mode"], "inspect");
+
+    let resumed = run_vitna(
+        &[
+            "resume",
+            "sess-inspect-42",
+            "--store",
+            db.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(resumed.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&resumed.stdout).unwrap();
+    assert_eq!(doc["session_id"], "sess-inspect-42");
+    assert_eq!(doc["mode"], "inspect");
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+
 
 
 
