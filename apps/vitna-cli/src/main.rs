@@ -422,6 +422,22 @@ enum AuthCommands {
 
 #[derive(Subcommand, Debug)]
 enum SkillsCommands {
+    /// Scaffold a new Trust Level 5 workspace skill (.vitna/skills/<name>/SKILL.md)
+    Init {
+        /// Skill identifier (lowercase ASCII letters, digits, hyphens, underscores; 1-64 chars).
+        name: String,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Short single-line description recorded in SKILL.md frontmatter.
+        #[arg(long)]
+        description: Option<String>,
+        /// Also write or update <workspace>/.vitna/skills.lock.json after scaffolding.
+        #[arg(long)]
+        write_lock: bool,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
     /// List discovered workspace skills and any refused paths
     List {
         #[arg(long, default_value = ".")]
@@ -448,6 +464,14 @@ enum SkillsCommands {
 
 #[derive(Subcommand, Debug)]
 enum ReceiptCommands {
+    /// List and verify all signed receipts stored in a workspace
+    List {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show and verify the receipt for a specific run
     Show {
         run_id: String,
@@ -703,6 +727,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         Some(Commands::Skills { sub }) => match sub {
+            SkillsCommands::Init {
+                name,
+                workspace,
+                description,
+                write_lock,
+                json,
+            } => {
+                if let Err(e) = commands::run_skills_init(
+                    &name,
+                    &workspace,
+                    description.as_deref(),
+                    write_lock,
+                    json,
+                ) {
+                    eprintln!("vitna skills init: {e}");
+                    std::process::exit(1);
+                }
+            }
             SkillsCommands::List { workspace, json } => {
                 if let Err(e) = commands::run_skills_list(&workspace, json) {
                     eprintln!("vitna skills list: {e}");
@@ -851,6 +893,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Some(Commands::Receipt { sub }) => match sub {
+            ReceiptCommands::List { workspace, json } => {
+                if let Err(e) = commands::run_receipt_list(&workspace, json) {
+                    eprintln!("vitna receipt list: {e}");
+                    std::process::exit(1);
+                }
+            }
             ReceiptCommands::Show {
                 run_id,
                 workspace,
