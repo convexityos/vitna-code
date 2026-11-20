@@ -210,10 +210,11 @@ pub mod tool_status {
 
 /// `commands.proto`: open a session bound to one folder.
 ///
-/// `initial_mode` is declared ("inspect", "build", "autopilot") and not yet
-/// acted on: every turn asks before any change, whatever mode was named. The
-/// daemon echoes it back in [`SessionCreated`] rather than pretending it took
-/// effect.
+/// `initial_mode` is declared ("inspect", "build", "autopilot"). When set to
+/// `"inspect"`, the daemon enforces read-only policy: mutating tools and
+/// `ApplyChangeSet` are refused fail-closed before approval, and commands run
+/// under `read_only` sandbox constraints. `"build"` and `"autopilot"` keep
+/// explicit exact-action approval gating on every mutating call.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSession {
     #[serde(default)]

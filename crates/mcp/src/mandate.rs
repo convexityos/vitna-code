@@ -98,6 +98,18 @@ impl ToolPricingCatalog {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    /// Returns all registered pricing entries in deterministic sorted order.
+    pub fn entries(&self) -> Vec<ToolCatalogEntry> {
+        self.entries
+            .iter()
+            .map(|((server, tool), spec)| ToolCatalogEntry {
+                server: server.clone(),
+                tool: tool.clone(),
+                spec: spec.clone(),
+            })
+            .collect()
+    }
 }
 
 fn system_unix_secs() -> u64 {
@@ -331,6 +343,68 @@ impl LiveMandateSession {
 
     pub fn chain_hash(&self) -> &str {
         &self.verified_chain.chain_hash
+    }
+
+    pub fn verified_chain(&self) -> &VerifiedMandateChain {
+        &self.verified_chain
+    }
+
+    pub fn currency(&self) -> &str {
+        &self.currency
+    }
+
+    pub fn task_id(&self) -> Option<&str> {
+        self.task_id.as_deref()
+    }
+
+    pub fn step_up_approved(&self) -> bool {
+        self.step_up_approved
+    }
+
+    pub fn pricing_entries(&self) -> Vec<ToolCatalogEntry> {
+        self.pricing.entries()
+    }
+
+    /// Performs a fail-closed dry-run authorization check for `(server_name, tool_name)`
+    /// against the pricing catalog and `am/1` delegation chain without reserving spend.
+    pub fn dry_run_tool(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        step_up_override: Option<bool>,
+    ) -> Result<ToolPriceSpec, String> {
+        let ns_prefix = format!("mcp__{server_name}__");
+        let bare_name = tool_name.strip_prefix(&ns_prefix).unwrap_or(tool_name);
+        let spec = self
+            .pricing
+            .get(server_name, tool_name)
+            .or_else(|| self.pricing.get(server_name, bare_name))
+            .ok_or_else(|| {
+                format!(
+                    "mandate_refused:unpriced_tool: tool '{server_name}:{tool_name}' has no pricing entry in catalog"
+                )
+            })?;
+
+        verify_mandate_chain(
+            &self.tokens,
+            &VerifyMandateOptions {
+                trusted_root_issuers: self.trusted_root_issuers.clone(),
+                ledger: self.ledger.clone(),
+                now: (self.now_fn)(),
+                skew_seconds: DEFAULT_SKEW_SECONDS,
+                request: Some(MandateActionRequest {
+                    resource: spec.resource_uri.clone(),
+                    amount: spec.amount.clone(),
+                    effect: Some(spec.effect),
+                    purpose: spec.purpose.clone(),
+                    task_id: self.task_id.clone(),
+                }),
+                step_up_approved: step_up_override.unwrap_or(self.step_up_approved),
+            },
+        )
+        .map_err(|e| format!("mandate_refused:{}: {}", e.code.as_str(), e.detail))?;
+
+        Ok(spec.clone())
     }
 
     /// Wraps an attached external MCP tool in [`MandatedToolBridge`] sharing

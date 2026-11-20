@@ -141,8 +141,21 @@ enum Commands {
         #[arg(long)]
         key: Option<String>,
     },
-    /// Check local environment, sandbox backend, and daemon health
-    Doctor,
+    /// Check local environment, guarded & strong sandboxes, keychain, skills, mandate, and daemon health
+    Doctor {
+        /// Workspace folder to probe for sandbox and workspace skills health.
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Optional OCI image reference used to probe strong OCI sandbox readiness.
+        #[arg(long = "sandbox-image")]
+        sandbox_image: Option<String>,
+        /// Optional `vitna-mandate-config-v1` JSON file to verify during audit.
+        #[arg(long)]
+        mandate: Option<PathBuf>,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
     /// Start the local daemon: the same daemon, endpoint and journal as vitna-coded
     Serve {
         /// Where to listen. Defaults to the endpoint every client probes.
@@ -247,6 +260,40 @@ enum Commands {
     Release {
         #[command(subcommand)]
         sub: ReleaseCommands,
+    },
+    /// Inspect and dry-run verify `am/1` Agent Mandate bundles (vitna-mandate-config-v1)
+    Mandate {
+        #[command(subcommand)]
+        sub: MandateCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum MandateCommands {
+    /// Verify and print an `am/1` mandate delegation chain, caveats, and priced MCP tools
+    Inspect {
+        /// Path to the `vitna-mandate-config-v1` JSON file.
+        mandate_file: PathBuf,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Cryptographically verify an `am/1` mandate chain and optionally dry-run an MCP tool call
+    Verify {
+        /// Path to the `vitna-mandate-config-v1` JSON file.
+        mandate_file: PathBuf,
+        /// MCP server name for dry-run tool authorization check (requires --tool).
+        #[arg(long)]
+        server: Option<String>,
+        /// MCP tool name (bare or mcp__<server>__<tool>) for dry-run check (requires --server).
+        #[arg(long)]
+        tool: Option<String>,
+        /// Simulate an explicit operator step-up approval for dry-run checks.
+        #[arg(long)]
+        step_up_approved: bool,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -363,8 +410,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Doctor) => {
-            run_doctor().await?;
+        Some(Commands::Doctor {
+            workspace,
+            sandbox_image,
+            mandate,
+            json,
+        }) => {
+            if let Err(e) = commands::run_doctor_audit(
+                &workspace,
+                sandbox_image.as_deref(),
+                mandate.as_deref(),
+                json,
+            )
+            .await
+            {
+                eprintln!("vitna doctor: {e}");
+                std::process::exit(1);
+            }
         }
         Some(Commands::Verify { receipt_file, key }) => {
             run_verify(&receipt_file, key.as_deref())?;
@@ -372,6 +434,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Run {
             task,
             workspace,
+            mode,
             auto_approve,
             verify_cmd,
             allow_unsandboxed,
@@ -388,7 +451,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             sandbox_image,
             mandate,
             store,
-            ..
         }) => {
             let has_live_flags = runtime_url.is_some()
                 || lane.is_some()
@@ -400,6 +462,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Err(e) = commands::run_live_turn(commands::LiveRunOptions {
                     task: &task,
                     workspace: &workspace,
+                    mode: &mode,
                     store_arg: store.as_deref(),
                     runtime_url,
                     lane,
@@ -437,6 +500,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 run_task_cli(
                     &task,
                     &workspace,
+                    &mode,
                     store.as_deref(),
                     auto_approve,
                     verify_cmd,
@@ -635,6 +699,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     json,
                 ) {
                     eprintln!("vitna release verify: {e}");
+                    std::process::exit(1);
+                }
+            }
+        },
+        Some(Commands::Mandate { sub }) => match sub {
+            MandateCommands::Inspect { mandate_file, json } => {
+                if let Err(e) = commands::run_mandate_inspect(&mandate_file, json) {
+                    eprintln!("vitna mandate inspect: {e}");
+                    std::process::exit(1);
+                }
+            }
+            MandateCommands::Verify {
+                mandate_file,
+                server,
+                tool,
+                step_up_approved,
+                json,
+            } => {
+                if let Err(e) = commands::run_mandate_verify(
+                    &mandate_file,
+                    server.as_deref(),
+                    tool.as_deref(),
+                    step_up_approved,
+                    json,
+                ) {
+                    eprintln!("vitna mandate verify: {e}");
                     std::process::exit(1);
                 }
             }
@@ -844,68 +934,6 @@ async fn run_app(
     }
 }
 
-async fn run_doctor() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Vitna Code Doctor - Environment Audit");
-    println!("=====================================");
-
-    // 1. Operating System
-    println!("[OK] OS: {} ({})", std::env::consts::OS, std::env::consts::ARCH);
-
-    // 2. Git
-    match vitna_git_workspaces::host_git::version() {
-        Some(version) => println!("[OK] Git: {}", version),
-        None => println!("[WARN] Git executable not found on PATH."),
-    }
-
-    // 3. SQLite WAL support
-    let temp_db = std::env::temp_dir().join("vitna_doctor_check.db");
-    match vitna_store::EventStore::open(&temp_db) {
-        Ok(_) => {
-            println!("[OK] SQLite WAL Persistence: Operational");
-            let _ = fs::remove_file(temp_db);
-        }
-        Err(e) => {
-            println!("[FAIL] SQLite WAL Persistence error: {}", e);
-        }
-    }
-
-    // 4. Device Signing Key: the one this account signs receipts with, read
-    // and never made here. This used to print the public half of a key made
-    // for the occasion and thrown away, which no receipt was ever signed with.
-    match vitna_daemon::launch::vitna_home() {
-        Ok(home) => match vitna_daemon::key::public_key_in(&home) {
-            Ok(Some(public)) => {
-                println!("[OK] Device Signing Key: Ed25519, in {}", home.display());
-                println!("     Device Public Key: {}", public);
-            }
-            Ok(None) => println!(
-                "[OK] Device Signing Key: none yet. The daemon makes one in {} the first time it signs.",
-                home.display()
-            ),
-            Err(e) => println!("[FAIL] Device Signing Key: {}", e),
-        },
-        Err(e) => println!("[FAIL] Device Signing Key: {}", e),
-    }
-
-    // 5. OS Sandbox Backend probe
-    let probe_dir = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
-    match vitna_runner::sandbox_status(&probe_dir, false) {
-        Ok((backend, enforcement)) => {
-            println!("[OK] Sandbox Backend: {backend} ({enforcement})");
-        }
-        Err(reason) => {
-            println!("[WARN] Sandbox Backend: unavailable ({reason})");
-        }
-    }
-
-    // 6. Daemon IPC Endpoint handshake probe
-    let (_listening, daemon_status) = commands::probe_daemon_endpoint().await;
-    println!("{daemon_status}");
-
-    println!("\nDoctor audit complete.");
-    Ok(())
-}
-
 fn run_verify(receipt_path: &str, key: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(receipt_path);
     if !path.exists() {
@@ -992,6 +1020,7 @@ fn run_verify(receipt_path: &str, key: Option<&str>) -> Result<(), Box<dyn std::
 async fn run_task_cli(
     task: &str,
     workspace: &Path,
+    mode: &str,
     store_arg: Option<&Path>,
     auto_approve: bool,
     verify_cmd: Option<String>,
@@ -1001,6 +1030,7 @@ async fn run_task_cli(
     println!("-------------------------");
     println!("Task:      {}", task);
     println!("Workspace: {}", workspace.display());
+    println!("Mode:      {}", mode);
 
     let db_path = match store_arg {
         Some(p) => p.to_path_buf(),
@@ -1008,7 +1038,7 @@ async fn run_task_cli(
     };
     let daemon = DaemonServer::open_default(&db_path)?;
 
-    let session = daemon.create_session(workspace)?;
+    let session = daemon.create_session_with_mode(workspace, mode)?;
     println!("Session:   {}", session.session_id);
 
     println!("Starting turn execution...");

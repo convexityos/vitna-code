@@ -20,12 +20,20 @@ use vitna_telemetry::TelemetryCollector;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+fn default_session_mode() -> String {
+    "build".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub session_id: String,
     pub workspace_root: PathBuf,
     pub created_at_ms: u64,
     pub status: String,
+    /// Session mode (`inspect`, `build`, or `autopilot`). `"inspect"` enforces
+    /// fail-closed read-only policy on tools and changesets.
+    #[serde(default = "default_session_mode")]
+    pub mode: String,
     /// The run most recently STARTED in this session. Kept equal to the last
     /// entry of `runs`; see [`DaemonServer::register_run`].
     pub latest_run_id: Option<String>,
@@ -136,6 +144,7 @@ impl DaemonServer {
                         workspace_root: PathBuf::from(s.workspace_root),
                         created_at_ms: s.created_at_ms,
                         status: s.status,
+                        mode: default_session_mode(),
                         latest_run_id,
                         runs: s.runs,
                     },
@@ -233,8 +242,29 @@ impl DaemonServer {
         hex::encode(self.signing_key.verifying_key().to_bytes())
     }
 
-    /// Creates a new workspace-bound session and persists it to the event store.
+    /// Creates a new workspace-bound session in default `"build"` mode and persists it.
     pub fn create_session<P: AsRef<Path>>(&self, workspace_root: P) -> Result<SessionInfo, String> {
+        self.create_session_with_mode(workspace_root, "build")
+    }
+
+    /// Creates a new workspace-bound session with an explicit mode (`"inspect"`,
+    /// `"build"`, or `"autopilot"`). An empty mode string defaults to `"build"`.
+    pub fn create_session_with_mode<P: AsRef<Path>>(
+        &self,
+        workspace_root: P,
+        mode: &str,
+    ) -> Result<SessionInfo, String> {
+        let normalized_mode = match mode.trim() {
+            "" | "build" => "build",
+            "inspect" => "inspect",
+            "autopilot" => "autopilot",
+            other => {
+                return Err(format!(
+                    "unsupported session mode '{other}': expected inspect, build, or autopilot"
+                ));
+            }
+        };
+
         let ws = workspace_root.as_ref().to_path_buf();
         if !ws.exists() {
             return Err(format!("Workspace root does not exist: {}", ws.display()));
@@ -253,6 +283,7 @@ impl DaemonServer {
             workspace_root: ws.clone(),
             created_at_ms: now_ms,
             status: "active".to_string(),
+            mode: normalized_mode.to_string(),
             latest_run_id: None,
             runs: Vec::new(),
         };
@@ -365,6 +396,7 @@ impl DaemonServer {
 
         let run_id = format!("run-{}", now_ms);
 
+        let is_inspect = session.mode == "inspect";
         let config = OrchestrationConfig {
             session_id: session_id.to_string(),
             run_id: run_id.clone(),
@@ -379,7 +411,11 @@ impl DaemonServer {
             // needed a change to it.
             model_sku: "keyword-stub".to_string(),
             provider_name: "none".to_string(),
-            sandbox_guarantee: "guarded".to_string(),
+            sandbox_guarantee: if is_inspect {
+                "read_only".to_string()
+            } else {
+                self.sandbox_guarantee.clone()
+            },
             verification_command,
             allow_unsandboxed,
         };
@@ -398,7 +434,8 @@ impl DaemonServer {
             self.runner.clone(),
             (*self.signing_key).clone(),
         )
-        .continuing_at(next_sequence);
+        .continuing_at(next_sequence)
+        .with_read_only_mode(is_inspect);
 
         // Record initial user task prompt in event store
         engine.record_event(

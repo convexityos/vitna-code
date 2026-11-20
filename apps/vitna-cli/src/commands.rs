@@ -823,6 +823,7 @@ pub fn run_apply(
 pub struct LiveRunOptions<'a> {
     pub task: &'a str,
     pub workspace: &'a Path,
+    pub mode: &'a str,
     pub store_arg: Option<&'a Path>,
     pub runtime_url: Option<String>,
     pub lane: Option<String>,
@@ -966,7 +967,8 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
     let extra_tools = daemon.mcp_tools();
     let mcp_tool_count = extra_tools.len();
 
-    let session = daemon.create_session(opts.workspace)?;
+    let session = daemon.create_session_with_mode(opts.workspace, opts.mode)?;
+    let is_inspect = session.mode == "inspect";
 
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -992,7 +994,11 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
         auto_approve: opts.auto_approve,
         model_sku,
         provider_name,
-        sandbox_guarantee: launch.sandbox_guarantee.clone(),
+        sandbox_guarantee: if is_inspect {
+            "read_only".to_string()
+        } else {
+            launch.sandbox_guarantee.clone()
+        },
         verification_command: opts.verify_cmd,
         allow_unsandboxed: opts.allow_unsandboxed,
     };
@@ -1007,7 +1013,8 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
     .with_extra_tools(extra_tools)
     .with_egress_allowlist(launch.egress_allowlist.clone())
     .with_policy_digest(policy_digest)
-    .with_sandbox_image(launch.sandbox_image.clone());
+    .with_sandbox_image(launch.sandbox_image.clone())
+    .with_read_only_mode(is_inspect);
     if let Some(ref mandate) = mandate_session {
         let m = Arc::clone(mandate);
         engine = engine.with_mandate_provenance_fn(Arc::new(move || m.provenance_record()));
@@ -1030,6 +1037,14 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
     println!("-------------------------");
     println!("Task:       {}", opts.task);
     println!("Workspace:  {}", opts.workspace.display());
+    println!(
+        "Mode:       {}",
+        if is_inspect {
+            "inspect (read-only)"
+        } else {
+            &session.mode
+        }
+    );
     write_stdout_line(&format!(
         "Session:    {}",
         sanitize_public_id(&session.session_id)
@@ -1818,5 +1833,453 @@ pub fn run_release_verify(
     }
     Ok(())
 }
+
+/// `vitna mandate inspect <mandate_file> [--json]`
+pub fn run_mandate_inspect(mandate_file: &Path, as_json: bool) -> Result<(), String> {
+    let session = vitna_mcp::LiveMandateSession::from_file(mandate_file)?;
+    let chain = session.verified_chain();
+    let entries = session.pricing_entries();
+
+    let pricing_json: Vec<Value> = entries
+        .iter()
+        .map(|entry| {
+            json!({
+                "server": entry.server,
+                "tool": entry.tool,
+                "resource_uri": entry.spec.resource_uri,
+                "amount": entry.spec.amount,
+                "effect": entry.spec.effect.as_str(),
+                "purpose": entry.spec.purpose,
+            })
+        })
+        .collect();
+
+    if as_json {
+        let out = json!({
+            "file": mandate_file.display().to_string(),
+            "valid": true,
+            "root_jti": chain.root_jti,
+            "path": chain.path,
+            "principal": chain.principal,
+            "agent": chain.agent,
+            "ledger": chain.ledger,
+            "currency": session.currency(),
+            "chain_hash": chain.chain_hash,
+            "nbf": chain.nbf,
+            "exp": chain.exp,
+            "task_id": session.task_id(),
+            "step_up_approved": session.step_up_approved(),
+            "effective_caveats": chain.effective,
+            "pricing": pricing_json,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
+    println!("Vitna Agent Mandate (am/1) Inspection");
+    println!("=====================================");
+    println!("File:       {}", mandate_file.display());
+    println!("Status:     VERIFIED");
+    println!("Root JTI:   {}", chain.root_jti);
+    println!("Path:       {}", chain.path.join(" -> "));
+    println!("Principal:  {}", chain.principal);
+    println!("Agent:      {}", chain.agent);
+    println!("Ledger:     {}", chain.ledger);
+    println!("Currency:   {}", session.currency());
+    println!("Chain Hash: {}", chain.chain_hash);
+    println!("Valid Window: nbf={} exp={}", chain.nbf, chain.exp);
+    if let Some(max_total) = &chain.effective.max_total {
+        println!("Max Total:  {} {}", max_total.amt, max_total.cur);
+    }
+    if let Some(max_per_txn) = &chain.effective.max_per_txn {
+        println!("Max / Txn:  {} {}", max_per_txn.amt, max_per_txn.cur);
+    }
+    if let Some(effect) = chain.effective.effect {
+        println!("Effect Cap: {}", effect.as_str());
+    }
+    if let Some(aud) = &chain.effective.aud {
+        println!("Audience:   {}", aud.join(", "));
+    }
+    if let Some(resources) = &chain.effective.resources {
+        println!("Resources:  {}", resources.join(", "));
+    }
+    if let Some(step_up) = &chain.effective.step_up {
+        println!(
+            "Step-Up:    over {} {} (approved: {})",
+            step_up.over.amt,
+            step_up.over.cur,
+            session.step_up_approved()
+        );
+    }
+    println!("Priced MCP Tools ({}):", entries.len());
+    for entry in &entries {
+        println!(
+            "  - {}:{} -> {} ({} {}, effect: {})",
+            entry.server,
+            entry.tool,
+            entry.spec.resource_uri,
+            entry.spec.amount.amt,
+            entry.spec.amount.cur,
+            entry.spec.effect.as_str()
+        );
+    }
+    Ok(())
+}
+
+/// `vitna mandate verify <mandate_file> [--server <name> --tool <tool>] [--step-up-approved] [--json]`
+pub fn run_mandate_verify(
+    mandate_file: &Path,
+    server: Option<&str>,
+    tool: Option<&str>,
+    step_up_approved: bool,
+    as_json: bool,
+) -> Result<(), String> {
+    if server.is_some() ^ tool.is_some() {
+        return Err("pass both --server and --tool together to dry-run a tool action".to_string());
+    }
+
+    let session = vitna_mcp::LiveMandateSession::from_file(mandate_file)?;
+    let chain = session.verified_chain();
+
+    let dry_run = if let (Some(srv), Some(tl)) = (server, tool) {
+        let override_step_up = if step_up_approved { Some(true) } else { None };
+        Some((srv, tl, session.dry_run_tool(srv, tl, override_step_up)))
+    } else {
+        None
+    };
+
+    let (action_allowed, action_json, action_err) = match &dry_run {
+        Some((srv, tl, Ok(spec))) => (
+            true,
+            Some(json!({
+                "server": srv,
+                "tool": tl,
+                "allowed": true,
+                "resource_uri": spec.resource_uri,
+                "amount": spec.amount,
+                "effect": spec.effect.as_str(),
+            })),
+            None,
+        ),
+        Some((srv, tl, Err(reason))) => (
+            false,
+            Some(json!({
+                "server": srv,
+                "tool": tl,
+                "allowed": false,
+                "reason": reason,
+            })),
+            Some(reason.clone()),
+        ),
+        None => (true, None, None),
+    };
+
+    if as_json {
+        let out = json!({
+            "file": mandate_file.display().to_string(),
+            "chain_verified": true,
+            "root_jti": chain.root_jti,
+            "path": chain.path,
+            "chain_hash": chain.chain_hash,
+            "priced_tools": session.pricing_entries().len(),
+            "action_check": action_json,
+            "valid": action_allowed,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!("Vitna Agent Mandate (am/1) Verification");
+        println!("=======================================");
+        println!("File:       {}", mandate_file.display());
+        println!("Chain:      VALID ({} hop(s), root {})", chain.path.len(), chain.root_jti);
+        println!("Chain Hash: {}", chain.chain_hash);
+        if let Some((srv, tl, res)) = &dry_run {
+            match res {
+                Ok(spec) => println!(
+                    "Action:     ALLOWED ({}:{} -> {} | {} {} | {})",
+                    srv,
+                    tl,
+                    spec.resource_uri,
+                    spec.amount.amt,
+                    spec.amount.cur,
+                    spec.effect.as_str()
+                ),
+                Err(reason) => println!("Action:     REFUSED ({}:{} -> {reason})", srv, tl),
+            }
+        }
+    }
+
+    if let Some(reason) = action_err {
+        return Err(reason);
+    }
+    Ok(())
+}
+
+/// `vitna doctor [--workspace <dir>] [--sandbox-image <img_ref>] [--mandate <file>] [--json]`
+pub async fn run_doctor_audit(
+    workspace: &Path,
+    sandbox_image: Option<&str>,
+    mandate_file: Option<&Path>,
+    as_json: bool,
+) -> Result<(), String> {
+    use vitna_providers::{CredentialError, CredentialResolver, KeyringStore, ProviderId};
+
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+
+    let git_version = vitna_git_workspaces::host_git::version();
+
+    let temp_db = std::env::temp_dir().join(format!(
+        "vitna_doctor_check_{}.db",
+        std::process::id()
+    ));
+    let sqlite_ok = vitna_store::EventStore::open(&temp_db).is_ok();
+    let _ = fs::remove_file(&temp_db);
+
+    let (device_key_status, device_public_key, device_key_dir) =
+        match vitna_daemon::launch::vitna_home() {
+            Ok(home) => match vitna_daemon::key::public_key_in(&home) {
+                Ok(Some(pub_key)) => (
+                    "present".to_string(),
+                    Some(pub_key),
+                    Some(home.display().to_string()),
+                ),
+                Ok(None) => (
+                    "uninitialized".to_string(),
+                    None,
+                    Some(home.display().to_string()),
+                ),
+                Err(e) => (format!("error: {e}"), None, Some(home.display().to_string())),
+            },
+            Err(e) => (format!("error: {e}"), None, None),
+        };
+
+    let probe_dir = if workspace.exists() {
+        workspace.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir())
+    };
+
+    let guarded_sandbox = vitna_runner::sandbox_status_for(
+        &probe_dir,
+        vitna_runner::SandboxGuarantee::Guarded,
+        None,
+        false,
+    );
+
+    let probe_image = sandbox_image.unwrap_or("alpine:3.20");
+    let strong_sandbox = vitna_runner::sandbox_status_for(
+        &probe_dir,
+        vitna_runner::SandboxGuarantee::Strong,
+        Some(probe_image),
+        false,
+    );
+
+    let (daemon_listening, daemon_status) = probe_daemon_endpoint().await;
+
+    let (keychain_backend, provider_keys) = match KeyringStore::open() {
+        Ok(store) => {
+            let resolver = CredentialResolver::new(Arc::new(store));
+            let name = resolver.source_name().to_string();
+            let mut rows = Vec::new();
+            for p in ProviderId::ALL {
+                let status = match resolver.check(p) {
+                    Ok(()) => "configured",
+                    Err(CredentialError::AuthenticationRequired { .. }) => "not_configured",
+                    Err(_) => "unavailable",
+                };
+                rows.push(json!({ "provider": p.as_str(), "status": status }));
+            }
+            (name, rows)
+        }
+        Err(_) => (
+            "unavailable".to_string(),
+            ProviderId::ALL
+                .into_iter()
+                .map(|p| json!({ "provider": p.as_str(), "status": "unavailable" }))
+                .collect(),
+        ),
+    };
+
+    let skills_info = if workspace.exists() {
+        match vitna_skills::SkillRegistry::discover_in_workspace(workspace) {
+            Ok(reg) => {
+                let lock_path = workspace.join(".vitna").join("skills.lock.json");
+                let lock_status = if lock_path.is_file() {
+                    let ok = fs::read_to_string(&lock_path)
+                        .ok()
+                        .and_then(|raw| serde_json::from_str::<vitna_skills::SkillLock>(&raw).ok())
+                        .is_some_and(|lock| {
+                            lock.verify_all(reg.skills()).is_ok()
+                                && lock.entries.keys().all(|name| reg.get(name).is_some())
+                        });
+                    if ok {
+                        "verified"
+                    } else {
+                        "mismatch"
+                    }
+                } else {
+                    "no_lockfile"
+                };
+                json!({
+                    "discovered": reg.skills().len(),
+                    "refused": reg.refused().len(),
+                    "lockfile": lock_status,
+                })
+            }
+            Err(e) => json!({ "error": e.to_string() }),
+        }
+    } else {
+        json!({ "error": "workspace path does not exist" })
+    };
+
+    let mandate_check = mandate_file.map(|path| match vitna_mcp::LiveMandateSession::from_file(path) {
+        Ok(s) => Ok((
+            s.root_jti().to_string(),
+            s.chain_hash().to_string(),
+            s.pricing_entries().len(),
+        )),
+        Err(e) => Err(e),
+    });
+
+    if as_json {
+        let out = json!({
+            "os": os,
+            "arch": arch,
+            "git": git_version,
+            "sqlite_wal": sqlite_ok,
+            "device_key": {
+                "status": device_key_status,
+                "public_key": device_public_key,
+                "dir": device_key_dir,
+            },
+            "sandbox_guarded": match &guarded_sandbox {
+                Ok((backend, enforcement)) => json!({ "available": true, "backend": backend, "enforcement": enforcement }),
+                Err(reason) => json!({ "available": false, "reason": reason }),
+            },
+            "sandbox_strong_oci": match &strong_sandbox {
+                Ok((backend, enforcement)) => json!({ "available": true, "backend": backend, "enforcement": enforcement, "probe_image": probe_image }),
+                Err(reason) => json!({ "available": false, "reason": reason, "probe_image": probe_image }),
+            },
+            "keychain": {
+                "backend": keychain_backend,
+                "providers": provider_keys,
+            },
+            "skills": skills_info,
+            "daemon": {
+                "listening": daemon_listening,
+                "status": daemon_status,
+            },
+            "mandate": match &mandate_check {
+                Some(Ok((root_jti, chain_hash, priced))) => json!({
+                    "valid": true,
+                    "root_jti": root_jti,
+                    "chain_hash": chain_hash,
+                    "priced_tools": priced,
+                }),
+                Some(Err(reason)) => json!({
+                    "valid": false,
+                    "error": reason,
+                }),
+                None => Value::Null,
+            },
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!("Vitna Code Doctor - Environment Audit");
+        println!("=====================================");
+        println!("[OK] OS: {os} ({arch})");
+        match &git_version {
+            Some(version) => println!("[OK] Git: {version}"),
+            None => println!("[WARN] Git executable not found on PATH."),
+        }
+        if sqlite_ok {
+            println!("[OK] SQLite WAL Persistence: Operational");
+        } else {
+            println!("[FAIL] SQLite WAL Persistence: unavailable");
+        }
+        match (&device_key_status[..], &device_public_key, &device_key_dir) {
+            ("present", Some(pub_key), Some(dir)) => {
+                println!("[OK] Device Signing Key: Ed25519, in {dir}");
+                println!("     Device Public Key: {pub_key}");
+            }
+            ("uninitialized", _, Some(dir)) => {
+                println!("[OK] Device Signing Key: none yet. The daemon makes one in {dir} the first time it signs.");
+            }
+            _ => println!("[FAIL] Device Signing Key: {device_key_status}"),
+        }
+        match &guarded_sandbox {
+            Ok((backend, enforcement)) => {
+                println!("[OK] Guarded Sandbox Backend: {backend} ({enforcement})");
+            }
+            Err(reason) => {
+                println!("[WARN] Guarded Sandbox Backend: unavailable ({reason})");
+            }
+        }
+        match &strong_sandbox {
+            Ok((backend, enforcement)) => {
+                println!("[OK] Strong OCI Sandbox: {backend} ({enforcement}, probe image: {probe_image})");
+            }
+            Err(reason) => {
+                println!("[INFO] Strong OCI Sandbox: unavailable ({reason})");
+            }
+        }
+        let key_summary: Vec<String> = provider_keys
+            .iter()
+            .filter_map(|row| {
+                Some(format!(
+                    "{}={}",
+                    row.get("provider")?.as_str()?,
+                    row.get("status")?.as_str()?
+                ))
+            })
+            .collect();
+        println!(
+            "[INFO] OS Keychain ({keychain_backend}): {}",
+            key_summary.join(", ")
+        );
+        if let Some(count) = skills_info.get("discovered").and_then(|v| v.as_u64()) {
+            let refused = skills_info
+                .get("refused")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let lock = skills_info
+                .get("lockfile")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            println!(
+                "[OK] Workspace Skills: {count} discovered, {refused} refused (lockfile: {lock})"
+            );
+        }
+        println!("{daemon_status}");
+        if let Some(res) = &mandate_check {
+            match res {
+                Ok((root_jti, chain_hash, priced)) => {
+                    println!(
+                        "[OK] Mandate (am/1): verified (root {root_jti}, {priced} priced tool(s), {chain_hash})"
+                    );
+                }
+                Err(reason) => {
+                    println!("[FAIL] Mandate (am/1): {reason}");
+                }
+            }
+        }
+        println!("\nDoctor audit complete.");
+    }
+
+    if let Some(Err(reason)) = mandate_check {
+        return Err(format!("mandate audit failed: {reason}"));
+    }
+    Ok(())
+}
+
 
 

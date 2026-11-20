@@ -31,3 +31,6 @@ hex.workspace = true
 [[bin]]
 name = "vitna"
 path = "src/main.rs"
+
+[dev-dependencies]
+vitna-policy.workspace = true

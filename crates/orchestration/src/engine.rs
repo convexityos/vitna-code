@@ -104,6 +104,10 @@ pub struct OrchestrationEngine {
     /// (including accumulated spend) at `finalize_run` time.
     pub mandate_provenance_fn:
         Option<Arc<dyn Fn() -> vitna_receipts::MandateProvenanceRecord + Send + Sync>>,
+    /// When true (`inspect` mode), mutating tools are refused fail-closed by
+    /// policy before requesting approval, and `run_command` is clamped to
+    /// `SandboxGuarantee::ReadOnly`.
+    pub read_only_mode: bool,
 }
 
 /// How long a person has to answer an approval before it is refused.
@@ -208,6 +212,7 @@ impl OrchestrationEngine {
             policy_digest: None,
             sandbox_image: None,
             mandate_provenance_fn: None,
+            read_only_mode: false,
         }
     }
 
@@ -275,6 +280,13 @@ impl OrchestrationEngine {
         provider: Arc<dyn Fn() -> vitna_receipts::MandateProvenanceRecord + Send + Sync>,
     ) -> Self {
         self.mandate_provenance_fn = Some(provider);
+        self
+    }
+
+    /// Enforces read-only `inspect` mode: mutating tools are refused by policy
+    /// before approval, and `run_command` is clamped to `SandboxGuarantee::ReadOnly`.
+    pub fn with_read_only_mode(mut self, read_only: bool) -> Self {
+        self.read_only_mode = read_only;
         self
     }
 
@@ -518,6 +530,26 @@ impl OrchestrationEngine {
             )?;
         }
 
+        // Step 2b: Read-only `inspect` mode policy enforcement (fail-closed
+        // before asking approval or touching the runner).
+        if self.read_only_mode && is_mutating {
+            let reason = format!(
+                "Mode 'inspect' is read-only: mutating tool '{tool_name}' is refused by policy"
+            );
+            self.record_event(
+                crate::audit::APPROVAL_REJECTED,
+                &serde_json::json!({
+                    "tool_name": tool_name,
+                    "action_digest": action_digest,
+                    "reason": "inspect_mode_read_only",
+                }),
+            )?;
+            if call.is_some() {
+                self.finish_unstarted(&tool_call_id)?;
+            }
+            return Err(reason);
+        }
+
         // Step 3: Exact-action capability & approval check
         let needs_approval = is_mutating
             || definition.requires_approval
@@ -554,15 +586,19 @@ impl OrchestrationEngine {
             )?;
         }
 
-        let requested_guarantee = match self.config.sandbox_guarantee.as_str() {
-            "read_only" => vitna_runner::SandboxGuarantee::ReadOnly,
-            "guarded" => vitna_runner::SandboxGuarantee::Guarded,
-            "strong" => vitna_runner::SandboxGuarantee::Strong,
-            "full_access" => vitna_runner::SandboxGuarantee::FullAccess,
-            other => {
-                return Err(format!(
-                    "unsupported sandbox_guarantee '{other}': expected read_only, guarded, or strong"
-                ));
+        let requested_guarantee = if self.read_only_mode {
+            vitna_runner::SandboxGuarantee::ReadOnly
+        } else {
+            match self.config.sandbox_guarantee.as_str() {
+                "read_only" => vitna_runner::SandboxGuarantee::ReadOnly,
+                "guarded" => vitna_runner::SandboxGuarantee::Guarded,
+                "strong" => vitna_runner::SandboxGuarantee::Strong,
+                "full_access" => vitna_runner::SandboxGuarantee::FullAccess,
+                other => {
+                    return Err(format!(
+                        "unsupported sandbox_guarantee '{other}': expected read_only, guarded, or strong"
+                    ));
+                }
             }
         };
 
@@ -710,14 +746,18 @@ impl OrchestrationEngine {
             self.set_run_state(run_state::RUNNING_MODEL, "tool finished")?;
         }
 
-        // Step 5: Update state and track modifications
-        if let (Some(pre), Some(post)) = (&result.preimage_hash, &result.postimage_hash) {
-            if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
-                self.changeset_modifications.push(FileModificationRecord {
-                    path: path.to_string(),
-                    preimage_hash: pre.clone(),
-                    postimage_hash: post.clone(),
-                });
+        // Step 5: Update state and track modifications (only mutating tools
+        // modify files; read_file returns identical pre/post hashes for
+        // reference and must never be stamped into changeset.files_modified).
+        if is_mutating {
+            if let (Some(pre), Some(post)) = (&result.preimage_hash, &result.postimage_hash) {
+                if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
+                    self.changeset_modifications.push(FileModificationRecord {
+                        path: path.to_string(),
+                        preimage_hash: pre.clone(),
+                        postimage_hash: post.clone(),
+                    });
+                }
             }
         }
 
