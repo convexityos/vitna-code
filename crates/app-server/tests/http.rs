@@ -1234,3 +1234,162 @@ async fn receipt_export_endpoint_redacts_strips_signature_and_rejects_traversal(
         401
     );
 }
+
+#[tokio::test]
+async fn receipt_diff_endpoint_compares_receipts_and_rejects_traversal() {
+    use vitna_receipts::{
+        ChangeSetRecord, EgressCallRecord, EvidenceItemRecord, FileModificationRecord,
+        MandateProvenanceRecord, ModelSelectionRecord,
+    };
+
+    let h = Harness::start("receipt_diff").await;
+    let token = h.session().await;
+    let t = Some(token.as_str());
+
+    let receipts_dir = h.folder().join(".vitna").join("receipts");
+    std::fs::create_dir_all(&receipts_dir).unwrap();
+
+    let receipt_a = VitnaRunReceiptV1 {
+        schema_version: "vitna-run-receipt-v1".to_string(),
+        run_id: "run-diff-http-a".to_string(),
+        session_id: "sess-diff".to_string(),
+        workspace_fingerprint: "a".repeat(64),
+        base_commit_sha: "b".repeat(40),
+        model_selection: ModelSelectionRecord {
+            provider: "vitna-runtime".to_string(),
+            model_sku: "vitna/code".to_string(),
+            routing_reason: "lane".to_string(),
+            policy_digest: None,
+        },
+        event_hash_chain_root: "0".repeat(64),
+        isolation_label: "guarded".to_string(),
+        completion_state: "completed_with_evidence".to_string(),
+        evidence_items: vec![EvidenceItemRecord {
+            evidence_id: "ev-1".to_string(),
+            grade: "sandbox_captured".to_string(),
+            description: "cargo test".to_string(),
+            artifact_digest: None,
+        }],
+        changeset: ChangeSetRecord {
+            files_modified: vec![
+                FileModificationRecord {
+                    path: "src/only_a.rs".to_string(),
+                    preimage_hash: "0".repeat(64),
+                    postimage_hash: "1".repeat(64),
+                },
+                FileModificationRecord {
+                    path: "src/shared.rs".to_string(),
+                    preimage_hash: "0".repeat(64),
+                    postimage_hash: "2".repeat(64),
+                },
+            ],
+            diff_digest: "c".repeat(64),
+        },
+        runner_execution_statements: vec![],
+        egress_calls: vec![],
+        child_receipt_roots: vec![],
+        device_public_key: None,
+        mandate_provenance: Some(MandateProvenanceRecord {
+            chain_hash: "sha256:abc".to_string(),
+            root_jti: "mnd-http-1".to_string(),
+            path: vec!["mnd-http-1".to_string()],
+            ledger: "https://ledger.local".to_string(),
+            currency: "USD".to_string(),
+            total_spent: "0.25".to_string(),
+            spend_digests: vec![],
+        }),
+        device_signature: String::new(),
+    };
+    let mut receipt_b = receipt_a.clone();
+    receipt_b.run_id = "run-diff-http-b".to_string();
+    receipt_b.isolation_label = "full_access".to_string();
+    receipt_b.model_selection.provider = "openai".to_string();
+    receipt_b.model_selection.model_sku = "gpt-5".to_string();
+    receipt_b.evidence_items.clear();
+    receipt_b.changeset.files_modified = vec![
+        FileModificationRecord {
+            path: "src/shared.rs".to_string(),
+            preimage_hash: "0".repeat(64),
+            postimage_hash: "9".repeat(64),
+        },
+        FileModificationRecord {
+            path: "src/only_b.rs".to_string(),
+            preimage_hash: "0".repeat(64),
+            postimage_hash: "3".repeat(64),
+        },
+    ];
+    receipt_b.egress_calls.push(EgressCallRecord {
+        target_domain: "api.example.com".to_string(),
+        method: "GET".to_string(),
+        redacted_url: "https://api.example.com/v1".to_string(),
+        request_sha256: "1".repeat(64),
+        status_code: 200,
+        response_sha256: "2".repeat(64),
+        bytes_sent: 10,
+        bytes_received: 40,
+        latency_ms: 19,
+    });
+    receipt_b.mandate_provenance.as_mut().unwrap().total_spent = "1.75".to_string();
+
+    std::fs::write(
+        receipts_dir.join("run-diff-http-a.json"),
+        serde_json::to_string_pretty(&receipt_a).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        receipts_dir.join("run-diff-http-b.json"),
+        serde_json::to_string_pretty(&receipt_b).unwrap(),
+    )
+    .unwrap();
+
+    // 1. Valid diff returns structured model, isolation regression, file deltas, new egress domain, and mandate spend.
+    let body = serde_json::json!({
+        "run_a": "run-diff-http-a",
+        "run_b": "run-diff-http-b"
+    })
+    .to_string();
+    let res = h.api(t, "receipt/diff", "", body.as_bytes()).await;
+    assert_eq!(res.status, 200, "{}", res.text());
+    let doc = res.json();
+    assert_eq!(doc["model"]["changed"].as_bool(), Some(true));
+    assert_eq!(doc["isolation"]["changed"].as_bool(), Some(true));
+    assert_eq!(doc["isolation"]["regression"].as_bool(), Some(true));
+    assert_eq!(doc["files"]["only_in_a"], serde_json::json!(["src/only_a.rs"]));
+    assert_eq!(doc["files"]["only_in_b"], serde_json::json!(["src/only_b.rs"]));
+    assert_eq!(
+        doc["files"]["postimage_changed"],
+        serde_json::json!(["src/shared.rs"])
+    );
+    assert_eq!(
+        doc["egress"]["new_domains"],
+        serde_json::json!(["api.example.com"])
+    );
+    assert_eq!(doc["mandate"]["spent_a"].as_str(), Some("0.25 USD"));
+    assert_eq!(doc["mandate"]["spent_b"].as_str(), Some("1.75 USD"));
+
+    // 2. Traversal, missing run, and unauthenticated requests fail closed.
+    let trav = h
+        .api(
+            t,
+            "receipt/diff",
+            "",
+            br#"{"run_a":"../outside","run_b":"run-diff-http-b"}"#,
+        )
+        .await;
+    assert_eq!(trav.status, 400);
+
+    let missing = h
+        .api(
+            t,
+            "receipt/diff",
+            "",
+            br#"{"run_a":"run-diff-http-a","run_b":"does-not-exist"}"#,
+        )
+        .await;
+    assert_eq!(missing.status, 404);
+
+    assert_eq!(
+        h.api(None, "receipt/diff", "", body.as_bytes()).await.status,
+        401
+    );
+}

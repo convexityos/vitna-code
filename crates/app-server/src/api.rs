@@ -215,6 +215,7 @@ pub(crate) async fn handle(state: &State, peer: SocketAddr, request: Request<Inc
         "fs/remove" => remove(state, &token, &request),
         "run" => run(state, &token, request).await,
         "receipt" => make_receipt(state, &token, &session_id, request).await,
+        "receipt/diff" => diff_receipt_endpoint(state, request).await,
         "receipt/export" => export_receipt(state, request).await,
         "receipts" => list_receipts(state),
         "routines" => read_routines(state).await,
@@ -974,6 +975,67 @@ async fn export_receipt(state: &State, request: Request<Incoming>) -> Reply {
             )
         }
         _ => unreachable!(),
+    }
+}
+
+#[derive(Deserialize)]
+struct DiffReceiptRequest {
+    run_a: String,
+    run_b: String,
+}
+
+async fn diff_receipt_endpoint(state: &State, request: Request<Incoming>) -> Reply {
+    let asked: DiffReceiptRequest = match json_body(request).await {
+        Ok(asked) => asked,
+        Err(reply) => return reply,
+    };
+    let run_a = match validate_export_run_id(&asked.run_a) {
+        Ok(id) => id,
+        Err(reply) => return reply,
+    };
+    let run_b = match validate_export_run_id(&asked.run_b) {
+        Ok(id) => id,
+        Err(reply) => return reply,
+    };
+
+    let bytes_a = match state.files.read(&format!(".vitna/receipts/{run_a}.json")) {
+        Ok(bytes) => bytes,
+        Err(e) => return file_refusal(e),
+    };
+    let bytes_b = match state.files.read(&format!(".vitna/receipts/{run_b}.json")) {
+        Ok(bytes) => bytes,
+        Err(e) => return file_refusal(e),
+    };
+
+    let receipt_a: vitna_receipts::VitnaRunReceiptV1 = match serde_json::from_slice(&bytes_a) {
+        Ok(r) => r,
+        Err(e) => {
+            return refusal(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "corrupt_receipt",
+                format!("Baseline receipt could not be parsed as vitna-run-receipt-v1: {e}"),
+            );
+        }
+    };
+    let receipt_b: vitna_receipts::VitnaRunReceiptV1 = match serde_json::from_slice(&bytes_b) {
+        Ok(r) => r,
+        Err(e) => {
+            return refusal(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "corrupt_receipt",
+                format!("Candidate receipt could not be parsed as vitna-run-receipt-v1: {e}"),
+            );
+        }
+    };
+
+    let diff = vitna_receipt_verify::diff_receipts(&receipt_a, &receipt_b);
+    match serde_json::to_value(&diff) {
+        Ok(val) => json_reply(StatusCode::OK, val),
+        Err(e) => refusal(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "serialize_error",
+            format!("Could not serialize receipt diff: {e}"),
+        ),
     }
 }
 
