@@ -56,6 +56,13 @@ pub struct Launch {
     pub mcp_servers: Vec<McpServerSpec>,
     /// Operator-configured destination hosts permitted for brokered `net:http_fetch`.
     pub egress_allowlist: Vec<String>,
+    /// Requested sandbox guarantee for `run_command` (`read_only`, `guarded`, or `strong`).
+    pub sandbox_guarantee: String,
+    /// Explicit OCI container image required when `sandbox_guarantee == "strong"`.
+    pub sandbox_image: Option<String>,
+    /// Optional path to a `vitna-mandate-config-v1` JSON file enforcing an `am/1`
+    /// Agent Mandate delegation chain across attached MCP tools and receipts.
+    pub mandate_file: Option<PathBuf>,
 }
 
 impl Launch {
@@ -84,6 +91,9 @@ impl Launch {
             anchor: None,
             mcp_servers: Vec::new(),
             egress_allowlist: Vec::new(),
+            sandbox_guarantee: "guarded".to_string(),
+            sandbox_image: None,
+            mandate_file: None,
         })
     }
 
@@ -247,6 +257,54 @@ impl Launch {
         }
         Ok(self)
     }
+
+    /// Configures the requested sandbox guarantee (`read_only`, `guarded`, or
+    /// `strong`) and optional explicit OCI container image for `strong`.
+    pub fn with_sandbox(
+        mut self,
+        guarantee: Option<String>,
+        image: Option<String>,
+    ) -> Result<Launch, String> {
+        let normalized = guarantee
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "guarded".to_string());
+        match normalized.as_str() {
+            "read_only" | "guarded" => {
+                if image.is_some() {
+                    return Err(format!(
+                        "--sandbox-image requires --sandbox-guarantee strong (got '{normalized}')"
+                    ));
+                }
+                self.sandbox_guarantee = normalized;
+                self.sandbox_image = None;
+                Ok(self)
+            }
+            "strong" => {
+                let raw = image.ok_or_else(|| {
+                    "--sandbox-guarantee strong requires --sandbox-image <OCI_IMAGE>".to_string()
+                })?;
+                let validated = vitna_runner::validate_container_image(&raw)?;
+                self.sandbox_guarantee = "strong".to_string();
+                self.sandbox_image = Some(validated.to_string());
+                Ok(self)
+            }
+            other => Err(format!(
+                "invalid --sandbox-guarantee '{other}': expected 'read_only', 'guarded', or 'strong'"
+            )),
+        }
+    }
+
+    /// Configures an `am/1` Agent Mandate bundle JSON file (`--mandate <FILE>`).
+    pub fn with_mandate(mut self, mandate_file: Option<PathBuf>) -> Result<Launch, String> {
+        if let Some(ref path) = mandate_file {
+            // Validate JSON shape and cryptographic chain eagerly at startup.
+            let _ = vitna_mcp::LiveMandateSession::from_file(path)?;
+        }
+        self.mandate_file = mandate_file;
+        Ok(self)
+    }
 }
 
 /// `.vitna/daemon.db` under the home directory.
@@ -365,6 +423,21 @@ pub async fn run<F: FnOnce()>(launch: &Launch, on_ready: F) -> Result<(), String
         tracing::info!(
             "no model route: SubmitTurn is refused until --runtime-url/--lane or --provider/--model are given"
         );
+    }
+
+    server = server.with_sandbox(
+        launch.sandbox_guarantee.clone(),
+        launch.sandbox_image.clone(),
+    );
+
+    if let Some(mandate_path) = &launch.mandate_file {
+        let session = vitna_mcp::LiveMandateSession::from_file(mandate_path)?;
+        tracing::info!(
+            root_jti = session.root_jti(),
+            chain_hash = session.chain_hash(),
+            "enforcing verified am/1 Agent Mandate on external MCP tools and receipts"
+        );
+        server = server.with_mandate(Arc::new(session));
     }
 
     for spec in &launch.mcp_servers {
@@ -551,6 +624,30 @@ mod tests {
         assert!(base()
             .with_checkpoint(Some(PathBuf::from("/tmp/model.gguf")))
             .is_err());
+    }
+
+    #[test]
+    fn sandbox_flags_validate_strong_image_and_reject_flag_injection() {
+        let base = || Launch::resolve(Some("e".into()), Some(PathBuf::from("a.db"))).unwrap();
+
+        let strong = base()
+            .with_sandbox(Some("strong".into()), Some("alpine:3.20".into()))
+            .expect("valid strong config");
+        assert_eq!(strong.sandbox_guarantee, "strong");
+        assert_eq!(strong.sandbox_image.as_deref(), Some("alpine:3.20"));
+
+        // Strong without image fails closed.
+        assert!(base().with_sandbox(Some("strong".into()), None).is_err());
+        // Image without strong fails closed.
+        assert!(base()
+            .with_sandbox(Some("guarded".into()), Some("alpine:3.20".into()))
+            .is_err());
+        // Flag-injection image name fails closed.
+        assert!(base()
+            .with_sandbox(Some("strong".into()), Some("--privileged".into()))
+            .is_err());
+        // Unknown guarantee fails closed.
+        assert!(base().with_sandbox(Some("magic".into()), None).is_err());
     }
 
     #[test]

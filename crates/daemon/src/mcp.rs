@@ -111,7 +111,11 @@ impl DaemonServer {
 
         let mut guard = self.mcp_tools.lock().map_err(|e| e.to_string())?;
         for bridge in bridges {
-            let name = bridge.name().to_string();
+            let tool: Arc<dyn Tool> = match &self.mandate_session {
+                Some(session) => session.wrap_tool(server_name, bridge),
+                None => bridge,
+            };
+            let name = tool.name().to_string();
             if guard.iter().any(|existing| existing.name() == name) {
                 return Err(format!(
                     "MCP tool '{}' is already attached to this daemon",
@@ -119,7 +123,7 @@ impl DaemonServer {
                 ));
             }
             registered_names.push(name);
-            guard.push(bridge);
+            guard.push(tool);
         }
 
         Ok(registered_names)

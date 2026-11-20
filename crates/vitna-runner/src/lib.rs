@@ -23,7 +23,8 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
-use vitna_sandbox::{plan, SandboxConfig, SandboxGuarantee};
+pub use vitna_sandbox::{validate_container_image, SandboxGuarantee};
+use vitna_sandbox::{plan, SandboxConfig};
 
 /// Prefix on the error returned when a command was refused for want of a
 /// sandbox. Callers match on it to tell "we would not run this" apart from "it
@@ -129,7 +130,8 @@ pub fn compute_statement_digest(
     hex::encode(Sha256::digest(raw.as_bytes()))
 }
 
-/// What isolation this machine can provide for `workspace_root` right now.
+/// What isolation this machine can provide for `workspace_root` right now under
+/// the default `Guarded` guarantee.
 ///
 /// Exposed so a policy layer can ask before it approves, rather than
 /// discovering the answer from a failed execution.
@@ -137,8 +139,20 @@ pub fn sandbox_status(
     workspace_root: &Path,
     allow_network: bool,
 ) -> Result<(String, String), String> {
-    let mut config = SandboxConfig::new(workspace_root, SandboxGuarantee::Guarded);
+    sandbox_status_for(workspace_root, SandboxGuarantee::Guarded, None, allow_network)
+}
+
+/// What isolation this machine can provide for `workspace_root` under a
+/// specific [`SandboxGuarantee`] and optional OCI container image.
+pub fn sandbox_status_for(
+    workspace_root: &Path,
+    guarantee: SandboxGuarantee,
+    container_image: Option<&str>,
+    allow_network: bool,
+) -> Result<(String, String), String> {
+    let mut config = SandboxConfig::new(workspace_root, guarantee);
     config.allow_network = allow_network;
+    config.container_image = container_image.map(str::to_string);
     match plan(&config, "true", workspace_root) {
         Ok(p) => Ok((
             p.backend.as_str().to_string(),

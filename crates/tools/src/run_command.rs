@@ -68,6 +68,8 @@ impl Tool for RunCommandTool {
         );
         request.allow_unsandboxed = ctx.allow_unsandboxed;
         request.allow_network = ctx.allow_network;
+        request.guarantee = ctx.sandbox_guarantee;
+        request.container_image = ctx.sandbox_image.clone();
 
         let output = ctx.runner.run_command(request).await?;
 

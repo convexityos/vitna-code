@@ -24,6 +24,7 @@ vitna-tools.workspace = true
 vitna-providers.workspace = true
 vitna-orchestration.workspace = true
 vitna-skills.workspace = true
+vitna-mcp.workspace = true
 sha2.workspace = true
 hex.workspace = true
 

@@ -98,6 +98,12 @@ pub struct OrchestrationEngine {
     /// Optional policy or local checkpoint SHA-256 digest stamped into
     /// `ModelSelectionRecord.policy_digest` on the signed receipt.
     pub policy_digest: Option<String>,
+    /// Explicit OCI container image used when `config.sandbox_guarantee == "strong"`.
+    pub sandbox_image: Option<String>,
+    /// Optional snapshot callback returning live `am/1` Agent Mandate provenance
+    /// (including accumulated spend) at `finalize_run` time.
+    pub mandate_provenance_fn:
+        Option<Arc<dyn Fn() -> vitna_receipts::MandateProvenanceRecord + Send + Sync>>,
 }
 
 /// How long a person has to answer an approval before it is refused.
@@ -200,6 +206,8 @@ impl OrchestrationEngine {
             loaded_skills: Vec::new(),
             egress_allowlist: Vec::new(),
             policy_digest: None,
+            sandbox_image: None,
+            mandate_provenance_fn: None,
         }
     }
 
@@ -250,6 +258,23 @@ impl OrchestrationEngine {
     /// recorded in `VitnaRunReceiptV1.model_selection.policy_digest`.
     pub fn with_policy_digest(mut self, digest: Option<String>) -> Self {
         self.policy_digest = digest;
+        self
+    }
+
+    /// Sets the explicit OCI container image used when `config.sandbox_guarantee`
+    /// is `"strong"`.
+    pub fn with_sandbox_image(mut self, image: Option<String>) -> Self {
+        self.sandbox_image = image;
+        self
+    }
+
+    /// Attaches a live `am/1` Agent Mandate provenance snapshot callback invoked
+    /// during [`finalize_run`](Self::finalize_run) before Ed25519 signing.
+    pub fn with_mandate_provenance_fn(
+        mut self,
+        provider: Arc<dyn Fn() -> vitna_receipts::MandateProvenanceRecord + Send + Sync>,
+    ) -> Self {
+        self.mandate_provenance_fn = Some(provider);
         self
     }
 
@@ -529,13 +554,30 @@ impl OrchestrationEngine {
             )?;
         }
 
+        let requested_guarantee = match self.config.sandbox_guarantee.as_str() {
+            "read_only" => vitna_runner::SandboxGuarantee::ReadOnly,
+            "guarded" => vitna_runner::SandboxGuarantee::Guarded,
+            "strong" => vitna_runner::SandboxGuarantee::Strong,
+            "full_access" => vitna_runner::SandboxGuarantee::FullAccess,
+            other => {
+                return Err(format!(
+                    "unsupported sandbox_guarantee '{other}': expected read_only, guarded, or strong"
+                ));
+            }
+        };
+
         // Step 3b: Isolation is part of the policy decision, not a detail of
         // execution. A command that cannot be sandboxed needs its own approval,
         // and `auto_approve` does not supply it: the operator approved the work,
         // not the removal of the boundary around it.
         let mut unsandboxed_approved = self.config.allow_unsandboxed;
         if tool_name == "run_command" && self.runner.spawns_processes() {
-            if let Err(reason) = vitna_runner::sandbox_status(&self.config.workspace_root, false) {
+            if let Err(reason) = vitna_runner::sandbox_status_for(
+                &self.config.workspace_root,
+                requested_guarantee,
+                self.sandbox_image.as_deref(),
+                false,
+            ) {
                 // A SECOND approval, kept apart from the one above on
                 // purpose: approving the work and approving that it runs with
                 // no boundary around it are different decisions. With an
@@ -585,6 +627,8 @@ impl OrchestrationEngine {
         );
         ctx.allow_unsandboxed = unsandboxed_approved;
         ctx.egress_allowlist = self.egress_allowlist.clone();
+        ctx.sandbox_guarantee = requested_guarantee;
+        ctx.sandbox_image = self.sandbox_image.clone();
 
         if call.is_some() {
             self.set_run_state(run_state::RUNNING_TOOL, &tool_call_id)?;
@@ -917,7 +961,7 @@ impl OrchestrationEngine {
             egress_calls: self.egress_calls.clone(),
             child_receipt_roots: Vec::new(),
             device_public_key: None,
-            mandate_provenance: None,
+            mandate_provenance: self.mandate_provenance_fn.as_ref().map(|f| f()),
             device_signature: String::new(),
         };
 

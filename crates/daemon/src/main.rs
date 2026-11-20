@@ -74,6 +74,18 @@ struct Args {
     /// Allowlist a destination host or `*.domain.tld` for brokered `net:http_fetch`. Repeatable.
     #[arg(long = "allow-egress")]
     allow_egress: Vec<String>,
+
+    /// Sandbox guarantee for command execution (`read_only`, `guarded`, or `strong`).
+    #[arg(long = "sandbox-guarantee")]
+    sandbox_guarantee: Option<String>,
+
+    /// Explicit OCI container image required when `--sandbox-guarantee strong` is set.
+    #[arg(long = "sandbox-image")]
+    sandbox_image: Option<String>,
+
+    /// Path to a `vitna-mandate-config-v1` JSON file enforcing an `am/1` Agent Mandate chain.
+    #[arg(long)]
+    mandate: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -95,7 +107,9 @@ async fn run() -> Result<(), String> {
         .with_direct_provider(args.provider, args.model, args.base_url)?
         .with_checkpoint(args.checkpoint)?
         .with_mcp_servers(args.mcp_http, args.mcp_stdio)?
-        .with_egress_allowlist(args.allow_egress)?;
+        .with_egress_allowlist(args.allow_egress)?
+        .with_sandbox(args.sandbox_guarantee, args.sandbox_image)?
+        .with_mandate(args.mandate)?;
 
     let announce = launch.endpoint.clone();
     launch::run(&launch, move || {

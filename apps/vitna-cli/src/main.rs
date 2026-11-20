@@ -68,6 +68,15 @@ enum Commands {
         /// (for example `api.github.com`, `*.docs.rs`, or `127.0.0.1`). Repeatable.
         #[arg(long = "allow-egress", value_name = "HOST")]
         allow_egress: Vec<String>,
+        /// Sandbox guarantee for command execution (`read_only`, `guarded`, or `strong`).
+        #[arg(long = "sandbox-guarantee")]
+        sandbox_guarantee: Option<String>,
+        /// Explicit OCI container image required when `--sandbox-guarantee strong` is set.
+        #[arg(long = "sandbox-image")]
+        sandbox_image: Option<String>,
+        /// Path to a `vitna-mandate-config-v1` JSON file enforcing an `am/1` Agent Mandate chain.
+        #[arg(long)]
+        mandate: Option<PathBuf>,
         /// Optional SQLite store path (defaults to <workspace>/.vitna/store.db).
         #[arg(long)]
         store: Option<PathBuf>,
@@ -174,6 +183,15 @@ enum Commands {
         /// (for example `api.github.com`, `*.docs.rs`, or `127.0.0.1`). Repeatable.
         #[arg(long = "allow-egress", value_name = "HOST")]
         allow_egress: Vec<String>,
+        /// Sandbox guarantee for command execution (`read_only`, `guarded`, or `strong`).
+        #[arg(long = "sandbox-guarantee")]
+        sandbox_guarantee: Option<String>,
+        /// Explicit OCI container image required when `--sandbox-guarantee strong` is set.
+        #[arg(long = "sandbox-image")]
+        sandbox_image: Option<String>,
+        /// Path to a `vitna-mandate-config-v1` JSON file enforcing an `am/1` Agent Mandate chain.
+        #[arg(long)]
+        mandate: Option<PathBuf>,
     },
     /// Manage customer-held provider credentials in the OS keychain (never scans env vars)
     Auth {
@@ -366,6 +384,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             mcp_http,
             mcp_stdio,
             allow_egress,
+            sandbox_guarantee,
+            sandbox_image,
+            mandate,
             store,
             ..
         }) => {
@@ -389,6 +410,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     mcp_http,
                     mcp_stdio,
                     allow_egress,
+                    sandbox_guarantee,
+                    sandbox_image,
+                    mandate,
                     auto_approve,
                     verify_cmd,
                     allow_unsandboxed,
@@ -398,9 +422,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("vitna run: {e}");
                     std::process::exit(1);
                 }
-            } else if !mcp_http.is_empty() || !mcp_stdio.is_empty() || !allow_egress.is_empty() {
+            } else if !mcp_http.is_empty()
+                || !mcp_stdio.is_empty()
+                || !allow_egress.is_empty()
+                || sandbox_guarantee.is_some()
+                || sandbox_image.is_some()
+                || mandate.is_some()
+            {
                 eprintln!(
-                    "vitna run: --mcp-http, --mcp-stdio, and --allow-egress require a model route (--runtime-url/--lane or --provider/--model)."
+                    "vitna run: --mcp-http, --mcp-stdio, --allow-egress, --sandbox-guarantee, --sandbox-image, and --mandate require a model route (--runtime-url/--lane or --provider/--model)."
                 );
                 std::process::exit(1);
             } else {
@@ -476,6 +506,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             mcp_http,
             mcp_stdio,
             allow_egress,
+            sandbox_guarantee,
+            sandbox_image,
+            mandate,
         }) => {
             if let Err(e) = serve(
                 endpoint,
@@ -489,6 +522,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mcp_http,
                 mcp_stdio,
                 allow_egress,
+                sandbox_guarantee,
+                sandbox_image,
+                mandate,
             )
             .await
             {
@@ -661,6 +697,9 @@ async fn serve(
     mcp_http: Vec<String>,
     mcp_stdio: Vec<String>,
     allow_egress: Vec<String>,
+    sandbox_guarantee: Option<String>,
+    sandbox_image: Option<String>,
+    mandate: Option<PathBuf>,
 ) -> Result<(), String> {
     vitna_daemon::launch::logging();
     let launch = vitna_daemon::launch::Launch::resolve(endpoint, store)?
@@ -668,7 +707,9 @@ async fn serve(
         .with_direct_provider(provider, model, base_url)?
         .with_checkpoint(checkpoint)?
         .with_mcp_servers(mcp_http, mcp_stdio)?
-        .with_egress_allowlist(allow_egress)?;
+        .with_egress_allowlist(allow_egress)?
+        .with_sandbox(sandbox_guarantee, sandbox_image)?
+        .with_mandate(mandate)?;
     let announce = launch.endpoint.clone();
     vitna_daemon::launch::run(&launch, move || {
         // Printed once the endpoint is bound, so it is true when it is read.

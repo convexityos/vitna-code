@@ -87,6 +87,10 @@ pub struct ToolContext {
     /// calls (`http_fetch` and remote `browser_verify`). Empty by default, which
     /// denies all remote targets fail-closed.
     pub egress_allowlist: Vec<String>,
+    /// Requested isolation guarantee forwarded to `vitna-runner` for `run_command`.
+    pub sandbox_guarantee: vitna_runner::SandboxGuarantee,
+    /// Explicit OCI container image required when `sandbox_guarantee` is `Strong`.
+    pub sandbox_image: Option<String>,
 }
 
 impl ToolContext {
@@ -98,6 +102,8 @@ impl ToolContext {
             allow_unsandboxed: false,
             allow_network: false,
             egress_allowlist: Vec::new(),
+            sandbox_guarantee: vitna_runner::SandboxGuarantee::Guarded,
+            sandbox_image: None,
         }
     }
 }

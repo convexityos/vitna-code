@@ -69,6 +69,13 @@ pub struct DaemonServer {
     /// Optional policy or local `vitna-anchor` checkpoint SHA-256 digest stamped
     /// into signed receipts produced by turns on this daemon.
     pub policy_digest: Option<String>,
+    /// Requested sandbox guarantee for `run_command` (`read_only`, `guarded`, or `strong`).
+    pub sandbox_guarantee: String,
+    /// Optional explicit OCI container image used when `sandbox_guarantee == "strong"`.
+    pub sandbox_image: Option<String>,
+    /// Optional verified `am/1` Agent Mandate session enforcing MCP tool calls
+    /// and stamping `mandate_provenance` into signed run receipts.
+    pub mandate_session: Option<Arc<vitna_mcp::LiveMandateSession>>,
 }
 
 impl DaemonServer {
@@ -154,6 +161,9 @@ impl DaemonServer {
             mcp_tools: Arc::new(Mutex::new(Vec::new())),
             egress_allowlist: Vec::new(),
             policy_digest: None,
+            sandbox_guarantee: "guarded".to_string(),
+            sandbox_image: None,
+            mandate_session: None,
         }
     }
 
@@ -164,6 +174,17 @@ impl DaemonServer {
 
     pub fn with_policy_digest(mut self, digest: Option<String>) -> Self {
         self.policy_digest = digest;
+        self
+    }
+
+    pub fn with_sandbox(mut self, guarantee: String, image: Option<String>) -> Self {
+        self.sandbox_guarantee = guarantee;
+        self.sandbox_image = image;
+        self
+    }
+
+    pub fn with_mandate(mut self, session: Arc<vitna_mcp::LiveMandateSession>) -> Self {
+        self.mandate_session = Some(session);
         self
     }
 
