@@ -1,5 +1,7 @@
 import { useEffect, useId, useMemo, useState, type DragEvent } from 'react';
 import { loadSample } from '../app/transportChoice';
+import { diffReceipts, type ReceiptDiff } from '../receipt/diff';
+import { checkMandateBundleAgainstReceipt, type MandateCheck } from '../receipt/mandate';
 import { checkModelPolicyAgainstReceipt, type PolicyCheck } from '../receipt/policy';
 import { EVIDENCE_GRADES, readReceipt, type Receipt } from '../receipt/receipt';
 import { exportFilename, formatReceiptExport, type RedactionLevel } from '../receipt/redact';
@@ -24,6 +26,9 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
   const [key, setKey] = useState('');
   const [policyText, setPolicyText] = useState('');
   const [policyCheck, setPolicyCheck] = useState<PolicyCheck | null>(null);
+  const [mandateText, setMandateText] = useState('');
+  const [mandateCheck, setMandateCheck] = useState<MandateCheck | null>(null);
+  const [compareText, setCompareText] = useState('');
   const [fileError, setFileError] = useState('');
   const [signature, setSignature] = useState<SignatureCheck | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -32,9 +37,17 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
   const inputId = useId();
   const keyId = useId();
   const policyInputId = useId();
+  const mandateInputId = useId();
+  const compareInputId = useId();
 
   const reading = useMemo(() => (text.trim() ? readReceipt(text) : null), [text]);
   const receipt = reading?.receipt ?? null;
+  const compareReading = useMemo(() => (compareText.trim() ? readReceipt(compareText) : null), [compareText]);
+  const compareReceipt = compareReading?.receipt ?? null;
+  const receiptDiff = useMemo<ReceiptDiff | null>(
+    () => (receipt && compareReceipt ? diffReceipts(receipt, compareReceipt) : null),
+    [receipt, compareReceipt],
+  );
 
   useEffect(() => {
     let live = true;
@@ -63,6 +76,20 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
       live = false;
     };
   }, [receipt, policyText]);
+
+  useEffect(() => {
+    let live = true;
+    if (!receipt || !mandateText.trim()) {
+      setMandateCheck(null);
+      return undefined;
+    }
+    void checkMandateBundleAgainstReceipt(mandateText, receipt).then((result) => {
+      if (live) setMandateCheck(result);
+    });
+    return () => {
+      live = false;
+    };
+  }, [receipt, mandateText]);
 
   const loadFile = async (file: File) => {
     setFileError('');
@@ -196,6 +223,32 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
             onChange={(e) => setPolicyText(e.target.value)}
           />
 
+          <label className="receipt-label" htmlFor={mandateInputId}>
+            <span className="eyebrow">Agent Mandate bundle (am/1, optional)</span>
+          </label>
+          <textarea
+            id={mandateInputId}
+            className="field mono"
+            rows={3}
+            value={mandateText}
+            spellCheck={false}
+            placeholder="Paste a vitna-mandate-config-v1 JSON to verify the am/1 delegation chain and max_total budget."
+            onChange={(e) => setMandateText(e.target.value)}
+          />
+
+          <label className="receipt-label" htmlFor={compareInputId}>
+            <span className="eyebrow">Compare against second receipt (optional)</span>
+          </label>
+          <textarea
+            id={compareInputId}
+            className="field mono"
+            rows={3}
+            value={compareText}
+            spellCheck={false}
+            placeholder="Paste a second vitna-run-receipt-v1 JSON to diff model, isolation, files, egress, and mandate spend."
+            onChange={(e) => setCompareText(e.target.value)}
+          />
+
           {receipt ? (
             <div className="receipt-sample" aria-label="Export receipt">
               <button type="button" className="pill pill-small" onClick={() => downloadExport('none')}>
@@ -251,6 +304,7 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
                 ) : null}
                 {receipt ? <SignatureLine check={signature} /> : null}
                 {receipt && policyCheck ? <PolicyLine check={policyCheck} /> : null}
+                {receipt && mandateCheck ? <MandateLine check={mandateCheck} /> : null}
                 {receipt ? (
                   <Check
                     tone="plain"
@@ -268,6 +322,13 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
                   />
                 ) : null}
               </ol>
+              {receipt && receiptDiff ? <ReceiptDiffSection diff={receiptDiff} /> : null}
+              {receipt && compareReading && !compareReceipt ? (
+                <section className="record-section">
+                  <h2 className="eyebrow">Receipt comparison</h2>
+                  <p className="tone-rust">Second receipt could not be parsed as a JSON object.</p>
+                </section>
+              ) : null}
               {receipt ? <Record receipt={receipt} /> : null}
             </>
           )}
@@ -324,6 +385,117 @@ function PolicyLine({ check }: { check: PolicyCheck }) {
     case 'unsupported':
       return <Check tone="rust" title="Model policy could not be checked" detail={[check.detail]} />;
   }
+}
+
+function MandateLine({ check }: { check: MandateCheck }) {
+  switch (check.status) {
+    case 'matched':
+      return (
+        <Check
+          tone="ok"
+          title={`Mandate (am/1) verified (${check.rootJti})`}
+          detail={[
+            `Ed25519 chain ${shortDigest(check.chainHash, 14)} matched (${check.path.join(' -> ')}), spend ${check.totalSpent}${check.maxTotal ? ` <= ${check.maxTotal}` : ''}.`,
+          ]}
+        />
+      );
+    case 'mismatch':
+      return (
+        <Check
+          tone="rust"
+          title={`Receipt violates mandate (${check.rootJti})`}
+          detail={check.errors}
+        />
+      );
+    case 'invalid':
+      return (
+        <Check
+          tone="rust"
+          title={check.rootJti ? `Mandate invalid (${check.rootJti})` : 'Mandate invalid'}
+          detail={check.errors}
+        />
+      );
+    case 'unsupported':
+      return <Check tone="rust" title="Mandate could not be checked" detail={[check.detail]} />;
+  }
+}
+
+function ReceiptDiffSection({ diff }: { diff: ReceiptDiff }) {
+  return (
+    <section className="record-section" aria-label="Receipt comparison">
+      <h2 className="eyebrow">
+        Receipt comparison ({diff.runA || 'A'} {'->'} {diff.runB || 'B'})
+      </h2>
+      <dl className="record-facts">
+        <div>
+          <dt>Model</dt>
+          <dd className="mono">
+            {diff.model.a.model_sku} ({diff.model.a.provider}) {'->'} {diff.model.b.model_sku} ({diff.model.b.provider})
+            {diff.model.changed ? <span className="faint"> [CHANGED]</span> : null}
+          </dd>
+        </div>
+        <div>
+          <dt>Isolation</dt>
+          <dd className={diff.isolation.regression ? 'tone-rust mono' : 'mono'}>
+            {isolationWord(diff.isolation.a)} {'->'} {isolationWord(diff.isolation.b)}
+            {diff.isolation.regression ? ' [REGRESSION]' : diff.isolation.changed ? ' [CHANGED]' : ''}
+          </dd>
+        </div>
+        <div>
+          <dt>Completion</dt>
+          <dd className="mono">
+            {diff.completion.a} {'->'} {diff.completion.b}
+          </dd>
+        </div>
+        <div>
+          <dt>Evidence</dt>
+          <dd className="mono">
+            {diff.evidence.countA} ({diff.evidence.highestGradeA}) {'->'} {diff.evidence.countB} ({diff.evidence.highestGradeB})
+          </dd>
+        </div>
+        <div>
+          <dt>Egress</dt>
+          <dd className={diff.egress.newDomains.length ? 'tone-rust mono' : 'mono'}>
+            {diff.egress.countA} {'->'} {diff.egress.countB} call(s)
+            {diff.egress.newDomains.length ? ` (new domains: ${diff.egress.newDomains.join(', ')})` : ''}
+          </dd>
+        </div>
+        {diff.mandate.spentA || diff.mandate.spentB ? (
+          <div>
+            <dt>Mandate spend</dt>
+            <dd className="mono">
+              {diff.mandate.spentA ?? 'none'} {'->'} {diff.mandate.spentB ?? 'none'}
+            </dd>
+          </div>
+        ) : null}
+        <div>
+          <dt>Files</dt>
+          <dd className="mono">
+            +{diff.files.onlyInB.length} added, -{diff.files.onlyInA.length} removed, ~{diff.files.postimageChanged.length} changed, ={diff.files.unchanged.length} unchanged
+          </dd>
+        </div>
+      </dl>
+      {diff.files.onlyInB.length || diff.files.onlyInA.length || diff.files.postimageChanged.length ? (
+        <ul className="statements">
+          {diff.files.onlyInB.map((p) => (
+            <li key={`add-${p}`} className="mono">
+              + {p}
+            </li>
+          ))}
+          {diff.files.onlyInA.map((p) => (
+            <li key={`rem-${p}`} className="mono faint">
+              - {p}
+            </li>
+          ))}
+          {diff.files.postimageChanged.map((p) => (
+            <li key={`chg-${p}`} className="mono">
+              ~ {p}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
 }
 
 function SignatureLine({ check }: { check: SignatureCheck | null }) {
