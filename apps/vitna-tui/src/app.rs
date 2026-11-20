@@ -840,6 +840,73 @@ impl App {
                 }
                 return Ask::Nothing;
             }
+            if cmd_name == "diff" {
+                self.draft.clear();
+                self.cursor = 0;
+                let Some(ledger) = &self.ledger else {
+                    self.notice = Some("Loading receipts from disk...".to_string());
+                    return Ask::RefreshLedger;
+                };
+                let args: Vec<&str> = arg.split_whitespace().collect();
+                let find_file = |query: &str| -> Option<String> {
+                    ledger.entries.iter().find_map(|entry| match entry {
+                        crate::ledger::Entry::Run(r)
+                            if r.run_id == query
+                                || r.run_id.starts_with(query)
+                                || r.file == query =>
+                        {
+                            Some(r.file.clone())
+                        }
+                        _ => None,
+                    })
+                };
+                let pair = if args.is_empty() {
+                    let run_files: Vec<String> = ledger
+                        .entries
+                        .iter()
+                        .filter_map(|entry| match entry {
+                            crate::ledger::Entry::Run(r) => Some(r.file.clone()),
+                            crate::ledger::Entry::Unreadable(_) => None,
+                        })
+                        .take(2)
+                        .collect();
+                    if run_files.len() < 2 {
+                        self.notice = Some(
+                            "Need at least 2 receipts for /diff (or use /diff <run_a> <run_b>)."
+                                .to_string(),
+                        );
+                        return Ask::Nothing;
+                    }
+                    // Ledger is newest-first: compare previous (baseline) -> newest (candidate).
+                    (run_files[1].clone(), run_files[0].clone())
+                } else if args.len() == 2 {
+                    let Some(fa) = find_file(args[0]) else {
+                        self.notice = Some(format!(
+                            "No receipt matching '{}' found in .vitna/receipts.",
+                            clean(args[0])
+                        ));
+                        return Ask::Nothing;
+                    };
+                    let Some(fb) = find_file(args[1]) else {
+                        self.notice = Some(format!(
+                            "No receipt matching '{}' found in .vitna/receipts.",
+                            clean(args[1])
+                        ));
+                        return Ask::Nothing;
+                    };
+                    (fa, fb)
+                } else {
+                    self.notice =
+                        Some("Usage: /diff [<run_a> <run_b>] (defaults to last 2 runs).".to_string());
+                    return Ask::Nothing;
+                };
+
+                match crate::ledger::diff_receipts_summary(&self.root, &pair.0, &pair.1) {
+                    Ok(summary) => self.notice = Some(summary),
+                    Err(e) => self.notice = Some(format!("Diff failed: {}", clean(&e))),
+                }
+                return Ask::Nothing;
+            }
         }
 
         if matches!(self.link, Link::Open { .. }) && self.session_id.is_some() {
@@ -1594,6 +1661,107 @@ mod tests {
             strict_doc["receipt"]["evidence_items"][0]["description"],
             "[REDACTED]"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diff_slash_command_compares_receipts_and_sanitizes_output_offline() {
+        let dir = std::env::temp_dir().join(format!(
+            "vitna_tui_diff_cmd_{}",
+            std::process::id()
+        ));
+        let receipts = dir.join(".vitna").join("receipts");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&receipts).unwrap();
+
+        let receipt_a = vitna_receipts::VitnaRunReceiptV1 {
+            schema_version: "vitna-run-receipt-v1".to_string(),
+            run_id: "run-diff-1".to_string(),
+            session_id: "sess-diff".to_string(),
+            workspace_fingerprint: "fp".to_string(),
+            base_commit_sha: "a".repeat(40),
+            model_selection: vitna_receipts::ModelSelectionRecord {
+                provider: "vitna-runtime".to_string(),
+                model_sku: "vitna/code".to_string(),
+                routing_reason: "lane".to_string(),
+                policy_digest: None,
+            },
+            event_hash_chain_root: "0".repeat(64),
+            isolation_label: "guarded".to_string(),
+            completion_state: "completed_with_evidence".to_string(),
+            evidence_items: vec![],
+            changeset: vitna_receipts::ChangeSetRecord {
+                files_modified: vec![vitna_receipts::FileModificationRecord {
+                    path: "src/a.rs".to_string(),
+                    preimage_hash: "0".repeat(64),
+                    postimage_hash: "1".repeat(64),
+                }],
+                diff_digest: "d".to_string(),
+            },
+            runner_execution_statements: vec![],
+            egress_calls: vec![],
+            child_receipt_roots: vec![],
+            device_public_key: None,
+            mandate_provenance: None,
+            device_signature: String::new(),
+        };
+        let mut receipt_b = receipt_a.clone();
+        receipt_b.run_id = "run-diff-2".to_string();
+        receipt_b.isolation_label = "full_access".to_string();
+        receipt_b.model_selection.provider = "openai".to_string();
+        receipt_b.model_selection.model_sku = "gpt-5".to_string();
+        receipt_b.changeset.files_modified = vec![vitna_receipts::FileModificationRecord {
+            path: "src/b.rs".to_string(),
+            preimage_hash: "0".repeat(64),
+            postimage_hash: "2".repeat(64),
+        }];
+        receipt_b.egress_calls.push(vitna_receipts::EgressCallRecord {
+            target_domain: "api.evil\x1b[31m.example".to_string(),
+            method: "GET".to_string(),
+            redacted_url: "https://api.example/v1".to_string(),
+            request_sha256: "1".repeat(64),
+            status_code: 200,
+            response_sha256: "2".repeat(64),
+            bytes_sent: 10,
+            bytes_received: 20,
+            latency_ms: 5,
+        });
+
+        std::fs::write(
+            receipts.join("run-diff-1.json"),
+            serde_json::to_string_pretty(&receipt_a).unwrap(),
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(
+            receipts.join("run-diff-2.json"),
+            serde_json::to_string_pretty(&receipt_b).unwrap(),
+        )
+        .unwrap();
+
+        let mut a = App::new(dir.clone());
+        a.update(Update::Ledger(crate::ledger::read(&dir)));
+
+        // Explicit `/diff run-diff-1 run-diff-2` reports regression, model change, and sanitized domain.
+        for c in "/diff run-diff-1 run-diff-2".chars() {
+            a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Ask::Nothing);
+        let notice = a.notice.clone().expect("diff notice");
+        assert!(notice.contains("[REGRESSION]"), "{notice}");
+        assert!(notice.contains("[CHANGED]"), "{notice}");
+        assert!(notice.contains("files +1 -1 ~0 =0"), "{notice}");
+        assert!(notice.contains("api.evil\u{241b}[31m.example"), "{notice}");
+        assert!(!notice.contains('\x1b'), "ANSI escape leaked into notice: {notice:?}");
+
+        // Bare `/diff` defaults to comparing the two most recent runs.
+        for c in "/diff".chars() {
+            a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Ask::Nothing);
+        let auto_notice = a.notice.clone().expect("auto diff notice");
+        assert!(auto_notice.contains("Diff run-diff-1 -> run-diff-2"), "{auto_notice}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

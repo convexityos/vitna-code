@@ -790,16 +790,6 @@ pub fn verify_receipt_against_mandate(
     audit
 }
 
-fn isolation_strength_rank(label: &str) -> Option<u8> {
-    match label {
-        "full_access" => Some(0),
-        "guarded" => Some(1),
-        "read_only" => Some(2),
-        "strong" => Some(3),
-        _ => None,
-    }
-}
-
 /// `vitna receipt diff <run_a> <run_b> [--workspace <DIR>] [--json]`
 pub fn run_receipt_diff(
     run_a: &str,
@@ -807,153 +797,39 @@ pub fn run_receipt_diff(
     workspace: &Path,
     as_json: bool,
 ) -> Result<(), String> {
-    use std::collections::{BTreeMap, BTreeSet};
-
     let receipt_a = load_receipt_by_id_or_path(workspace, run_a)?;
     let receipt_b = load_receipt_by_id_or_path(workspace, run_b)?;
-
-    let files_a: BTreeMap<&str, &str> = receipt_a
-        .changeset
-        .files_modified
-        .iter()
-        .map(|f| (f.path.as_str(), f.postimage_hash.as_str()))
-        .collect();
-    let files_b: BTreeMap<&str, &str> = receipt_b
-        .changeset
-        .files_modified
-        .iter()
-        .map(|f| (f.path.as_str(), f.postimage_hash.as_str()))
-        .collect();
-
-    let mut only_in_a: Vec<String> = Vec::new();
-    let mut only_in_b: Vec<String> = Vec::new();
-    let mut postimage_changed: Vec<String> = Vec::new();
-    let mut unchanged: Vec<String> = Vec::new();
-
-    for (path, hash_a) in &files_a {
-        match files_b.get(path) {
-            None => only_in_a.push((*path).to_string()),
-            Some(hash_b) if hash_b != hash_a => postimage_changed.push((*path).to_string()),
-            Some(_) => unchanged.push((*path).to_string()),
-        }
-    }
-    for path in files_b.keys() {
-        if !files_a.contains_key(path) {
-            only_in_b.push((*path).to_string());
-        }
-    }
-
-    let model_changed = receipt_a.model_selection.provider != receipt_b.model_selection.provider
-        || receipt_a.model_selection.model_sku != receipt_b.model_selection.model_sku
-        || receipt_a.model_selection.policy_digest != receipt_b.model_selection.policy_digest;
-
-    let isolation_changed = receipt_a.isolation_label != receipt_b.isolation_label;
-    let isolation_regression = match (
-        isolation_strength_rank(&receipt_a.isolation_label),
-        isolation_strength_rank(&receipt_b.isolation_label),
-    ) {
-        (Some(ra), Some(rb)) => rb < ra,
-        _ => false,
-    };
-
-    let domains_a: BTreeSet<&str> = receipt_a
-        .egress_calls
-        .iter()
-        .map(|e| e.target_domain.as_str())
-        .collect();
-    let new_egress_domains: Vec<String> = receipt_b
-        .egress_calls
-        .iter()
-        .map(|e| e.target_domain.as_str())
-        .filter(|d| !domains_a.contains(d))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(str::to_string)
-        .collect();
-
-    let grade_a = highest_evidence_grade(&receipt_a);
-    let grade_b = highest_evidence_grade(&receipt_b);
-    let spent_a = receipt_a
-        .mandate_provenance
-        .as_ref()
-        .map(|m| format!("{} {}", m.total_spent, m.currency));
-    let spent_b = receipt_b
-        .mandate_provenance
-        .as_ref()
-        .map(|m| format!("{} {}", m.total_spent, m.currency));
+    let diff = vitna_receipt_verify::diff_receipts(&receipt_a, &receipt_b);
 
     if as_json {
-        let out = json!({
-            "run_a": receipt_a.run_id,
-            "run_b": receipt_b.run_id,
-            "model": {
-                "changed": model_changed,
-                "a": receipt_a.model_selection,
-                "b": receipt_b.model_selection,
-            },
-            "isolation": {
-                "changed": isolation_changed,
-                "regression": isolation_regression,
-                "a": receipt_a.isolation_label,
-                "b": receipt_b.isolation_label,
-            },
-            "completion": {
-                "changed": receipt_a.completion_state != receipt_b.completion_state,
-                "a": receipt_a.completion_state,
-                "b": receipt_b.completion_state,
-            },
-            "files": {
-                "only_in_a": only_in_a,
-                "only_in_b": only_in_b,
-                "postimage_changed": postimage_changed,
-                "unchanged": unchanged,
-            },
-            "evidence": {
-                "count_a": receipt_a.evidence_items.len(),
-                "count_b": receipt_b.evidence_items.len(),
-                "highest_grade_a": grade_a,
-                "highest_grade_b": grade_b,
-            },
-            "egress": {
-                "count_a": receipt_a.egress_calls.len(),
-                "count_b": receipt_b.egress_calls.len(),
-                "new_domains": new_egress_domains,
-            },
-            "mandate": {
-                "root_a": receipt_a.mandate_provenance.as_ref().map(|m| &m.root_jti),
-                "root_b": receipt_b.mandate_provenance.as_ref().map(|m| &m.root_jti),
-                "spent_a": spent_a,
-                "spent_b": spent_b,
-            },
-        });
         println!(
             "{}",
-            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+            serde_json::to_string_pretty(&diff).map_err(|e| e.to_string())?
         );
         return Ok(());
     }
 
     write_stdout_line(&format!(
         "Vitna Receipt Diff: {} -> {}",
-        sanitize_public_id(&receipt_a.run_id),
-        sanitize_public_id(&receipt_b.run_id)
+        sanitize_public_id(&diff.run_a),
+        sanitize_public_id(&diff.run_b)
     ));
     println!("========================================");
     println!(
         "Model:      {} ({}) -> {} ({}){}",
-        receipt_a.model_selection.model_sku,
-        receipt_a.model_selection.provider,
-        receipt_b.model_selection.model_sku,
-        receipt_b.model_selection.provider,
-        if model_changed { " [CHANGED]" } else { "" }
+        diff.model.a.model_sku,
+        diff.model.a.provider,
+        diff.model.b.model_sku,
+        diff.model.b.provider,
+        if diff.model.changed { " [CHANGED]" } else { "" }
     );
     println!(
         "Isolation:  {} -> {}{}",
-        receipt_a.isolation_label,
-        receipt_b.isolation_label,
-        if isolation_regression {
+        diff.isolation.a,
+        diff.isolation.b,
+        if diff.isolation.regression {
             " [REGRESSION]"
-        } else if isolation_changed {
+        } else if diff.isolation.changed {
             " [CHANGED]"
         } else {
             ""
@@ -961,46 +837,46 @@ pub fn run_receipt_diff(
     );
     println!(
         "Completion: {} -> {}",
-        receipt_a.completion_state, receipt_b.completion_state
+        diff.completion.a, diff.completion.b
     );
     println!(
         "Evidence:   {} ({}) -> {} ({})",
-        receipt_a.evidence_items.len(),
-        grade_a,
-        receipt_b.evidence_items.len(),
-        grade_b
+        diff.evidence.count_a,
+        diff.evidence.highest_grade_a,
+        diff.evidence.count_b,
+        diff.evidence.highest_grade_b
     );
     println!(
         "Egress:     {} -> {} call(s){}",
-        receipt_a.egress_calls.len(),
-        receipt_b.egress_calls.len(),
-        if new_egress_domains.is_empty() {
+        diff.egress.count_a,
+        diff.egress.count_b,
+        if diff.egress.new_domains.is_empty() {
             String::new()
         } else {
-            format!(" (new domains: {})", new_egress_domains.join(", "))
+            format!(" (new domains: {})", diff.egress.new_domains.join(", "))
         }
     );
-    if spent_a.is_some() || spent_b.is_some() {
+    if diff.mandate.spent_a.is_some() || diff.mandate.spent_b.is_some() {
         println!(
             "Mandate:    {} -> {}",
-            spent_a.as_deref().unwrap_or("none"),
-            spent_b.as_deref().unwrap_or("none")
+            diff.mandate.spent_a.as_deref().unwrap_or("none"),
+            diff.mandate.spent_b.as_deref().unwrap_or("none")
         );
     }
     println!(
         "Files:      +{} added, -{} removed, ~{} changed, ={} unchanged",
-        only_in_b.len(),
-        only_in_a.len(),
-        postimage_changed.len(),
-        unchanged.len()
+        diff.files.only_in_b.len(),
+        diff.files.only_in_a.len(),
+        diff.files.postimage_changed.len(),
+        diff.files.unchanged.len()
     );
-    for p in &only_in_b {
+    for p in &diff.files.only_in_b {
         write_stdout_line(&format!("  + {p}"));
     }
-    for p in &only_in_a {
+    for p in &diff.files.only_in_a {
         write_stdout_line(&format!("  - {p}"));
     }
-    for p in &postimage_changed {
+    for p in &diff.files.postimage_changed {
         write_stdout_line(&format!("  ~ {p}"));
     }
     Ok(())

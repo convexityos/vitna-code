@@ -1,7 +1,12 @@
 //! Offline receipt verification engine for Vitna Code.
 
+pub mod diff;
 pub mod provenance;
 
+pub use diff::{
+    diff_receipts, highest_evidence_grade, CompletionDiff, EgressDiff, EvidenceDiff, FileDiff,
+    IsolationDiff, MandateDiff, ModelDiff, ReceiptDiff,
+};
 pub use provenance::{
     audit_checkpoint, audit_envelope_json, compute_checkpoint_digest, verify_provenance_bundle,
     CheckpointAudit, EnvelopeAudit, ProvenanceAuditOptions, ProvenanceAuditReport,

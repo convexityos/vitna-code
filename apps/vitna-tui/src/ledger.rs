@@ -319,6 +319,109 @@ pub fn export_receipt(
     Ok(format!(".vitna/exports/{out_name}"))
 }
 
+fn read_receipt_file_checked(
+    root: &Path,
+    file_name: &str,
+) -> Result<vitna_receipts::VitnaRunReceiptV1, String> {
+    let bare_name = file_name
+        .strip_prefix(".vitna/receipts/")
+        .unwrap_or(file_name);
+    if bare_name.is_empty()
+        || bare_name.contains('/')
+        || bare_name.contains('\\')
+        || bare_name.contains("..")
+    {
+        return Err("invalid receipt filename".to_string());
+    }
+    let vitna_dir = root.join(".vitna");
+    if let Ok(meta) = fs::symlink_metadata(&vitna_dir) {
+        if meta.file_type().is_symlink() {
+            return Err(".vitna is a symlink and will not be followed".to_string());
+        }
+    }
+    let rdir = receipts_dir(root);
+    if let Ok(meta) = fs::symlink_metadata(&rdir) {
+        if meta.file_type().is_symlink() {
+            return Err(".vitna/receipts is a symlink and will not be followed".to_string());
+        }
+    }
+    let src = rdir.join(bare_name);
+    let meta = fs::symlink_metadata(&src)
+        .map_err(|e| format!("cannot inspect receipt {bare_name}: {e}"))?;
+    if meta.file_type().is_symlink() {
+        return Err("receipt path is a symlink and will not be followed".to_string());
+    }
+    if !meta.is_file() {
+        return Err("receipt path is not a regular file".to_string());
+    }
+    if meta.len() > MAX_BYTES {
+        return Err("receipt exceeds maximum readable size".to_string());
+    }
+    let mut raw = String::new();
+    fs::File::open(&src)
+        .and_then(|f| f.take(MAX_BYTES + 1).read_to_string(&mut raw))
+        .map_err(|e| format!("cannot read receipt {bare_name}: {e}"))?;
+    if raw.len() as u64 > MAX_BYTES {
+        return Err("receipt grew past maximum readable size".to_string());
+    }
+    serde_json::from_str(&raw).map_err(|e| format!("receipt is not valid JSON: {e}"))
+}
+
+/// Safely loads two receipts from `.vitna/receipts/` (refusing symlinks,
+/// traversal, non-regular files, and oversized payloads) and returns a
+/// terminal-sanitized summary diff line.
+pub fn diff_receipts_summary(root: &Path, file_a: &str, file_b: &str) -> Result<String, String> {
+    let a = read_receipt_file_checked(root, file_a)?;
+    let b = read_receipt_file_checked(root, file_b)?;
+    let d = vitna_receipt_verify::diff_receipts(&a, &b);
+
+    let iso_tag = if d.isolation.regression {
+        " [REGRESSION]"
+    } else if d.isolation.changed {
+        " [CHANGED]"
+    } else {
+        ""
+    };
+    let model_tag = if d.model.changed { " [CHANGED]" } else { "" };
+    let egress_part = if d.egress.new_domains.is_empty() {
+        format!("egress {}->{}", d.egress.count_a, d.egress.count_b)
+    } else {
+        format!(
+            "egress {}->{} (new: {})",
+            d.egress.count_a,
+            d.egress.count_b,
+            d.egress.new_domains.join(",")
+        )
+    };
+    let mandate_part = match (&d.mandate.spent_a, &d.mandate.spent_b) {
+        (None, None) => String::new(),
+        (sa, sb) => format!(
+            " | mandate {}->{}",
+            sa.as_deref().unwrap_or("none"),
+            sb.as_deref().unwrap_or("none")
+        ),
+    };
+
+    let raw = format!(
+        "Diff {} -> {}: model {}->{}{} | iso {}->{}{} | files +{} -{} ~{} ={} | {}{}",
+        d.run_a,
+        d.run_b,
+        d.model.a.model_sku,
+        d.model.b.model_sku,
+        model_tag,
+        d.isolation.a,
+        d.isolation.b,
+        iso_tag,
+        d.files.only_in_b.len(),
+        d.files.only_in_a.len(),
+        d.files.postimage_changed.len(),
+        d.files.unchanged.len(),
+        egress_part,
+        mandate_part,
+    );
+    Ok(clean(&raw))
+}
+
 fn read_one(path: &Path, name: &str) -> Entry {
     let file = clean(name);
     let unreadable = |written, reason: String| {
