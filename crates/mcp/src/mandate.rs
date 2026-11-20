@@ -193,6 +193,176 @@ impl MandatedToolBridge {
     }
 }
 
+/// JSON configuration file loaded via `--mandate <FILE>` to enforce an `am/1`
+/// Agent Mandate delegation chain and tool pricing catalog on a live daemon or
+/// CLI run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MandateBundleConfig {
+    pub schema_version: String,
+    pub tokens: Vec<String>,
+    pub trusted_root_issuers: Vec<String>,
+    pub ledger: String,
+    pub currency: String,
+    #[serde(default)]
+    pub pricing: Vec<ToolCatalogEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub step_up_approved: bool,
+}
+
+pub const MANDATE_CONFIG_SCHEMA_V1: &str = "vitna-mandate-config-v1";
+const MAX_MANDATE_CONFIG_BYTES: u64 = 1024 * 1024;
+
+impl MandateBundleConfig {
+    pub fn from_json_str(json: &str) -> Result<Self, String> {
+        let cfg: Self = serde_json::from_str(json)
+            .map_err(|e| format!("failed to parse mandate config JSON: {e}"))?;
+        if cfg.schema_version != MANDATE_CONFIG_SCHEMA_V1 {
+            return Err(format!(
+                "unsupported mandate config schema_version '{}': expected '{}'",
+                cfg.schema_version, MANDATE_CONFIG_SCHEMA_V1
+            ));
+        }
+        if cfg.tokens.is_empty() {
+            return Err("mandate config must contain at least one am/1 JWS token".to_string());
+        }
+        if cfg.trusted_root_issuers.is_empty() {
+            return Err("mandate config must specify at least one trusted_root_issuers did:key".to_string());
+        }
+        if cfg.ledger.trim().is_empty() {
+            return Err("mandate config ledger must be non-empty".to_string());
+        }
+        if cfg.currency.trim().is_empty() {
+            return Err("mandate config currency must be non-empty".to_string());
+        }
+        Ok(cfg)
+    }
+
+    pub fn from_file(path: &std::path::Path) -> Result<Self, String> {
+        let meta = std::fs::metadata(path)
+            .map_err(|e| format!("cannot stat mandate file '{}': {e}", path.display()))?;
+        if !meta.is_file() {
+            return Err(format!("mandate path '{}' is not a regular file", path.display()));
+        }
+        if meta.len() > MAX_MANDATE_CONFIG_BYTES {
+            return Err(format!(
+                "mandate file '{}' exceeds {} bytes",
+                path.display(),
+                MAX_MANDATE_CONFIG_BYTES
+            ));
+        }
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read mandate file '{}': {e}", path.display()))?;
+        Self::from_json_str(&raw)
+    }
+}
+
+/// Verified, spend-tracked `am/1` Agent Mandate session attached to a daemon or
+/// CLI run. Wraps attached external MCP tools with fail-closed enforcement and
+/// emits live [`MandateProvenanceRecord`] snapshots for signed run receipts.
+pub struct LiveMandateSession {
+    tokens: Vec<String>,
+    trusted_root_issuers: HashSet<String>,
+    ledger: String,
+    currency: String,
+    pricing: Arc<ToolPricingCatalog>,
+    tracker: Arc<MandateSpendTracker>,
+    verified_chain: VerifiedMandateChain,
+    task_id: Option<String>,
+    step_up_approved: bool,
+    now_fn: Arc<dyn Fn() -> u64 + Send + Sync>,
+}
+
+impl LiveMandateSession {
+    /// Verifies the mandate delegation chain eagerly (failing closed on expired,
+    /// untrusted, tampered, or attenuation-violating chains) and prepares a
+    /// shared spend tracker for all MCP tools attached to this session.
+    pub fn from_bundle(bundle: MandateBundleConfig) -> Result<Self, String> {
+        Self::from_bundle_with_clock(bundle, Arc::new(system_unix_secs))
+    }
+
+    pub fn from_bundle_with_clock(
+        bundle: MandateBundleConfig,
+        now_fn: Arc<dyn Fn() -> u64 + Send + Sync>,
+    ) -> Result<Self, String> {
+        let trusted_root_issuers: HashSet<String> =
+            bundle.trusted_root_issuers.into_iter().collect();
+        let verified_chain = verify_mandate_chain(
+            &bundle.tokens,
+            &VerifyMandateOptions {
+                trusted_root_issuers: trusted_root_issuers.clone(),
+                ledger: bundle.ledger.clone(),
+                now: (now_fn)(),
+                skew_seconds: DEFAULT_SKEW_SECONDS,
+                request: None,
+                step_up_approved: bundle.step_up_approved,
+            },
+        )
+        .map_err(|e| format!("mandate verification failed ({}): {}", e.code.as_str(), e.detail))?;
+
+        let mut catalog = ToolPricingCatalog::new();
+        for entry in bundle.pricing {
+            catalog.insert(entry.server, entry.tool, entry.spec);
+        }
+
+        Ok(Self {
+            tokens: bundle.tokens,
+            trusted_root_issuers,
+            ledger: bundle.ledger,
+            currency: bundle.currency,
+            pricing: Arc::new(catalog),
+            tracker: Arc::new(MandateSpendTracker::new()),
+            verified_chain,
+            task_id: bundle.task_id,
+            step_up_approved: bundle.step_up_approved,
+            now_fn,
+        })
+    }
+
+    pub fn from_file(path: &std::path::Path) -> Result<Self, String> {
+        let bundle = MandateBundleConfig::from_file(path)?;
+        Self::from_bundle(bundle)
+    }
+
+    pub fn root_jti(&self) -> &str {
+        &self.verified_chain.root_jti
+    }
+
+    pub fn chain_hash(&self) -> &str {
+        &self.verified_chain.chain_hash
+    }
+
+    /// Wraps an attached external MCP tool in [`MandatedToolBridge`] sharing
+    /// this session's verified chain and atomic spend tracker.
+    pub fn wrap_tool(&self, server_name: &str, inner: Arc<dyn Tool>) -> Arc<dyn Tool> {
+        let mut bridge = MandatedToolBridge::new(
+            server_name,
+            inner,
+            self.tokens.clone(),
+            self.trusted_root_issuers.clone(),
+            self.ledger.clone(),
+            Arc::clone(&self.pricing),
+            Arc::clone(&self.tracker),
+        )
+        .with_step_up_approved(self.step_up_approved);
+        if let Some(ref tid) = self.task_id {
+            bridge = bridge.with_task_id(tid.clone());
+        }
+        let clock = Arc::clone(&self.now_fn);
+        bridge = bridge.with_clock(move || (clock)());
+        Arc::new(bridge)
+    }
+
+    /// Snapshots the live [`MandateProvenanceRecord`] (including exact
+    /// accumulated `total_spent` and `spend_digests`) for embedding in a signed
+    /// `VitnaRunReceiptV1`.
+    pub fn provenance_record(&self) -> MandateProvenanceRecord {
+        self.tracker
+            .provenance_for(&self.verified_chain, &self.currency)
+    }
+}
+
 #[async_trait]
 impl Tool for MandatedToolBridge {
     fn name(&self) -> &str {
@@ -209,12 +379,18 @@ impl Tool for MandatedToolBridge {
 
     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolResult, String> {
         let tool_name = self.inner.name();
-        let spec = self.pricing.get(&self.server_name, tool_name).ok_or_else(|| {
-            format!(
-                "mandate_refused:unpriced_tool: tool '{}:{}' has no pricing entry in catalog",
-                self.server_name, tool_name
-            )
-        })?;
+        let ns_prefix = format!("mcp__{}__", self.server_name);
+        let bare_name = tool_name.strip_prefix(&ns_prefix).unwrap_or(tool_name);
+        let spec = self
+            .pricing
+            .get(&self.server_name, tool_name)
+            .or_else(|| self.pricing.get(&self.server_name, bare_name))
+            .ok_or_else(|| {
+                format!(
+                    "mandate_refused:unpriced_tool: tool '{}:{}' has no pricing entry in catalog",
+                    self.server_name, tool_name
+                )
+            })?;
 
         let now = (self.now_fn)();
         let verified = verify_mandate_chain(

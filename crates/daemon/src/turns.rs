@@ -236,7 +236,7 @@ impl DaemonServer {
                 // a client said, so a receipt cannot claim a provider that was
                 // merely asked for.
                 provider_name: route.provider.name().to_string(),
-                sandbox_guarantee: "guarded".to_string(),
+                sandbox_guarantee: self.sandbox_guarantee.clone(),
                 verification_command: None,
                 allow_unsandboxed: false,
             };
@@ -259,11 +259,16 @@ impl DaemonServer {
             .with_extra_tools(self.mcp_tools())
             .with_egress_allowlist(self.egress_allowlist.clone())
             .with_policy_digest(self.policy_digest.clone())
+            .with_sandbox_image(self.sandbox_image.clone())
             .with_approver(Arc::new(WireApprover {
                 pending: self.approvals.clone(),
                 run_id: run_id.clone(),
                 control: Arc::clone(&control),
             }));
+            if let Some(mandate) = &self.mandate_session {
+                let m = Arc::clone(mandate);
+                engine = engine.with_mandate_provenance_fn(Arc::new(move || m.provenance_record()));
+            }
             if let Ok(skills) = vitna_skills::SkillRegistry::discover_in_workspace(&session.workspace_root) {
                 if let Some(block) = skills.render_untrusted_prompt_block() {
                     let names = skills.skills().iter().map(|s| s.name.clone()).collect();
@@ -377,7 +382,7 @@ impl DaemonServer {
             auto_approve: false,
             model_sku: route.model.clone(),
             provider_name: route.provider.name().to_string(),
-            sandbox_guarantee: "guarded".to_string(),
+            sandbox_guarantee: self.sandbox_guarantee.clone(),
             verification_command: None,
             allow_unsandboxed: false,
         };
@@ -393,11 +398,16 @@ impl DaemonServer {
         .with_extra_tools(self.mcp_tools())
         .with_egress_allowlist(self.egress_allowlist.clone())
         .with_policy_digest(self.policy_digest.clone())
+        .with_sandbox_image(self.sandbox_image.clone())
         .with_approver(Arc::new(WireApprover {
             pending: self.approvals.clone(),
             run_id: child_run_id.clone(),
             control: Arc::clone(&control),
         }));
+        if let Some(mandate) = &self.mandate_session {
+            let m = Arc::clone(mandate);
+            engine = engine.with_mandate_provenance_fn(Arc::new(move || m.provenance_record()));
+        }
         if let Ok(skills) =
             vitna_skills::SkillRegistry::discover_in_workspace(&isolated.agent_workspace_root)
         {

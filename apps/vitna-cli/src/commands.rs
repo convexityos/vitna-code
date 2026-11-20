@@ -251,6 +251,16 @@ pub fn run_receipt_show(
             );
         }
     }
+    if let Some(mp) = &receipt.mandate_provenance {
+        println!(
+            "Mandate (am/1):    root {} | spent {} {} ({} receipt(s)) | chain {}",
+            mp.root_jti,
+            mp.total_spent,
+            mp.currency,
+            mp.spend_digests.len(),
+            short_hash(&mp.chain_hash)
+        );
+    }
     if !errors.is_empty() {
         println!("Errors:");
         for err in &errors {
@@ -823,6 +833,9 @@ pub struct LiveRunOptions<'a> {
     pub mcp_http: Vec<String>,
     pub mcp_stdio: Vec<String>,
     pub allow_egress: Vec<String>,
+    pub sandbox_guarantee: Option<String>,
+    pub sandbox_image: Option<String>,
+    pub mandate: Option<PathBuf>,
     pub auto_approve: bool,
     pub verify_cmd: Option<String>,
     pub allow_unsandboxed: bool,
@@ -838,8 +851,8 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
         Provider, ProviderId, VitnaAnchorProvider,
     };
 
-    // Reuse Launch's exact route, MCP server, and egress allowlist validation so
-    // `vitna run`, `vitna serve`, and `vitna-coded` never drift on flag rules.
+    // Reuse Launch's exact route, MCP server, egress, sandbox, and mandate
+    // validation so `vitna run`, `vitna serve`, and `vitna-coded` never drift.
     let launch = vitna_daemon::launch::Launch::resolve(
         Some("vitna-run".to_string()),
         Some(PathBuf::from("vitna-run.db")),
@@ -848,7 +861,9 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
     .with_direct_provider(opts.provider, opts.model, opts.base_url)?
     .with_checkpoint(opts.checkpoint)?
     .with_mcp_servers(opts.mcp_http, opts.mcp_stdio)?
-    .with_egress_allowlist(opts.allow_egress)?;
+    .with_egress_allowlist(opts.allow_egress)?
+    .with_sandbox(opts.sandbox_guarantee, opts.sandbox_image)?
+    .with_mandate(opts.mandate)?;
 
     let db_path = match opts.store_arg {
         Some(p) => p.to_path_buf(),
@@ -858,7 +873,15 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
     fs::create_dir_all(&home)
         .map_err(|e| format!("could not create {}: {e}", home.display()))?;
     let signing_key = vitna_daemon::key::load_or_create(&home)?;
-    let daemon = DaemonServer::open_with_key_in(&db_path, &home)?;
+    let mut daemon = DaemonServer::open_with_key_in(&db_path, &home)?;
+
+    let mandate_session = if let Some(ref mandate_path) = launch.mandate_file {
+        let session = Arc::new(vitna_mcp::LiveMandateSession::from_file(mandate_path)?);
+        daemon = daemon.with_mandate(Arc::clone(&session));
+        Some(session)
+    } else {
+        None
+    };
 
     let telemetry = daemon.telemetry();
     let (provider, model_sku, provider_name, routing_reason, route_label, policy_digest): (
@@ -969,7 +992,7 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
         auto_approve: opts.auto_approve,
         model_sku,
         provider_name,
-        sandbox_guarantee: "guarded".to_string(),
+        sandbox_guarantee: launch.sandbox_guarantee.clone(),
         verification_command: opts.verify_cmd,
         allow_unsandboxed: opts.allow_unsandboxed,
     };
@@ -983,7 +1006,12 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
     .continuing_at(next_seq)
     .with_extra_tools(extra_tools)
     .with_egress_allowlist(launch.egress_allowlist.clone())
-    .with_policy_digest(policy_digest);
+    .with_policy_digest(policy_digest)
+    .with_sandbox_image(launch.sandbox_image.clone());
+    if let Some(ref mandate) = mandate_session {
+        let m = Arc::clone(mandate);
+        engine = engine.with_mandate_provenance_fn(Arc::new(move || m.provenance_record()));
+    }
     engine.routing_reason = routing_reason;
 
     let mut loaded_skill_names = Vec::new();

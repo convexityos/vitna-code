@@ -463,3 +463,120 @@ async fn the_journal_records_the_isolation_that_applied() {
 
     let _ = fs::remove_dir_all(&fx.root);
 }
+
+/// Requesting `Strong` isolation without an explicit pinned OCI image must fail
+/// closed and record a refusal in the action journal rather than downgrading to
+/// `Guarded`.
+#[tokio::test]
+async fn strong_isolation_without_image_refuses_and_journals_refusal() {
+    let fx = fixture("strong_no_img");
+    let request = CommandRequest::new("echo should-not-run", &fx.workspace, &fx.workspace, 10_000)
+        .with_guarantee(vitna_runner::SandboxGuarantee::Strong);
+
+    let err = runner(&fx)
+        .run_command(request)
+        .await
+        .expect_err("strong isolation without an explicit image must be refused");
+    assert!(
+        err.contains(SANDBOX_UNAVAILABLE),
+        "expected SANDBOX_UNAVAILABLE prefix, got: {err}"
+    );
+    let entry = last_entry(&fx);
+    assert_eq!(entry.state, ActionState::Refused);
+
+    let _ = fs::remove_dir_all(&fx.root);
+}
+
+/// Live ephemeral OCI container enforcement test (exercised in CI where
+/// `VITNA_REQUIRE_STRONG_SANDBOX_IMAGE` is set, e.g. `alpine:3.20` on Linux x64).
+#[tokio::test]
+async fn strong_oci_container_enforces_workspace_readonly_git_and_no_network() {
+    let Some(image) = std::env::var("VITNA_REQUIRE_STRONG_SANDBOX_IMAGE")
+        .ok()
+        .filter(|s| !s.is_empty())
+    else {
+        eprintln!(
+            "skipping strong OCI container live test: VITNA_REQUIRE_STRONG_SANDBOX_IMAGE not set"
+        );
+        return;
+    };
+
+    let fx = fixture("strong_oci_live");
+    // Ensure the workspace file exists and is writable by the container user.
+    let marker = fx.workspace.join("container_ok.txt");
+    fs::write(&marker, "").expect("seed marker");
+
+    // 1. Workspace write succeeds inside /workspace, with backend == oci_container.
+    let write_req = CommandRequest::new(
+        "echo strong-ok > /workspace/container_ok.txt && echo $VITNA_SANDBOX",
+        &fx.workspace,
+        &fx.workspace,
+        30_000,
+    )
+    .with_guarantee(vitna_runner::SandboxGuarantee::Strong)
+    .with_container_image(&image);
+
+    let write_out = runner(&fx)
+        .run_command(write_req)
+        .await
+        .expect("strong OCI container command should run");
+    assert_eq!(write_out.exit_code, 0, "stderr: {}", write_out.stderr);
+    assert_eq!(write_out.sandbox_backend, "oci_container");
+    assert_eq!(write_out.sandbox_enforcement, "fully_enforced");
+    assert!(write_out.stdout.contains("oci_container"));
+    assert_eq!(
+        fs::read_to_string(&marker).unwrap().trim(),
+        "strong-ok"
+    );
+
+    // 2. Writing to /workspace/.git/config MUST fail (read-only overlay).
+    let git_req = CommandRequest::new(
+        "echo '[pwn]' >> /workspace/.git/config",
+        &fx.workspace,
+        &fx.workspace,
+        30_000,
+    )
+    .with_guarantee(vitna_runner::SandboxGuarantee::Strong)
+    .with_container_image(&image);
+    let git_out = runner(&fx)
+        .run_command(git_req)
+        .await
+        .expect("container ran and denied .git/config write");
+    assert_ne!(git_out.exit_code, 0);
+    assert_eq!(
+        fs::read_to_string(fx.workspace.join(".git").join("config")).unwrap(),
+        "[core]\n"
+    );
+
+    // 3. Writing to rootfs outside /workspace MUST fail (--read-only rootfs).
+    let rootfs_req = CommandRequest::new(
+        "touch /etc/vitna-escape-probe",
+        &fx.workspace,
+        &fx.workspace,
+        30_000,
+    )
+    .with_guarantee(vitna_runner::SandboxGuarantee::Strong)
+    .with_container_image(&image);
+    let rootfs_out = runner(&fx)
+        .run_command(rootfs_req)
+        .await
+        .expect("container ran and denied rootfs write");
+    assert_ne!(rootfs_out.exit_code, 0);
+
+    // 4. Default --network=none exposes only loopback (no eth0 / default route).
+    let net_req = CommandRequest::new(
+        "ip route 2>/dev/null | wc -l",
+        &fx.workspace,
+        &fx.workspace,
+        30_000,
+    )
+    .with_guarantee(vitna_runner::SandboxGuarantee::Strong)
+    .with_container_image(&image);
+    let net_out = runner(&fx)
+        .run_command(net_req)
+        .await
+        .expect("container ran network check");
+    assert_eq!(net_out.stdout.trim(), "0", "expected zero routes under --network=none");
+
+    let _ = fs::remove_dir_all(&fx.root);
+}

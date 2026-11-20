@@ -8,7 +8,10 @@ pub mod transport;
 
 pub use broker::{discover_and_bridge_tools, namespaced_tool_name, McpToolBridge};
 pub use client::McpClient;
-pub use mandate::{MandatedToolBridge, ToolCatalogEntry, ToolPriceSpec, ToolPricingCatalog, ToolPricingCatalogFile};
+pub use mandate::{
+    LiveMandateSession, MandateBundleConfig, MandatedToolBridge, ToolCatalogEntry, ToolPriceSpec,
+    ToolPricingCatalog, ToolPricingCatalogFile, MANDATE_CONFIG_SCHEMA_V1,
+};
 pub use protocol::{
     JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpContentItem,
     McpToolCallResult, McpToolDescriptor, McpToolsListResult,
