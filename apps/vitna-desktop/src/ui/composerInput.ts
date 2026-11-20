@@ -6,6 +6,7 @@
  */
 
 export const COMMANDS = [
+  { name: 'mode', hint: 'Switch session mode (inspect read-only or build)', argument: 'inspect | build' },
   { name: 'steer', hint: 'Correct the run that is going now', argument: 'what to change' },
   { name: 'pause', hint: 'Pause the run', argument: null },
   { name: 'resume', hint: 'Resume a paused run', argument: null },

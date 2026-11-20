@@ -80,10 +80,15 @@ pub fn draw(app: &App, frame: &mut Frame, area: Rect) {
         Branch::Detached => place.push(Span::styled(" on a detached HEAD", theme::faint())),
         Branch::Reading | Branch::Unknown => {}
     }
+    let right = if app.session_mode == "inspect" {
+        vec![Span::styled("inspect (read-only)", theme::faint())]
+    } else {
+        Vec::new()
+    };
     buf.set_line(
         area.x,
         y,
-        &Line::from(spread(place, Vec::new(), w)),
+        &Line::from(spread(place, right, w)),
         area.width,
     );
     y += 1;

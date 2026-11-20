@@ -85,7 +85,7 @@ export function Workbench({ transport, initialPrompt, onOpenSample, sampleError 
         case 'unknown_command':
           setNotice({
             tone: 'rust',
-            text: `There is no /${intent.name} command. The commands are /steer, /pause, /resume, /cancel, /spawn, /apply, /receipt and /providers.`,
+            text: `There is no /${intent.name} command. The commands are /mode, /steer, /pause, /resume, /cancel, /spawn, /apply, /receipt and /providers.`,
           });
           return false;
         case 'prompt': {
@@ -98,6 +98,37 @@ export function Workbench({ transport, initialPrompt, onOpenSample, sampleError 
           return sent;
         }
         case 'command': {
+          if (intent.name === 'mode') {
+            if (runActive) {
+              setNotice({ tone: 'rust', text: 'Wait for the active run to finish or /cancel before switching modes.' });
+              return false;
+            }
+            const target = intent.argument.toLowerCase();
+            if (target !== 'inspect' && target !== 'build') {
+              setNotice({
+                tone: 'plain',
+                text: `Current mode: ${session?.mode ?? 'build'}. Use /mode inspect or /mode build.`,
+              });
+              return false;
+            }
+            if (!session?.workspacePath) {
+              setNotice({ tone: 'rust', text: 'Open a workspace session before switching modes.' });
+              return false;
+            }
+            const created = await actions.createSession(session.workspacePath, target, session.title);
+            if (!created) {
+              setNotice({ tone: 'rust', text: 'Could not switch session mode. Check the daemon connection.' });
+              return false;
+            }
+            setNotice({
+              tone: 'plain',
+              text:
+                created.mode === 'inspect'
+                  ? 'Session switched to inspect (read-only) mode.'
+                  : `Session switched to ${created.mode} mode.`,
+            });
+            return true;
+          }
           if (intent.name === 'receipt') {
             openReceipt();
             return true;
@@ -143,7 +174,7 @@ export function Workbench({ transport, initialPrompt, onOpenSample, sampleError 
         }
       }
     },
-    [actions, openProviders, openReceipt, runActive, view.currentRunId],
+    [actions, openProviders, openReceipt, runActive, session, view.currentRunId],
   );
 
   const composer = (variant: 'hero' | 'dock') => (
@@ -169,6 +200,7 @@ export function Workbench({ transport, initialPrompt, onOpenSample, sampleError 
     <div className="app" data-drawer={drawerOpen ? 'open' : 'closed'}>
       <Bar
         sessionTitle={session?.title ?? (link.status === 'no_bridge' ? 'No session' : 'Session')}
+        sessionMode={session?.mode}
         isSample={isSample}
         link={link}
         activeView={activeView}

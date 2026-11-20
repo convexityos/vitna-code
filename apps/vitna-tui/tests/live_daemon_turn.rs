@@ -379,3 +379,70 @@ async fn tui_attachments_and_steer_command_reach_live_daemon_model() {
     link_task.abort();
 }
 
+#[tokio::test]
+async fn tui_inspect_mode_refuses_writes_and_mode_slash_command_switches() {
+    let root = temp_workspace("inspect_mode");
+    let runner = Arc::new(Mutex::new(
+        FakeRunner::new(root.join("runner.journal")).expect("runner"),
+    ));
+    let model = Arc::new(ScriptedModel {
+        replies: Mutex::new(write_script("blocked.txt", "must not write\n").into()),
+    });
+    let daemon = Arc::new(
+        DaemonServer::new(
+            EventStore::open_in_memory().expect("store"),
+            runner,
+            vitna_receipts::generate_signing_key(),
+        )
+        .with_route(ModelRoute {
+            provider: model,
+            model: "vitna/code".into(),
+            routing_reason: "runtime_lane:vitna/code".into(),
+        }),
+    );
+
+    let (client, server) = tokio::io::duplex(1 << 20);
+    tokio::spawn(ipc::serve_connection(server, daemon.clone()));
+
+    let (upd_tx, upd_rx) = mpsc::channel();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(root.clone());
+    app.cmd_tx = Some(cmd_tx);
+
+    let link_task = tokio::spawn(link::drive_stream_with_mode(
+        client,
+        root.clone(),
+        "inspect".to_string(),
+        upd_tx,
+        cmd_rx,
+    ));
+
+    pump_until(&mut app, &upd_rx, |a, _| {
+        matches!(a.link, Link::Open { .. }) && a.session_id.is_some()
+    })
+    .await;
+    assert_eq!(app.session_mode, "inspect");
+
+    // Submit a turn whose scripted model attempts write_file. In inspect mode,
+    // the daemon refuses it without ever prompting ApprovalRequested.
+    type_and_enter(&mut app, "inspect workspace");
+    pump_until(&mut app, &upd_rx, |a, _| !a.run_active).await;
+    assert!(
+        !root.join("blocked.txt").exists(),
+        "inspect mode must refuse write_file"
+    );
+
+    // Typing `/mode build` when idle updates mode and requests Ask::Refresh.
+    for c in "/mode build".chars() {
+        app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let ask = app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(ask, Ask::Refresh);
+    assert_eq!(app.session_mode, "build");
+    assert!(app.session_id.is_none());
+
+    link_task.abort();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+

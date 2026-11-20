@@ -34,8 +34,35 @@ fn main() {
 }
 
 fn start() -> Result<(), String> {
-    let root = match std::env::args_os().nth(1) {
-        Some(arg) => PathBuf::from(arg),
+    let mut folder_arg: Option<PathBuf> = None;
+    let mut initial_mode = "build".to_string();
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--mode" {
+            let value = args
+                .next()
+                .ok_or_else(|| "--mode requires a value (inspect or build)".to_string())?;
+            let mode_str = value.to_string_lossy();
+            match mode_str.as_ref() {
+                "inspect" | "build" => initial_mode = mode_str.into_owned(),
+                other => {
+                    return Err(format!(
+                        "unsupported --mode '{other}': expected inspect or build"
+                    ));
+                }
+            }
+        } else if folder_arg.is_none() {
+            folder_arg = Some(PathBuf::from(arg));
+        } else {
+            return Err(format!(
+                "unexpected argument '{}': usage is `vitna-tui [--mode inspect|build] [folder]`",
+                arg.to_string_lossy()
+            ));
+        }
+    }
+
+    let root = match folder_arg {
+        Some(arg) => arg,
         None => std::env::current_dir()
             .map_err(|e| format!("the current folder cannot be read: {e}"))?,
     };
@@ -50,6 +77,7 @@ fn start() -> Result<(), String> {
     let runtime = Runtime::new().map_err(|e| format!("the async runtime would not start: {e}"))?;
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(root.clone());
+    app.session_mode = initial_mode;
     let mut link_task = Some(connect_daemon(&runtime, &tx, &mut app));
     read_workspace(&runtime, &tx, &root, true);
 
@@ -80,8 +108,9 @@ fn connect_daemon(
     app.cmd_tx = Some(cmd_tx);
     let t = tx.clone();
     let root = app.root.clone();
+    let mode = app.session_mode.clone();
     runtime.spawn(async move {
-        link::connect_session(root, t, cmd_rx).await;
+        link::connect_session_with_mode(root, mode, t, cmd_rx).await;
     })
 }
 

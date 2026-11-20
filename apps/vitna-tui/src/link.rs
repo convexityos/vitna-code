@@ -148,10 +148,21 @@ pub async fn probe() -> Link {
 }
 
 /// Connects to the first responding daemon endpoint, opens a workspace-bound
-/// session, subscribes to its event stream, and bridges commands and events
-/// until either side closes.
+/// session in default `"build"` mode, subscribes to its event stream, and
+/// bridges commands and events until either side closes.
 pub async fn connect_session(
     workspace: PathBuf,
+    updates: Sender<Update>,
+    cmds: UnboundedReceiver<OutboundCmd>,
+) {
+    connect_session_with_mode(workspace, "build".to_string(), updates, cmds).await;
+}
+
+/// Connects to the first responding daemon endpoint and opens a workspace-bound
+/// session in `initial_mode` (`"inspect"` or `"build"`).
+pub async fn connect_session_with_mode(
+    workspace: PathBuf,
+    initial_mode: String,
     updates: Sender<Update>,
     cmds: UnboundedReceiver<OutboundCmd>,
 ) {
@@ -169,7 +180,7 @@ pub async fn connect_session(
         let Some(stream) = connect(endpoint).await else {
             continue;
         };
-        drive_stream(stream, workspace, updates, cmds).await;
+        drive_stream_with_mode(stream, workspace, initial_mode, updates, cmds).await;
         return;
     }
     let _ = updates.send(Update::Link(Link::Absent {
@@ -177,11 +188,25 @@ pub async fn connect_session(
     }));
 }
 
-/// Drives the full declared protocol lifecycle over any duplex byte stream:
-/// HandshakeRequest -> CreateSession -> SubscribeEvents -> duplex event/command pump.
+/// Drives the full declared protocol lifecycle over any duplex byte stream in
+/// default `"build"` mode.
 pub async fn drive_stream<S>(
+    stream: S,
+    workspace: PathBuf,
+    updates: Sender<Update>,
+    cmds: UnboundedReceiver<OutboundCmd>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    drive_stream_with_mode(stream, workspace, "build".to_string(), updates, cmds).await;
+}
+
+/// Drives the full declared protocol lifecycle over any duplex byte stream:
+/// HandshakeRequest -> CreateSession (with `initial_mode`) -> SubscribeEvents -> duplex pump.
+pub async fn drive_stream_with_mode<S>(
     mut stream: S,
     workspace: PathBuf,
+    initial_mode: String,
     updates: Sender<Update>,
     mut cmds: UnboundedReceiver<OutboundCmd>,
 ) where
@@ -225,7 +250,7 @@ pub async fn drive_stream<S>(
     );
     let _ = updates.send(Update::Link(Link::Open { version }));
 
-    // Open a workspace-bound session.
+    // Open a workspace-bound session with the requested initial_mode.
     let create = ProtocolEnvelope::carrying(
         type_url::command::CREATE_SESSION,
         "",
@@ -235,7 +260,7 @@ pub async fn drive_stream<S>(
         &CreateSession {
             workspace_path: workspace.to_string_lossy().into_owned(),
             title: String::new(),
-            initial_mode: "build".to_string(),
+            initial_mode,
             idempotency_key: "vitna-tui-create".to_string(),
         },
     );
@@ -277,9 +302,16 @@ pub async fn drive_stream<S>(
         }
     };
 
-    let session_id = if created_env.type_url == type_url::envelope::SESSION_CREATED {
+    let (session_id, confirmed_mode) = if created_env.type_url == type_url::envelope::SESSION_CREATED {
         match created_env.payload_as::<SessionCreated>() {
-            Ok(sc) if !sc.session_id.is_empty() => sc.session_id,
+            Ok(sc) if !sc.session_id.is_empty() => (
+                sc.session_id,
+                if sc.initial_mode.is_empty() {
+                    "build".to_string()
+                } else {
+                    sc.initial_mode
+                },
+            ),
             Ok(_) => {
                 let _ = updates.send(Update::Link(Link::Trouble {
                     what: "the daemon returned an empty session id".to_string(),
@@ -332,6 +364,7 @@ pub async fn drive_stream<S>(
         }
     }
 
+    let _ = updates.send(Update::SessionMode(confirmed_mode));
     let _ = updates.send(Update::SessionReady(session_id.clone()));
 
     let (mut reader, mut writer) = tokio::io::split(stream);

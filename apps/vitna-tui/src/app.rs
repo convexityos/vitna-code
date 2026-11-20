@@ -33,6 +33,7 @@ pub enum Screen {
 pub enum Update {
     Link(Link),
     SessionReady(String),
+    SessionMode(String),
     Wire(ProtocolEnvelope),
     Branch(Branch),
     Ledger(Ledger),
@@ -61,6 +62,8 @@ pub struct App {
     pub link: Link,
     /// The daemon session id once `SessionCreated` and `SubscribeEvents` complete.
     pub session_id: Option<String>,
+    /// Active session mode (`"build"` or `"inspect"`).
+    pub session_mode: String,
     /// The most recently observed run id in this session.
     pub active_run_id: Option<String>,
     /// True while a turn is in flight on the daemon.
@@ -100,6 +103,7 @@ impl App {
             branch: Branch::Reading,
             link: Link::Probing,
             session_id: None,
+            session_mode: "build".to_string(),
             active_run_id: None,
             run_active: false,
             usage: None,
@@ -135,6 +139,10 @@ impl App {
             }
             Update::SessionReady(id) => {
                 self.session_id = Some(id);
+                Ask::Nothing
+            }
+            Update::SessionMode(mode) => {
+                self.session_mode = mode;
                 Ask::Nothing
             }
             Update::Wire(env) => {
@@ -598,7 +606,7 @@ impl App {
             KeyCode::Char('j') if command => self.insert('\n'),
             KeyCode::Enter => {
                 if !self.draft.iter().all(|c| c.is_whitespace()) {
-                    self.submit();
+                    return self.submit();
                 } else if self.screen == Screen::Home && self.runs() > 0 && self.turn.is_empty() {
                     self.screen = Screen::Run(self.selected);
                     self.scroll = 0;
@@ -735,16 +743,16 @@ impl App {
     }
 
     /// Enter, with something typed. When connected with an open daemon session,
-    /// dispatches slash commands (`/steer`, `/pause`, `/resume`, `/cancel`,
-    /// `/spawn`, `/apply`) or `SubmitTurn` (with `@path` workspace file
-    /// attachments) over the wire. Otherwise keeps the draft intact and states
-    /// why it was not sent.
-    fn submit(&mut self) {
+    /// dispatches slash commands (`/mode`, `/steer`, `/pause`, `/resume`,
+    /// `/cancel`, `/spawn`, `/apply`) or `SubmitTurn` (with `@path` workspace
+    /// file attachments) over the wire. Otherwise keeps the draft intact and
+    /// states why it was not sent.
+    fn submit(&mut self) -> Ask {
         if matches!(self.link, Link::Open { .. }) && self.session_id.is_some() {
             let raw: String = self.draft.iter().collect();
             let trimmed = raw.trim();
             if trimmed.is_empty() {
-                return;
+                return Ask::Nothing;
             }
 
             if trimmed.starts_with('/') && !trimmed.starts_with("//") {
@@ -752,19 +760,50 @@ impl App {
                 let cmd_name = parts.next().unwrap_or("").to_ascii_lowercase();
                 let arg = parts.next().unwrap_or("").trim();
 
+                if cmd_name == "mode" {
+                    if self.run_active {
+                        self.notice = Some(
+                            "Wait for the active run to finish or /cancel before switching modes."
+                                .to_string(),
+                        );
+                        return Ask::Nothing;
+                    }
+                    let target = arg.to_ascii_lowercase();
+                    if !matches!(target.as_str(), "inspect" | "build") {
+                        self.notice = Some(format!(
+                            "Current mode: {}. Use /mode inspect or /mode build.",
+                            self.session_mode
+                        ));
+                        return Ask::Nothing;
+                    }
+                    self.session_mode = target.clone();
+                    self.session_id = None;
+                    self.active_run_id = None;
+                    self.turn.clear();
+                    self.scroll = 0;
+                    self.draft.clear();
+                    self.cursor = 0;
+                    self.notice = Some(if target == "inspect" {
+                        "Switched to inspect (read-only) mode. Reconnecting session...".to_string()
+                    } else {
+                        "Switched to build mode. Reconnecting session...".to_string()
+                    });
+                    return Ask::Refresh;
+                }
+
                 let outbound = match cmd_name.as_str() {
                     "steer" => {
                         if !self.run_active {
                             self.notice = Some("No active run to steer.".to_string());
-                            return;
+                            return Ask::Nothing;
                         }
                         if arg.is_empty() {
                             self.notice = Some("Write feedback after /steer.".to_string());
-                            return;
+                            return Ask::Nothing;
                         }
                         let Some(run_id) = self.active_run_id.clone() else {
                             self.notice = Some("Waiting for run id before steering.".to_string());
-                            return;
+                            return Ask::Nothing;
                         };
                         OutboundCmd::SteerRun {
                             run_id,
@@ -774,11 +813,11 @@ impl App {
                     "pause" => {
                         if !self.run_active {
                             self.notice = Some("No active run to pause.".to_string());
-                            return;
+                            return Ask::Nothing;
                         }
                         let Some(run_id) = self.active_run_id.clone() else {
                             self.notice = Some("Waiting for run id before pausing.".to_string());
-                            return;
+                            return Ask::Nothing;
                         };
                         OutboundCmd::PauseRun {
                             run_id,
@@ -792,22 +831,22 @@ impl App {
                     "resume" => {
                         if !self.run_active {
                             self.notice = Some("No active run to resume.".to_string());
-                            return;
+                            return Ask::Nothing;
                         }
                         let Some(run_id) = self.active_run_id.clone() else {
                             self.notice = Some("Waiting for run id before resuming.".to_string());
-                            return;
+                            return Ask::Nothing;
                         };
                         OutboundCmd::ResumeRun { run_id }
                     }
                     "cancel" => {
                         if !self.run_active {
                             self.notice = Some("No active run to cancel.".to_string());
-                            return;
+                            return Ask::Nothing;
                         }
                         let Some(run_id) = self.active_run_id.clone() else {
                             self.notice = Some("Waiting for run id before cancelling.".to_string());
-                            return;
+                            return Ask::Nothing;
                         };
                         OutboundCmd::CancelRun {
                             run_id,
@@ -821,12 +860,12 @@ impl App {
                     "spawn" => {
                         if arg.is_empty() {
                             self.notice = Some("Write a goal after /spawn.".to_string());
-                            return;
+                            return Ask::Nothing;
                         }
                         let Some(parent_run_id) = self.active_run_id.clone() else {
                             self.notice =
                                 Some("Run a parent turn first before /spawn.".to_string());
-                            return;
+                            return Ask::Nothing;
                         };
                         OutboundCmd::SpawnChild {
                             parent_run_id,
@@ -838,7 +877,7 @@ impl App {
                         let Some(change_set_id) = tokens.next() else {
                             self.notice =
                                 Some("Write a changeset id after /apply.".to_string());
-                            return;
+                            return Ask::Nothing;
                         };
                         let expected_base_commit = tokens.next().unwrap_or("").to_string();
                         OutboundCmd::ApplyChangeSet {
@@ -849,9 +888,9 @@ impl App {
                     }
                     other => {
                         self.notice = Some(format!(
-                            "Unknown command /{other}. Commands: /steer, /pause, /resume, /cancel, /spawn, /apply."
+                            "Unknown command /{other}. Commands: /mode, /steer, /pause, /resume, /cancel, /spawn, /apply."
                         ));
-                        return;
+                        return Ask::Nothing;
                     }
                 };
 
@@ -860,7 +899,7 @@ impl App {
                         self.draft.clear();
                         self.cursor = 0;
                         self.notice = None;
-                        return;
+                        return Ask::Nothing;
                     }
                 }
             } else {
@@ -869,7 +908,7 @@ impl App {
                         "Not sent. A turn is already running. Use /steer, /pause, /resume, or /cancel."
                             .to_string(),
                     );
-                    return;
+                    return Ask::Nothing;
                 }
                 if let Some(tx) = &self.cmd_tx {
                     let prompt = if let Some(rest) = trimmed.strip_prefix("//") {
@@ -891,7 +930,7 @@ impl App {
                         self.run_active = true;
                         self.active_run_id = None;
                         self.notice = None;
-                        return;
+                        return Ask::Nothing;
                     }
                 }
             }
@@ -910,6 +949,7 @@ impl App {
             }
             .to_string(),
         );
+        Ask::Nothing
     }
 }
 

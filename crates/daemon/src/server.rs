@@ -144,7 +144,11 @@ impl DaemonServer {
                         workspace_root: PathBuf::from(s.workspace_root),
                         created_at_ms: s.created_at_ms,
                         status: s.status,
-                        mode: default_session_mode(),
+                        mode: if s.mode.is_empty() {
+                            default_session_mode()
+                        } else {
+                            s.mode
+                        },
                         latest_run_id,
                         runs: s.runs,
                     },
@@ -291,11 +295,12 @@ impl DaemonServer {
         {
             let store = self.store.lock().map_err(|e| e.to_string())?;
             store
-                .save_session(
+                .save_session_with_mode(
                     &session_id,
                     &ws.to_string_lossy(),
                     now_ms,
                     &info.status,
+                    &info.mode,
                 )
                 .map_err(|e| format!("Failed to persist session: {e}"))?;
         }

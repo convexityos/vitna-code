@@ -25,12 +25,10 @@ vitna-providers.workspace = true
 vitna-orchestration.workspace = true
 vitna-skills.workspace = true
 vitna-mcp.workspace = true
+vitna-policy.workspace = true
 sha2.workspace = true
 hex.workspace = true
 
 [[bin]]
 name = "vitna"
 path = "src/main.rs"
-
-[dev-dependencies]
-vitna-policy.workspace = true

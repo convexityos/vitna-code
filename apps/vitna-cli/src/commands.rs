@@ -1834,6 +1834,186 @@ pub fn run_release_verify(
     Ok(())
 }
 
+pub struct MandateInitOptions<'a> {
+    pub out: &'a Path,
+    pub max_total: &'a str,
+    pub max_per_txn: &'a str,
+    pub currency: &'a str,
+    pub effect: &'a str,
+    pub aud: Vec<String>,
+    pub resources: Vec<String>,
+    pub ledger: &'a str,
+    pub ttl_secs: u64,
+    pub step_up_over: Option<&'a str>,
+    pub tools: Vec<String>,
+    pub as_json: bool,
+}
+
+fn parse_mandate_effect(raw: &str) -> Result<vitna_policy::mandate::Effect, String> {
+    use vitna_policy::mandate::Effect;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "read" => Ok(Effect::Read),
+        "write" => Ok(Effect::Write),
+        "irreversible" => Ok(Effect::Irreversible),
+        other => Err(format!(
+            "invalid mandate effect '{other}': expected read, write, or irreversible"
+        )),
+    }
+}
+
+/// `vitna mandate init --out <file> ...`
+pub fn run_mandate_init(opts: MandateInitOptions<'_>) -> Result<(), String> {
+    use vitna_mcp::{
+        LiveMandateSession, MandateBundleConfig, ToolCatalogEntry, ToolPriceSpec,
+        MANDATE_CONFIG_SCHEMA_V1,
+    };
+    use vitna_policy::generate_policy_signing_key;
+    use vitna_policy::mandate::{
+        did_key_from_verifying_key, jwk_thumbprint_from_verifying_key, sign_mandate_jws, CnfClaim,
+        MandateCaveats, MandateClaims, Money, StepUpCaveat, PROTOCOL_VERSION,
+    };
+
+    if opts.ttl_secs == 0 {
+        return Err("--ttl-secs must be greater than 0".to_string());
+    }
+    let currency = opts.currency.trim().to_ascii_uppercase();
+    if currency.is_empty() {
+        return Err("--currency must be non-empty".to_string());
+    }
+    let max_effect = parse_mandate_effect(opts.effect)?;
+
+    let mut pricing = Vec::new();
+    for spec_str in &opts.tools {
+        let parts: Vec<&str> = spec_str.split('|').collect();
+        if parts.len() != 5 {
+            return Err(format!(
+                "invalid --tool '{spec_str}': expected SERVER|TOOL|RESOURCE_URI|AMOUNT|EFFECT"
+            ));
+        }
+        let server = parts[0].trim();
+        let tool = parts[1].trim();
+        let resource_uri = parts[2].trim();
+        let amount = parts[3].trim();
+        let eff = parse_mandate_effect(parts[4])?;
+        if server.is_empty() || tool.is_empty() || resource_uri.is_empty() || amount.is_empty() {
+            return Err(format!(
+                "invalid --tool '{spec_str}': server, tool, resource_uri, and amount must be non-empty"
+            ));
+        }
+        pricing.push(ToolCatalogEntry {
+            server: server.to_string(),
+            tool: tool.to_string(),
+            spec: ToolPriceSpec {
+                resource_uri: resource_uri.to_string(),
+                amount: Money::new(currency.clone(), amount.to_string()),
+                effect: eff,
+                purpose: None,
+            },
+        });
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let root_key = generate_policy_signing_key();
+    let root_did = did_key_from_verifying_key(&root_key.verifying_key());
+    let agent_key = generate_policy_signing_key();
+    let agent_did = did_key_from_verifying_key(&agent_key.verifying_key());
+    let agent_jkt = jwk_thumbprint_from_verifying_key(&agent_key.verifying_key());
+
+    let jti = format!("mnd_{now}");
+    let claims = MandateClaims {
+        v: PROTOCOL_VERSION.to_string(),
+        typ: "mandate".to_string(),
+        jti: jti.clone(),
+        iss: root_did.clone(),
+        sub: agent_did.clone(),
+        par: None,
+        iat: now,
+        nbf: now,
+        exp: now.saturating_add(opts.ttl_secs),
+        cnf: CnfClaim { jkt: agent_jkt },
+        ledger: opts.ledger.to_string(),
+        cav: MandateCaveats {
+            max_total: Some(Money::new(currency.clone(), opts.max_total.to_string())),
+            max_per_txn: Some(Money::new(currency.clone(), opts.max_per_txn.to_string())),
+            aud: if opts.aud.is_empty() {
+                None
+            } else {
+                Some(opts.aud)
+            },
+            resources: if opts.resources.is_empty() {
+                None
+            } else {
+                Some(opts.resources)
+            },
+            effect: Some(max_effect),
+            currency: Some(currency.clone()),
+            step_up: opts.step_up_over.map(|over| StepUpCaveat {
+                over: Money::new(currency.clone(), over.to_string()),
+            }),
+            ..Default::default()
+        },
+        st: None,
+    };
+    let token = sign_mandate_jws(&claims, &root_key, None);
+
+    let bundle = MandateBundleConfig {
+        schema_version: MANDATE_CONFIG_SCHEMA_V1.to_string(),
+        tokens: vec![token],
+        trusted_root_issuers: vec![root_did.clone()],
+        ledger: opts.ledger.to_string(),
+        currency: currency.clone(),
+        pricing,
+        task_id: None,
+        step_up_approved: false,
+    };
+
+    // Self-verify eagerly before writing to disk so invalid monetary strings or
+    // caveat combinations fail closed without creating a broken file.
+    let session = LiveMandateSession::from_bundle(bundle.clone())?;
+
+    if let Some(parent) = opts.out.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+        }
+    }
+    let body = serde_json::to_string_pretty(&bundle).map_err(|e| e.to_string())?;
+    fs::write(opts.out, body)
+        .map_err(|e| format!("could not write {}: {e}", opts.out.display()))?;
+
+    let chain = session.verified_chain();
+    if opts.as_json {
+        let out = json!({
+            "file": opts.out.display().to_string(),
+            "root_jti": chain.root_jti,
+            "principal": root_did,
+            "agent": agent_did,
+            "chain_hash": chain.chain_hash,
+            "currency": currency,
+            "priced_tools": session.pricing_entries().len(),
+            "exp": chain.exp,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!(
+            "Wrote signed am/1 mandate bundle -> {}",
+            opts.out.display()
+        );
+        println!("Root JTI:     {}", chain.root_jti);
+        println!("Principal:    {root_did}");
+        println!("Agent:        {agent_did}");
+        println!("Chain Hash:   {}", chain.chain_hash);
+        println!("Priced Tools: {}", session.pricing_entries().len());
+    }
+    Ok(())
+}
+
 /// `vitna mandate inspect <mandate_file> [--json]`
 pub fn run_mandate_inspect(mandate_file: &Path, as_json: bool) -> Result<(), String> {
     let session = vitna_mcp::LiveMandateSession::from_file(mandate_file)?;

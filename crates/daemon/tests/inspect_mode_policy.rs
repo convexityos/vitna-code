@@ -261,3 +261,39 @@ fn inspect_mode_refuses_apply_changeset() {
 
     let _ = fs::remove_dir_all(&base);
 }
+
+#[test]
+fn inspect_mode_survives_daemon_restart() {
+    let base = scratch_dir("restart");
+    let ws = base.join("ws");
+    let db_path = base.join("daemon.db");
+    fs::create_dir_all(&ws).unwrap();
+
+    let session_id = {
+        let store = EventStore::open(&db_path).expect("open store");
+        let runner = Arc::new(Mutex::new(
+            FakeRunner::new(base.join("runner1.journal")).expect("runner"),
+        ));
+        let daemon = DaemonServer::new(store, runner, generate_signing_key());
+        let session = daemon
+            .create_session_with_mode(&ws, "inspect")
+            .expect("create inspect session");
+        assert_eq!(session.mode, "inspect");
+        session.session_id
+    };
+
+    // Reopen the exact SQLite DB in a fresh DaemonServer instance and verify
+    // `mode` stayed `"inspect"` rather than silently downgrading to `"build"`.
+    let reopened_store = EventStore::open(&db_path).expect("reopen store");
+    let runner2 = Arc::new(Mutex::new(
+        FakeRunner::new(base.join("runner2.journal")).expect("runner"),
+    ));
+    let reopened = DaemonServer::new(reopened_store, runner2, generate_signing_key());
+    let restored = reopened
+        .get_session(&session_id)
+        .expect("restored session must exist");
+    assert_eq!(restored.mode, "inspect");
+
+    let _ = fs::remove_dir_all(&base);
+}
+
