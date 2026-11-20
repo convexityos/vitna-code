@@ -1213,5 +1213,282 @@ fn cli_run_vitna_anchor_stamps_checkpoint_policy_digest_and_verifies_provenance_
     let _ = fs::remove_dir_all(&base);
 }
 
+fn write_test_mandate_bundle(path: &Path) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use vitna_mcp::{MandateBundleConfig, ToolCatalogEntry, ToolPriceSpec, MANDATE_CONFIG_SCHEMA_V1};
+    use vitna_policy::generate_policy_signing_key;
+    use vitna_policy::mandate::{
+        did_key_from_verifying_key, jwk_thumbprint_from_verifying_key, sign_mandate_jws, CnfClaim,
+        Effect, MandateCaveats, MandateClaims, Money, StepUpCaveat, PROTOCOL_VERSION,
+    };
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let root_key = generate_policy_signing_key();
+    let root_did = did_key_from_verifying_key(&root_key.verifying_key());
+    let agent_key = generate_policy_signing_key();
+    let agent_did = did_key_from_verifying_key(&agent_key.verifying_key());
+    let agent_jkt = jwk_thumbprint_from_verifying_key(&agent_key.verifying_key());
+
+    let claims = MandateClaims {
+        v: PROTOCOL_VERSION.to_string(),
+        typ: "mandate".to_string(),
+        jti: "mnd_cli_test_root".to_string(),
+        iss: root_did.clone(),
+        sub: agent_did,
+        par: None,
+        iat: now.saturating_sub(60),
+        nbf: now.saturating_sub(60),
+        exp: now + 3600,
+        cnf: CnfClaim { jkt: agent_jkt },
+        ledger: "https://ledger.convexityos.com".to_string(),
+        cav: MandateCaveats {
+            max_total: Some(Money::new("USD", "1.00")),
+            max_per_txn: Some(Money::new("USD", "0.50")),
+            aud: Some(vec!["api.example.com".to_string()]),
+            resources: Some(vec!["https://api.example.com/*".to_string()]),
+            effect: Some(Effect::Read),
+            currency: Some("USD".to_string()),
+            step_up: Some(StepUpCaveat {
+                over: Money::new("USD", "0.20"),
+            }),
+            ..Default::default()
+        },
+        st: None,
+    };
+    let jws = sign_mandate_jws(&claims, &root_key, None);
+
+    let bundle = MandateBundleConfig {
+        schema_version: MANDATE_CONFIG_SCHEMA_V1.to_string(),
+        tokens: vec![jws],
+        trusted_root_issuers: vec![root_did],
+        ledger: "https://ledger.convexityos.com".to_string(),
+        currency: "USD".to_string(),
+        pricing: vec![
+            ToolCatalogEntry {
+                server: "svc".to_string(),
+                tool: "priced_read".to_string(),
+                spec: ToolPriceSpec {
+                    resource_uri: "https://api.example.com/search".to_string(),
+                    amount: Money::new("USD", "0.05"),
+                    effect: Effect::Read,
+                    purpose: None,
+                },
+            },
+            ToolCatalogEntry {
+                server: "svc".to_string(),
+                tool: "expensive_read".to_string(),
+                spec: ToolPriceSpec {
+                    resource_uri: "https://api.example.com/deep".to_string(),
+                    amount: Money::new("USD", "0.30"),
+                    effect: Effect::Read,
+                    purpose: None,
+                },
+            },
+            ToolCatalogEntry {
+                server: "svc".to_string(),
+                tool: "mutate_record".to_string(),
+                spec: ToolPriceSpec {
+                    resource_uri: "https://api.example.com/write".to_string(),
+                    amount: Money::new("USD", "0.05"),
+                    effect: Effect::Write,
+                    purpose: None,
+                },
+            },
+        ],
+        task_id: None,
+        step_up_approved: false,
+    };
+
+    let raw = serde_json::to_string_pretty(&bundle).unwrap();
+    fs::write(path, &raw).unwrap();
+    raw
+}
+
+#[test]
+fn mandate_inspect_and_verify_dry_run_cli() {
+    let base = temp_dir("mandate_cli");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    let mandate_path = base.join("mandate.json");
+    write_test_mandate_bundle(&mandate_path);
+    let mandate_str = mandate_path.to_str().unwrap();
+
+    // 1. `vitna mandate inspect --json` reports verified chain + 3 priced tools.
+    let inspect = run_vitna(&["mandate", "inspect", mandate_str, "--json"], &home, &ws);
+    assert!(
+        inspect.status.success(),
+        "mandate inspect failed: {}",
+        String::from_utf8_lossy(&inspect.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(doc["valid"], true);
+    assert_eq!(doc["root_jti"], "mnd_cli_test_root");
+    assert_eq!(doc["pricing"].as_array().unwrap().len(), 3);
+
+    // 2. Dry-run allowed read tool succeeds (accepts both bare and namespaced names).
+    let allow = run_vitna(
+        &[
+            "mandate",
+            "verify",
+            mandate_str,
+            "--server",
+            "svc",
+            "--tool",
+            "mcp__svc__priced_read",
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        allow.status.success(),
+        "mandate verify allowed tool failed: {}",
+        String::from_utf8_lossy(&allow.stderr)
+    );
+    let allow_doc: serde_json::Value = serde_json::from_slice(&allow.stdout).unwrap();
+    assert_eq!(allow_doc["valid"], true);
+    assert_eq!(allow_doc["action_check"]["allowed"], true);
+
+    // 3. Dry-run unpriced tool fails closed with non-zero exit code.
+    let unpriced = run_vitna(
+        &[
+            "mandate",
+            "verify",
+            mandate_str,
+            "--server",
+            "svc",
+            "--tool",
+            "unpriced_tool",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!unpriced.status.success());
+    assert!(String::from_utf8_lossy(&unpriced.stderr).contains("unpriced_tool"));
+
+    // 4. Dry-run Write tool under Read mandate fails closed.
+    let wrong_effect = run_vitna(
+        &[
+            "mandate",
+            "verify",
+            mandate_str,
+            "--server",
+            "svc",
+            "--tool",
+            "mutate_record",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!wrong_effect.status.success());
+    assert!(String::from_utf8_lossy(&wrong_effect.stderr).contains("effect_not_permitted"));
+
+    // 5. Dry-run step-up tool ($0.30 > $0.20) fails without --step-up-approved, succeeds with it.
+    let step_up_refused = run_vitna(
+        &[
+            "mandate",
+            "verify",
+            mandate_str,
+            "--server",
+            "svc",
+            "--tool",
+            "expensive_read",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!step_up_refused.status.success());
+    assert!(String::from_utf8_lossy(&step_up_refused.stderr).contains("step_up_required"));
+
+    let step_up_ok = run_vitna(
+        &[
+            "mandate",
+            "verify",
+            mandate_str,
+            "--server",
+            "svc",
+            "--tool",
+            "expensive_read",
+            "--step-up-approved",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        step_up_ok.status.success(),
+        "step-up approved dry-run failed: {}",
+        String::from_utf8_lossy(&step_up_ok.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn doctor_json_and_mandate_audit_cli() {
+    let base = temp_dir("doctor_audit");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    let mandate_path = base.join("mandate.json");
+    write_test_mandate_bundle(&mandate_path);
+
+    let out = run_vitna(
+        &[
+            "doctor",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--mandate",
+            mandate_path.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        out.status.success(),
+        "vitna doctor --json failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["sqlite_wal"], true);
+    assert!(doc["sandbox_guarded"]["available"].is_boolean());
+    assert!(doc["sandbox_strong_oci"]["available"].is_boolean());
+    assert!(doc["keychain"]["providers"].is_array());
+    assert_eq!(doc["skills"]["discovered"], 0);
+    assert_eq!(doc["mandate"]["valid"], true);
+    assert_eq!(doc["mandate"]["root_jti"], "mnd_cli_test_root");
+    assert_eq!(doc["mandate"]["priced_tools"], 3);
+
+    // Tampered mandate file must fail `vitna doctor --mandate`.
+    let bad_mandate = base.join("bad_mandate.json");
+    fs::write(&bad_mandate, r#"{"schema_version":"vitna-mandate-config-v1","tokens":["not.a.jws"],"trusted_root_issuers":["did:key:z1"],"ledger":"https://l","currency":"USD"}"#).unwrap();
+    let bad = run_vitna(
+        &[
+            "doctor",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--mandate",
+            bad_mandate.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!bad.status.success());
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+
 
 

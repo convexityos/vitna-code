@@ -122,6 +122,15 @@ impl DaemonServer {
             })?
         };
 
+        if let Some(session) = self.get_session(&staged.session_id) {
+            if session.mode == "inspect" {
+                return Err(ApplyChangeSetError::InvalidRequest(
+                    "session is in read-only 'inspect' mode: ApplyChangeSet is refused by policy"
+                        .to_string(),
+                ));
+            }
+        }
+
         let target_canon = std::fs::canonicalize(Path::new(target_path)).map_err(|e| {
             ApplyChangeSetError::CheckoutMismatch(format!(
                 "cannot resolve target_checkout_path {target_path}: {e}"

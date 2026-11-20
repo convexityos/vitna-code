@@ -480,7 +480,7 @@ where
                     ))
                     .await
                 } else {
-                    match daemon.create_session(&body.workspace_path) {
+                    match daemon.create_session_with_mode(&body.workspace_path, &body.initial_mode) {
                         Err(why) => {
                             out.send(error_for(&request, ErrorCode::InvalidFrame, why))
                                 .await
@@ -492,8 +492,7 @@ where
                                     .workspace_root
                                     .to_string_lossy()
                                     .into_owned(),
-                                // Echoed, not applied: see `CreateSession`.
-                                initial_mode: body.initial_mode.clone(),
+                                initial_mode: session.mode.clone(),
                             };
                             match ProtocolEnvelope::carrying(
                                 type_url::envelope::SESSION_CREATED,
