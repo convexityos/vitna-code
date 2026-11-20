@@ -28,6 +28,11 @@ describe('parseComposer', () => {
       name: 'spawn',
       argument: 'audit tests',
     });
+    expect(parseComposer('/mode inspect')).toEqual({
+      kind: 'command',
+      name: 'mode',
+      argument: 'inspect',
+    });
     expect(parseComposer('/apply cs-123 deadbeef')).toEqual({
       kind: 'command',
       name: 'apply',
@@ -46,7 +51,8 @@ describe('parseComposer', () => {
 
   it('lists matching commands while one is being typed', () => {
     expect(commandsMatching('/re').map((c) => c.name)).toEqual(['resume', 'receipt']);
-    expect(commandsMatching('/').length).toBe(8);
+    expect(commandsMatching('/').length).toBe(9);
+    expect(commandsMatching('/mo').map((c) => c.name)).toEqual(['mode']);
     expect(commandsMatching('/sp').map((c) => c.name)).toEqual(['spawn']);
     expect(commandsMatching('/ap').map((c) => c.name)).toEqual(['apply']);
     expect(commandsMatching('/steer now')).toEqual([]);

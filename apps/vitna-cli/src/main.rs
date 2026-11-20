@@ -270,6 +270,45 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum MandateCommands {
+    /// Generate a signed `am/1` Agent Mandate bundle (`vitna-mandate-config-v1`) ready for `--mandate`
+    Init {
+        /// Output JSON file path for the generated `vitna-mandate-config-v1` bundle.
+        #[arg(long)]
+        out: PathBuf,
+        /// Cumulative total spend cap across the mandate lifetime.
+        #[arg(long, default_value = "1.00")]
+        max_total: String,
+        /// Per-transaction spend cap.
+        #[arg(long, default_value = "0.25")]
+        max_per_txn: String,
+        /// Currency code (for example USD).
+        #[arg(long, default_value = "USD")]
+        currency: String,
+        /// Maximum permitted side-effect class: read, write, or irreversible.
+        #[arg(long, default_value = "read")]
+        effect: String,
+        /// Allowed destination host(s) for `cav.aud` (repeatable).
+        #[arg(long = "aud")]
+        aud: Vec<String>,
+        /// Allowed resource URI pattern(s) for `cav.resources` (repeatable).
+        #[arg(long = "resource")]
+        resources: Vec<String>,
+        /// Ledger URL recorded on the mandate.
+        #[arg(long, default_value = "https://ledger.convexityos.com")]
+        ledger: String,
+        /// Validity window in seconds from now.
+        #[arg(long, default_value_t = 3600)]
+        ttl_secs: u64,
+        /// Optional step-up approval threshold amount (in the same currency).
+        #[arg(long)]
+        step_up_over: Option<String>,
+        /// Optional priced MCP tool entry (`SERVER|TOOL|RESOURCE_URI|AMOUNT|EFFECT`). Repeatable.
+        #[arg(long = "tool", value_name = "SERVER|TOOL|URI|AMOUNT|EFFECT")]
+        tools: Vec<String>,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
     /// Verify and print an `am/1` mandate delegation chain, caveats, and priced MCP tools
     Inspect {
         /// Path to the `vitna-mandate-config-v1` JSON file.
@@ -704,6 +743,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         },
         Some(Commands::Mandate { sub }) => match sub {
+            MandateCommands::Init {
+                out,
+                max_total,
+                max_per_txn,
+                currency,
+                effect,
+                aud,
+                resources,
+                ledger,
+                ttl_secs,
+                step_up_over,
+                tools,
+                json,
+            } => {
+                if let Err(e) = commands::run_mandate_init(commands::MandateInitOptions {
+                    out: &out,
+                    max_total: &max_total,
+                    max_per_txn: &max_per_txn,
+                    currency: &currency,
+                    effect: &effect,
+                    aud,
+                    resources,
+                    ledger: &ledger,
+                    ttl_secs,
+                    step_up_over: step_up_over.as_deref(),
+                    tools,
+                    as_json: json,
+                }) {
+                    eprintln!("vitna mandate init: {e}");
+                    std::process::exit(1);
+                }
+            }
             MandateCommands::Inspect { mandate_file, json } => {
                 if let Err(e) = commands::run_mandate_inspect(&mandate_file, json) {
                     eprintln!("vitna mandate inspect: {e}");

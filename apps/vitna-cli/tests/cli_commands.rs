@@ -1489,6 +1489,106 @@ fn doctor_json_and_mandate_audit_cli() {
     let _ = fs::remove_dir_all(&base);
 }
 
+#[test]
+fn mandate_init_round_trip_cli() {
+    let base = temp_dir("mandate_init");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    let out_file = base.join("generated-mandate.json");
+    let init = run_vitna(
+        &[
+            "mandate",
+            "init",
+            "--out",
+            out_file.to_str().unwrap(),
+            "--max-total",
+            "2.00",
+            "--max-per-txn",
+            "0.50",
+            "--currency",
+            "USD",
+            "--effect",
+            "read",
+            "--aud",
+            "api.example.com",
+            "--resource",
+            "https://api.example.com/*",
+            "--step-up-over",
+            "0.25",
+            "--tool",
+            "docs|search|https://api.example.com/search|0.10|read",
+            "--tool",
+            "docs|deep_audit|https://api.example.com/audit|0.35|read",
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        init.status.success(),
+        "vitna mandate init failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&init.stdout),
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let init_doc: serde_json::Value = serde_json::from_slice(&init.stdout).unwrap();
+    assert_eq!(init_doc["priced_tools"], 2);
+    assert!(init_doc["chain_hash"].as_str().unwrap().starts_with("sha256:"));
+
+    // Immediately usable by `vitna mandate verify` (in-budget read allowed, step-up gated).
+    let ok = run_vitna(
+        &[
+            "mandate",
+            "verify",
+            out_file.to_str().unwrap(),
+            "--server",
+            "docs",
+            "--tool",
+            "search",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(ok.status.success());
+
+    let needs_step_up = run_vitna(
+        &[
+            "mandate",
+            "verify",
+            out_file.to_str().unwrap(),
+            "--server",
+            "docs",
+            "--tool",
+            "deep_audit",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!needs_step_up.status.success());
+
+    let doctor = run_vitna(
+        &[
+            "doctor",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--mandate",
+            out_file.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(doctor.status.success());
+    let doc: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    assert_eq!(doc["mandate"]["valid"], true);
+    assert_eq!(doc["mandate"]["priced_tools"], 2);
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+
 
 
 

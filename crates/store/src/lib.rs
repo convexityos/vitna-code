@@ -128,6 +128,7 @@ pub struct StoredSession {
     pub workspace_root: String,
     pub created_at_ms: u64,
     pub status: String,
+    pub mode: String,
     pub runs: Vec<String>,
 }
 
@@ -196,10 +197,30 @@ impl EventStore {
         let sql_0001 = include_str!("../migrations/0001_initial_schema.sql");
         self.conn.execute_batch(sql_0001)?;
         let sql_0002 = include_str!("../migrations/0002_daemon_sessions.sql");
-        self.conn.execute_batch(sql_0002)
+        self.conn.execute_batch(sql_0002)?;
+
+        // Idempotent migration 0003: add `mode` column to `daemon_sessions`
+        // so read-only `inspect` sessions survive daemon restarts without
+        // silently downgrading to `build`.
+        let mut has_mode = false;
+        {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(daemon_sessions)")?;
+            let cols = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            for col in cols {
+                if col? == "mode" {
+                    has_mode = true;
+                }
+            }
+        }
+        if !has_mode {
+            self.conn.execute_batch(
+                "ALTER TABLE daemon_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'build';",
+            )?;
+        }
+        Ok(())
     }
 
-    /// Persists a daemon session record so it survives daemon restarts.
+    /// Persists a daemon session record in default `"build"` mode.
     pub fn save_session(
         &self,
         session_id: &str,
@@ -207,10 +228,23 @@ impl EventStore {
         created_at_ms: u64,
         status: &str,
     ) -> SqliteResult<()> {
+        self.save_session_with_mode(session_id, workspace_root, created_at_ms, status, "build")
+    }
+
+    /// Persists a daemon session record including its enforced `mode` (`inspect`,
+    /// `build`, or `autopilot`) so mode survives daemon restarts.
+    pub fn save_session_with_mode(
+        &self,
+        session_id: &str,
+        workspace_root: &str,
+        created_at_ms: u64,
+        status: &str,
+        mode: &str,
+    ) -> SqliteResult<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO daemon_sessions (session_id, workspace_root, created_at_ms, status)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![session_id, workspace_root, created_at_ms, status],
+            "INSERT OR REPLACE INTO daemon_sessions (session_id, workspace_root, created_at_ms, status, mode)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![session_id, workspace_root, created_at_ms, status, mode],
         )?;
         Ok(())
     }
@@ -233,7 +267,7 @@ impl EventStore {
     /// Loads every persisted daemon session together with its ordered run list.
     pub fn load_sessions(&self) -> SqliteResult<Vec<StoredSession>> {
         let mut stmt = self.conn.prepare(
-            "SELECT session_id, workspace_root, created_at_ms, status
+            "SELECT session_id, workspace_root, created_at_ms, status, mode
              FROM daemon_sessions
              ORDER BY created_at_ms DESC",
         )?;
@@ -243,12 +277,13 @@ impl EventStore {
                 row.get::<_, String>(1)?,
                 row.get::<_, u64>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })?;
 
         let mut sessions = Vec::new();
         for row in rows {
-            let (session_id, workspace_root, created_at_ms, status) = row?;
+            let (session_id, workspace_root, created_at_ms, status, mode) = row?;
             let mut run_stmt = self.conn.prepare(
                 "SELECT run_id FROM daemon_session_runs
                  WHERE session_id = ?1
@@ -264,6 +299,7 @@ impl EventStore {
                 workspace_root,
                 created_at_ms,
                 status,
+                mode,
                 runs,
             });
         }

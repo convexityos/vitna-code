@@ -5,6 +5,7 @@ import { shortDigest } from './text';
 
 interface BarProps {
   sessionTitle: string;
+  sessionMode?: string;
   isSample: boolean;
   link: LinkState;
   activeView: ViewName;
@@ -54,6 +55,7 @@ export function Bar(props: BarProps) {
           onClick={() => props.onView('session')}
         >
           <span className="tab-title">{props.sessionTitle}</span>
+          {props.sessionMode === 'inspect' ? <span className="tab-tag">inspect (read-only)</span> : null}
           {props.isSample ? <span className="tab-tag">sample</span> : null}
         </button>
         {props.receiptOpen ? (
