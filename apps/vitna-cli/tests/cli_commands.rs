@@ -2161,6 +2161,326 @@ fn verify_store_recomputes_event_chain_and_detects_tampering_cli() {
     let _ = fs::remove_dir_all(&base);
 }
 
+#[test]
+fn policy_init_verify_and_live_run_enforcement_cli() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let base = temp_dir("policy_cli");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    let policy_path = base.join("corp-policy.json");
+
+    // 1. Create a signed model policy permitting vitna-runtime lane `vitna/code` under `guarded` sandbox.
+    let init = run_vitna(
+        &[
+            "policy",
+            "init",
+            "--out",
+            policy_path.to_str().unwrap(),
+            "--policy-id",
+            "corp-code-v1",
+            "--allow-provider",
+            "vitna-runtime",
+            "--lane",
+            "vitna/code=vitna-runtime:vitna/code",
+            "--required-sandbox",
+            "guarded",
+            "--ttl-secs",
+            "3600",
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        init.status.success(),
+        "vitna policy init failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&init.stdout),
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let init_doc: Value = serde_json::from_slice(&init.stdout).unwrap();
+    let pub_key = init_doc["public_key"].as_str().unwrap().to_string();
+    let policy_digest = init_doc["policy_digest"].as_str().unwrap().to_string();
+    assert_eq!(policy_digest.len(), 64);
+
+    // 2. Verify allowed route succeeds.
+    let verify_ok = run_vitna(
+        &[
+            "policy",
+            "verify",
+            policy_path.to_str().unwrap(),
+            "--key",
+            &pub_key,
+            "--provider",
+            "vitna-runtime",
+            "--model",
+            "vitna/code",
+            "--sandbox-guarantee",
+            "guarded",
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        verify_ok.status.success(),
+        "vitna policy verify failed: {}",
+        String::from_utf8_lossy(&verify_ok.stderr)
+    );
+    let verify_doc: Value = serde_json::from_slice(&verify_ok.stdout).unwrap();
+    assert_eq!(verify_doc["valid"], true);
+    assert_eq!(verify_doc["route_checked"], true);
+    assert_eq!(verify_doc["policy_digest"], policy_digest);
+
+    // 3. Disallowed provider and sandbox downgrade fail closed.
+    let bad_provider = run_vitna(
+        &[
+            "policy",
+            "verify",
+            policy_path.to_str().unwrap(),
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-5",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!bad_provider.status.success());
+
+    let bad_sandbox = run_vitna(
+        &[
+            "policy",
+            "verify",
+            policy_path.to_str().unwrap(),
+            "--sandbox-guarantee",
+            "full_access",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!bad_sandbox.status.success());
+
+    // 4. Live `vitna run --runtime-url ... --lane vitna/code --policy ...` enforces policy
+    //    and stamps `model_selection.policy_digest` into the signed receipt.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock runtime");
+    let addr = listener.local_addr().unwrap();
+    let handle = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 8192];
+            let _ = stream.read(&mut buf);
+            let body = serde_json::json!({
+                "id": "chatcmpl-policy-1",
+                "object": "chat.completion",
+                "model": "vitna/code",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Policy-enforced turn completed."
+                    },
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": 8,
+                    "completion_tokens": 5,
+                    "total_tokens": 13
+                }
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    let runtime_url = format!("http://{addr}");
+
+    // Disallowed lane fails closed BEFORE touching the runtime server.
+    let refused_lane = run_vitna(
+        &[
+            "run",
+            "should fail",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--runtime-url",
+            &runtime_url,
+            "--lane",
+            "unapproved/lane",
+            "--policy",
+            policy_path.to_str().unwrap(),
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!refused_lane.status.success());
+
+    // `--allow-unsandboxed` under a `guarded` policy fails closed BEFORE touching the runtime server.
+    let refused_unsandboxed = run_vitna(
+        &[
+            "run",
+            "should fail unsandboxed",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--runtime-url",
+            &runtime_url,
+            "--lane",
+            "vitna/code",
+            "--allow-unsandboxed",
+            "--policy",
+            policy_path.to_str().unwrap(),
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!refused_unsandboxed.status.success());
+
+    // Approved route succeeds and stamps `policy_digest` on the signed receipt.
+    let allowed = run_vitna(
+        &[
+            "run",
+            "summarize workspace",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--runtime-url",
+            &runtime_url,
+            "--lane",
+            "vitna/code",
+            "--policy",
+            policy_path.to_str().unwrap(),
+        ],
+        &home,
+        &ws,
+    );
+    let _ = handle.join();
+    assert!(
+        allowed.status.success(),
+        "policy-approved vitna run failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&allowed.stdout),
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+
+    let receipt_path = fs::read_dir(ws.join(".vitna").join("receipts"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+        .expect("signed receipt");
+    let receipt: VitnaRunReceiptV1 =
+        serde_json::from_str(&fs::read_to_string(&receipt_path).unwrap()).unwrap();
+    assert_eq!(
+        receipt.model_selection.policy_digest.as_deref(),
+        Some(policy_digest.as_str())
+    );
+
+    // 5. Tampered policy fails `vitna policy verify` fail-closed.
+    let tampered_raw = fs::read_to_string(&policy_path)
+        .unwrap()
+        .replace("guarded", "full_access");
+    fs::write(&policy_path, tampered_raw).unwrap();
+    let tampered = run_vitna(&["policy", "verify", policy_path.to_str().unwrap()], &home, &ws);
+    assert!(!tampered.status.success());
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn local_first_offline_lifecycle_without_network_cli() {
+    let base = temp_dir("local_first_offline");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    // Force every proxy env var to an unreachable loopback port so any unexpected
+    // outbound cloud/network attempt would fail immediately.
+    let run_offline = |args: &[&str]| -> Output {
+        Command::new(vitna_bin())
+            .args(args)
+            .current_dir(&ws)
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("HTTP_PROXY", "http://127.0.0.1:1")
+            .env("HTTPS_PROXY", "http://127.0.0.1:1")
+            .env("ALL_PROXY", "http://127.0.0.1:1")
+            .env("NO_PROXY", "")
+            .output()
+            .expect("spawn vitna offline")
+    };
+
+    // 1. Local execution, SQLite event log, runner journal, and Ed25519 receipt signing.
+    let run = run_offline(&[
+        "run",
+        "Create offline.txt",
+        "--workspace",
+        ws.to_str().unwrap(),
+        "--auto-approve",
+    ]);
+    assert!(
+        run.status.success(),
+        "offline vitna run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    // 2. Receipt listing + offline signature and SQLite Merkle chain audit.
+    let listed = run_offline(&["receipt", "list", "--workspace", ws.to_str().unwrap(), "--json"]);
+    assert!(listed.status.success());
+    let listed_doc: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(listed_doc["count"], 1);
+    let rel_path = listed_doc["receipts"][0]["path"].as_str().unwrap();
+    let receipt_abs = ws.join(rel_path);
+    let store_abs = ws.join(".vitna").join("store.db");
+
+    let verify = run_offline(&[
+        "verify",
+        receipt_abs.to_str().unwrap(),
+        "--store",
+        store_abs.to_str().unwrap(),
+        "--require-signature",
+        "--json",
+    ]);
+    assert!(
+        verify.status.success(),
+        "offline vitna verify --store failed: {}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let verify_doc: Value = serde_json::from_slice(&verify.stdout).unwrap();
+    assert_eq!(verify_doc["overall_valid"], true);
+    assert_eq!(verify_doc["event_store"]["matched"], true);
+
+    // 3. Offline signed model policy init + verify.
+    let policy_file = base.join("offline-policy.json");
+    assert!(run_offline(&["policy", "init", "--out", policy_file.to_str().unwrap()]).status.success());
+    assert!(run_offline(&["policy", "verify", policy_file.to_str().unwrap()]).status.success());
+
+    // 4. Offline am/1 mandate init + verify.
+    let mandate_file = base.join("offline-mandate.json");
+    assert!(run_offline(&["mandate", "init", "--out", mandate_file.to_str().unwrap()]).status.success());
+    assert!(run_offline(&["mandate", "verify", mandate_file.to_str().unwrap()]).status.success());
+
+    // 5. Offline workspace skills init + lockfile verification.
+    assert!(run_offline(&[
+        "skills",
+        "init",
+        "offline-skill",
+        "--workspace",
+        ws.to_str().unwrap(),
+        "--write-lock",
+    ])
+    .status
+    .success());
+    assert!(run_offline(&["skills", "verify", "--workspace", ws.to_str().unwrap()]).status.success());
+
+    let _ = fs::remove_dir_all(&base);
+}
+
 
 
 

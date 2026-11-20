@@ -77,6 +77,9 @@ enum Commands {
         /// Path to a `vitna-mandate-config-v1` JSON file enforcing an `am/1` Agent Mandate chain.
         #[arg(long)]
         mandate: Option<PathBuf>,
+        /// Path to a signed `vitna-model-policy-v1` JSON file enforcing allowed providers, lanes, and sandbox guarantee.
+        #[arg(long)]
+        policy: Option<PathBuf>,
         /// Optional SQLite store path (defaults to <workspace>/.vitna/store.db).
         #[arg(long)]
         store: Option<PathBuf>,
@@ -294,6 +297,59 @@ enum Commands {
         /// Optional path to write the live-stamped JSON benchmark report.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create and verify Ed25519-signed model policies (vitna-model-policy-v1)
+    Policy {
+        #[command(subcommand)]
+        sub: PolicyCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PolicyCommands {
+    /// Generate and sign a `vitna-model-policy-v1` JSON file using this device's Ed25519 key
+    Init {
+        /// Output JSON file path for the signed model policy.
+        #[arg(long)]
+        out: PathBuf,
+        /// Policy identifier (defaults to `policy-<unix-secs>`).
+        #[arg(long)]
+        policy_id: Option<String>,
+        /// Permitted provider name (`anthropic`, `openai`, `vitna-runtime`, `vitna-anchor`). Repeatable.
+        #[arg(long = "allow-provider", value_name = "PROVIDER")]
+        allowed_providers: Vec<String>,
+        /// Permitted lane spec (`LANE=PROVIDER:MODEL_SKU`). Repeatable.
+        #[arg(long = "lane", value_name = "LANE=PROVIDER:MODEL")]
+        lanes: Vec<String>,
+        /// Minimum required sandbox guarantee (`read_only`, `guarded`, `strong`, `full_access`).
+        #[arg(long, default_value = "guarded")]
+        required_sandbox: String,
+        /// Validity window in seconds from now.
+        #[arg(long, default_value_t = 86400)]
+        ttl_secs: u64,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify a signed `vitna-model-policy-v1` file and optionally test a route/sandbox against it
+    Verify {
+        /// Path to the signed `vitna-model-policy-v1` JSON file.
+        policy_file: PathBuf,
+        /// Optional expected 64-char hex Ed25519 public key that must have signed the policy.
+        #[arg(long)]
+        key: Option<String>,
+        /// Optional provider name to check against `allowed_providers` and `lanes`.
+        #[arg(long)]
+        provider: Option<String>,
+        /// Optional model SKU or lane name to check against `lanes` (requires --provider).
+        #[arg(long)]
+        model: Option<String>,
+        /// Optional sandbox guarantee (`read_only`, `guarded`, `strong`, `full_access`) to enforce.
+        #[arg(long = "sandbox-guarantee")]
+        sandbox_guarantee: Option<String>,
         /// Emit machine-readable JSON output.
         #[arg(long)]
         json: bool,
@@ -563,6 +619,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             sandbox_guarantee,
             sandbox_image,
             mandate,
+            policy,
             store,
         }) => {
             let has_live_flags = runtime_url.is_some()
@@ -589,6 +646,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     sandbox_guarantee,
                     sandbox_image,
                     mandate,
+                    policy,
                     auto_approve,
                     verify_cmd,
                     allow_unsandboxed,
@@ -604,9 +662,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 || sandbox_guarantee.is_some()
                 || sandbox_image.is_some()
                 || mandate.is_some()
+                || policy.is_some()
             {
                 eprintln!(
-                    "vitna run: --mcp-http, --mcp-stdio, --allow-egress, --sandbox-guarantee, --sandbox-image, and --mandate require a model route (--runtime-url/--lane or --provider/--model)."
+                    "vitna run: --mcp-http, --mcp-stdio, --allow-egress, --sandbox-guarantee, --sandbox-image, --mandate, and --policy require a model route (--runtime-url/--lane or --provider/--model)."
                 );
                 std::process::exit(1);
             } else {
@@ -898,6 +957,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
+        Some(Commands::Policy { sub }) => match sub {
+            PolicyCommands::Init {
+                out,
+                policy_id,
+                allowed_providers,
+                lanes,
+                required_sandbox,
+                ttl_secs,
+                json,
+            } => {
+                if let Err(e) = commands::run_policy_init(commands::PolicyInitOptions {
+                    out: &out,
+                    policy_id: policy_id.as_deref(),
+                    allowed_providers,
+                    lanes,
+                    required_sandbox: &required_sandbox,
+                    ttl_secs,
+                    as_json: json,
+                }) {
+                    eprintln!("vitna policy init: {e}");
+                    std::process::exit(1);
+                }
+            }
+            PolicyCommands::Verify {
+                policy_file,
+                key,
+                provider,
+                model,
+                sandbox_guarantee,
+                json,
+            } => {
+                if let Err(e) = commands::run_policy_verify(
+                    &policy_file,
+                    key.as_deref(),
+                    provider.as_deref(),
+                    model.as_deref(),
+                    sandbox_guarantee.as_deref(),
+                    json,
+                ) {
+                    eprintln!("vitna policy verify: {e}");
+                    std::process::exit(1);
+                }
+            }
+        },
         Some(Commands::Receipt { sub }) => match sub {
             ReceiptCommands::List { workspace, json } => {
                 if let Err(e) = commands::run_receipt_list(&workspace, json) {
