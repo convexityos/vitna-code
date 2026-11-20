@@ -801,6 +801,45 @@ impl App {
                     Ask::Nothing
                 };
             }
+            if cmd_name == "export" {
+                let level = if arg.is_empty() {
+                    "standard".to_string()
+                } else {
+                    arg.to_ascii_lowercase()
+                };
+                if !matches!(level.as_str(), "none" | "standard" | "strict") {
+                    self.notice = Some(
+                        "Usage: /export [none|standard|strict] (defaults to standard)."
+                            .to_string(),
+                    );
+                    return Ask::Nothing;
+                }
+                let file_name = self.ledger.as_ref().and_then(|ledger| {
+                    let idx = match self.screen {
+                        Screen::Run(i) => i,
+                        Screen::Home => self.selected,
+                    };
+                    ledger.entries.get(idx).map(|entry| match entry {
+                        crate::ledger::Entry::Run(r) => r.file.clone(),
+                        crate::ledger::Entry::Unreadable(u) => u.file.clone(),
+                    })
+                });
+                self.draft.clear();
+                self.cursor = 0;
+                let Some(file_name) = file_name else {
+                    self.notice = Some("No receipt selected to export.".to_string());
+                    return Ask::Nothing;
+                };
+                match crate::ledger::export_receipt(&self.root, &file_name, &level) {
+                    Ok(rel_path) => {
+                        self.notice = Some(format!("Exported {file_name} ({level}) -> {rel_path}"));
+                    }
+                    Err(e) => {
+                        self.notice = Some(format!("Export failed: {}", clean(&e)));
+                    }
+                }
+                return Ask::Nothing;
+            }
         }
 
         if matches!(self.link, Link::Open { .. }) && self.session_id.is_some() {
@@ -937,7 +976,7 @@ impl App {
                     }
                     other => {
                         self.notice = Some(format!(
-                            "Unknown command /{other}. Commands: /mode, /receipt, /steer, /pause, /resume, /cancel, /spawn, /apply."
+                            "Unknown command /{other}. Commands: /mode, /receipt, /export, /steer, /pause, /resume, /cancel, /spawn, /apply."
                         ));
                         return Ask::Nothing;
                     }
@@ -1461,6 +1500,100 @@ mod tests {
         }
         assert_eq!(a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Ask::Nothing);
         assert_eq!(a.screen, Screen::Run(1));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_slash_command_redacts_and_strips_signature_offline() {
+        let dir = std::env::temp_dir().join(format!(
+            "vitna_tui_export_cmd_{}",
+            std::process::id()
+        ));
+        let receipts = dir.join(".vitna").join("receipts");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&receipts).unwrap();
+
+        let key = vitna_receipts::generate_signing_key();
+        let mut receipt = vitna_receipts::VitnaRunReceiptV1 {
+            schema_version: "vitna-run-receipt-v1".to_string(),
+            run_id: "run-export-1".to_string(),
+            session_id: "sess-export".to_string(),
+            workspace_fingerprint: "secret-workspace-fp".to_string(),
+            base_commit_sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string(),
+            model_selection: vitna_receipts::ModelSelectionRecord {
+                provider: "fake".to_string(),
+                model_sku: "m".to_string(),
+                routing_reason: "r".to_string(),
+                policy_digest: None,
+            },
+            event_hash_chain_root: "root".to_string(),
+            isolation_label: "guarded".to_string(),
+            completion_state: "completed_with_evidence".to_string(),
+            evidence_items: vec![vitna_receipts::EvidenceItemRecord {
+                evidence_id: "ev-1".to_string(),
+                grade: "runner_verified".to_string(),
+                description: "secret test output".to_string(),
+                artifact_digest: Some("abc123".to_string()),
+            }],
+            changeset: vitna_receipts::ChangeSetRecord {
+                files_modified: vec![vitna_receipts::FileModificationRecord {
+                    path: "private/secret/app.rs".to_string(),
+                    preimage_hash: "0".repeat(64),
+                    postimage_hash: "1".repeat(64),
+                }],
+                diff_digest: "d".to_string(),
+            },
+            runner_execution_statements: vec![],
+            egress_calls: vec![],
+            child_receipt_roots: vec![],
+            device_public_key: Some(hex::encode(key.verifying_key().to_bytes())),
+            mandate_provenance: None,
+            device_signature: String::new(),
+        };
+        receipt.sign(&key).unwrap();
+        std::fs::write(
+            receipts.join("run-export-1.json"),
+            serde_json::to_string_pretty(&receipt).unwrap(),
+        )
+        .unwrap();
+
+        let mut a = App::new(dir.clone());
+        a.update(Update::Ledger(crate::ledger::read(&dir)));
+
+        // Standard export (default when no arg given) redacts paths and strips signature.
+        for c in "/export".chars() {
+            a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Ask::Nothing);
+        let std_path = dir.join(".vitna/exports/run-export-1-standard.json");
+        let std_doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&std_path).unwrap()).unwrap();
+        assert_eq!(std_doc["redaction"], "standard");
+        assert_eq!(std_doc["signature_stripped"], true);
+        assert_eq!(std_doc["receipt"]["device_signature"], "");
+        assert_eq!(
+            std_doc["receipt"]["changeset"]["files_modified"][0]["path"],
+            "<redacted>/app.rs"
+        );
+
+        // Strict export also strips file basenames and evidence descriptions.
+        for c in "/export strict".chars() {
+            a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert_eq!(a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Ask::Nothing);
+        let strict_path = dir.join(".vitna/exports/run-export-1-strict.json");
+        let strict_doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&strict_path).unwrap()).unwrap();
+        assert_eq!(strict_doc["redaction"], "strict");
+        assert_eq!(
+            strict_doc["receipt"]["changeset"]["files_modified"][0]["path"],
+            "redacted-file-0"
+        );
+        assert_eq!(
+            strict_doc["receipt"]["evidence_items"][0]["description"],
+            "[REDACTED]"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

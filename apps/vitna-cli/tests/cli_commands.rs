@@ -1689,6 +1689,153 @@ fn sessions_and_resume_surface_persisted_mode_cli() {
     let _ = fs::remove_dir_all(&base);
 }
 
+#[test]
+fn verify_provenance_bundle_cli_audits_checkpoint_and_envelopes() {
+    let base = temp_dir("verify_bundle");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    // 1. Write a local checkpoint file and compute its exact SHA-256.
+    let ckpt = base.join("model.gguf");
+    fs::write(&ckpt, b"local-checkpoint-weights-v1").unwrap();
+    let ckpt_sha = vitna_receipt_verify::compute_checkpoint_digest(&ckpt).unwrap();
+
+    // 2. Mint a signed receipt embedding that checkpoint SHA-256 in policy_digest.
+    let key = vitna_receipts::generate_signing_key();
+    let pub_hex = hex::encode(key.verifying_key().to_bytes());
+    let mut receipt = VitnaRunReceiptV1 {
+        schema_version: "vitna-run-receipt-v1".to_string(),
+        run_id: "run-bundle-01".to_string(),
+        session_id: "sess-bundle-01".to_string(),
+        workspace_fingerprint: "ws-fp".to_string(),
+        base_commit_sha: "0".repeat(40),
+        model_selection: vitna_receipts::ModelSelectionRecord {
+            provider: "vitna-anchor".to_string(),
+            model_sku: "qwen3-coder".to_string(),
+            routing_reason: "vitna_anchor:qwen3-coder".to_string(),
+            policy_digest: Some(ckpt_sha),
+        },
+        event_hash_chain_root: "root-hash".to_string(),
+        isolation_label: "guarded".to_string(),
+        completion_state: "completed_with_evidence".to_string(),
+        evidence_items: vec![],
+        changeset: vitna_receipts::ChangeSetRecord {
+            files_modified: vec![],
+            diff_digest: "diff".to_string(),
+        },
+        runner_execution_statements: vec![],
+        egress_calls: vec![],
+        child_receipt_roots: vec![],
+        device_public_key: Some(pub_hex.clone()),
+        mandate_provenance: None,
+        device_signature: String::new(),
+    };
+    receipt.sign(&key).unwrap();
+    let receipt_path = base.join("receipt.json");
+    fs::write(&receipt_path, serde_json::to_string_pretty(&receipt).unwrap()).unwrap();
+
+    // 3. Write one healthy DataEnvelope and one degraded DataEnvelope.
+    let fresh_env = base.join("fresh_envelope.json");
+    fs::write(
+        &fresh_env,
+        serde_json::json!({
+            "data": { "price": 123.45 },
+            "meta": {
+                "data_as_of": "2026-11-19T20:00:00Z",
+                "source": "convexity-api",
+                "sync_status": "healthy"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let stale_env = base.join("stale_envelope.json");
+    fs::write(
+        &stale_env,
+        serde_json::json!({
+            "data": null,
+            "meta": {
+                "data_as_of": null,
+                "source": "convexity-api",
+                "sync_status": "failed"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // Happy path: receipt + key + checkpoint + fresh DataEnvelope + --strict-freshness --json.
+    let ok = run_vitna(
+        &[
+            "verify",
+            receipt_path.to_str().unwrap(),
+            "--key",
+            &pub_hex,
+            "--checkpoint",
+            ckpt.to_str().unwrap(),
+            "--envelope",
+            fresh_env.to_str().unwrap(),
+            "--strict-freshness",
+            "--require-signature",
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        ok.status.success(),
+        "vitna verify bundle failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&ok.stdout),
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&ok.stdout).unwrap();
+    assert_eq!(doc["audit"]["overall_valid"], true);
+    assert_eq!(doc["audit"]["receipt"]["signature_verified"], true);
+    assert_eq!(doc["audit"]["checkpoint"]["matched"], true);
+    assert_eq!(doc["audit"]["envelopes"][0]["is_valid"], true);
+
+    // Degraded DataEnvelope under --strict-freshness must fail non-zero.
+    let bad_env = run_vitna(
+        &[
+            "verify",
+            receipt_path.to_str().unwrap(),
+            "--key",
+            &pub_hex,
+            "--checkpoint",
+            ckpt.to_str().unwrap(),
+            "--envelope",
+            stale_env.to_str().unwrap(),
+            "--strict-freshness",
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!bad_env.status.success());
+
+    // Tampered checkpoint must fail non-zero.
+    fs::write(&ckpt, b"tampered-weights").unwrap();
+    let bad_ckpt = run_vitna(
+        &[
+            "verify",
+            receipt_path.to_str().unwrap(),
+            "--key",
+            &pub_hex,
+            "--checkpoint",
+            ckpt.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!bad_ckpt.status.success());
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+
 
 
 

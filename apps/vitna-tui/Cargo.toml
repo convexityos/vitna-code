@@ -19,12 +19,13 @@ vitna-git-workspaces.workspace = true
 # The offline verifier, so a receipt on disk is read and checked by the same
 # code `vitna verify` runs, rather than by a second parser in this crate.
 vitna-receipt-verify.workspace = true
+vitna-receipts.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+hex.workspace = true
 vitna-daemon.workspace = true
 vitna-providers.workspace = true
-vitna-receipts.workspace = true
 vitna-runner.workspace = true
 vitna-store.workspace = true
 
