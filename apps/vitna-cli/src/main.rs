@@ -132,7 +132,7 @@ enum Commands {
         #[command(subcommand)]
         sub: ReceiptCommands,
     },
-    /// Verify an exported receipt file independently
+    /// Verify an exported receipt file (and optional checkpoint / DataEnvelope provenance bundle)
     Verify {
         receipt_file: String,
         /// The public key (hex) the receipt must be signed with. Without it,
@@ -140,6 +140,22 @@ enum Commands {
         /// receipt signed elsewhere is reported as such, not failed.
         #[arg(long)]
         key: Option<String>,
+        /// Optional local `vitna-anchor` checkpoint file or model directory to cross-check
+        /// against `receipt.model_selection.policy_digest`.
+        #[arg(long)]
+        checkpoint: Option<PathBuf>,
+        /// Optional Convexity API `DataEnvelope` JSON file(s) to audit alongside the receipt. Repeatable.
+        #[arg(long = "envelope", value_name = "PATH")]
+        envelopes: Vec<PathBuf>,
+        /// Fail verification if any audited `DataEnvelope` is degraded, stale, or missing freshness metadata.
+        #[arg(long)]
+        strict_freshness: bool,
+        /// Fail verification unless the Ed25519 device signature is cryptographically verified.
+        #[arg(long)]
+        require_signature: bool,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
     },
     /// Check local environment, guarded & strong sandboxes, keychain, skills, mandate, and daemon health
     Doctor {
@@ -479,8 +495,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
-        Some(Commands::Verify { receipt_file, key }) => {
-            run_verify(&receipt_file, key.as_deref())?;
+        Some(Commands::Verify {
+            receipt_file,
+            key,
+            checkpoint,
+            envelopes,
+            strict_freshness,
+            require_signature,
+            json,
+        }) => {
+            run_verify(
+                &receipt_file,
+                key.as_deref(),
+                checkpoint.as_deref(),
+                &envelopes,
+                strict_freshness,
+                require_signature,
+                json,
+            )?;
         }
         Some(Commands::Run {
             task,
@@ -1023,7 +1055,15 @@ async fn run_app(
     }
 }
 
-fn run_verify(receipt_path: &str, key: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+fn run_verify(
+    receipt_path: &str,
+    key: Option<&str>,
+    checkpoint: Option<&Path>,
+    envelopes: &[PathBuf],
+    strict_freshness: bool,
+    require_signature: bool,
+    as_json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(receipt_path);
     if !path.exists() {
         eprintln!("Error: Receipt file does not exist: {}", receipt_path);
@@ -1038,6 +1078,122 @@ fn run_verify(receipt_path: &str, key: Option<&str>) -> Result<(), Box<dyn std::
             std::process::exit(1);
         }
     };
+
+    let device_key = vitna_daemon::launch::vitna_home()
+        .ok()
+        .and_then(|home| vitna_daemon::key::public_key_in(&home).ok().flatten());
+
+    let use_bundle = checkpoint.is_some()
+        || !envelopes.is_empty()
+        || strict_freshness
+        || require_signature
+        || as_json;
+
+    if use_bundle {
+        let resolved_key = match key {
+            Some(given) => Some(given.to_string()),
+            None => match &device_key {
+                Some(pub_key) => {
+                    if require_signature {
+                        Some(pub_key.clone())
+                    } else {
+                        // Only pass this machine's device key automatically if it
+                        // actually signed this receipt, so foreign receipts still
+                        // verify checkpoints and envelopes cleanly unless
+                        // --require-signature was asked for.
+                        let matches_local = vitna_receipt_verify::ReceiptVerifier::verify_receipt(
+                            &verified.receipt,
+                            Some(pub_key),
+                        )
+                        .map(|rep| rep.signature_verified)
+                        .unwrap_or(false);
+                        if matches_local {
+                            Some(pub_key.clone())
+                        } else {
+                            None
+                        }
+                    }
+                }
+                None => None,
+            },
+        };
+
+        let audit = vitna_receipt_verify::verify_provenance_bundle(
+            &vitna_receipt_verify::ProvenanceAuditOptions {
+                receipt_path: path.to_path_buf(),
+                public_key_hex: resolved_key,
+                require_signature: require_signature || key.is_some(),
+                checkpoint_path: checkpoint.map(Path::to_path_buf),
+                envelope_paths: envelopes.to_vec(),
+                strict_freshness,
+            },
+        )?;
+
+        if as_json {
+            let out = serde_json::json!({
+                "receipt_file": receipt_path,
+                "run_id": verified.receipt.run_id,
+                "session_id": verified.receipt.session_id,
+                "model": verified.receipt.model_selection,
+                "isolation_label": verified.receipt.isolation_label,
+                "completion_state": verified.receipt.completion_state,
+                "audit": audit,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        } else {
+            let r = &verified.receipt;
+            println!(
+                "{}",
+                if audit.overall_valid {
+                    "Provenance Bundle Verification PASSED"
+                } else {
+                    "Provenance Bundle Verification FAILED"
+                }
+            );
+            println!("=====================================");
+            println!("Run ID:            {}", r.run_id);
+            println!("Session ID:        {}", r.session_id);
+            println!("Model:             {} ({})", r.model_selection.model_sku, r.model_selection.provider);
+            println!("Canonical SHA-256: {}", audit.canonical_sha256);
+            println!(
+                "Device Signature:  {}",
+                if audit.receipt.signature_verified {
+                    "verified"
+                } else {
+                    "not verified"
+                }
+            );
+            if let Some(cp) = &audit.checkpoint {
+                println!(
+                    "Checkpoint:        {} ({})",
+                    if cp.matched { "MATCHED" } else { "MISMATCH" },
+                    cp.path
+                );
+            }
+            if !audit.envelopes.is_empty() {
+                println!("DataEnvelopes:     {} audited", audit.envelopes.len());
+                for env in &audit.envelopes {
+                    println!(
+                        "  - {} [{}] {}",
+                        env.source_file,
+                        if env.is_valid { "OK" } else { "FAIL" },
+                        env.citation
+                    );
+                }
+            }
+            if !audit.errors.is_empty() {
+                println!("Errors:");
+                for err in &audit.errors {
+                    println!("  - {err}");
+                }
+            }
+        }
+
+        if !audit.overall_valid {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     // verify_receipt_json returns Ok for a receipt it found faults in, so the
     // verdict is report.is_valid and not the absence of an error.
@@ -1065,10 +1221,7 @@ fn run_verify(receipt_path: &str, key: Option<&str>) -> Result<(), Box<dyn std::
             "verified against the key given".to_string()
         }
         None => {
-            let device = vitna_daemon::launch::vitna_home()
-                .ok()
-                .and_then(|home| vitna_daemon::key::public_key_in(&home).ok().flatten());
-            match device {
+            match device_key {
                 None => "not checked: this account has no device key to check it against, and no --key was given"
                     .to_string(),
                 Some(public) => {

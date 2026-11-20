@@ -187,6 +187,134 @@ pub fn read(root: &Path) -> Ledger {
     Ledger { entries, trouble }
 }
 
+/// Exports a single receipt from `<root>/.vitna/receipts/<file_name>` to
+/// `<root>/.vitna/exports/<stem>-<redaction>.json`, refusing symlinks and
+/// stripping `device_signature` / `device_public_key` whenever signed fields
+/// are redacted (`standard` or `strict`).
+pub fn export_receipt(
+    root: &Path,
+    file_name: &str,
+    redaction: &str,
+) -> Result<String, String> {
+    let bare_name = file_name
+        .strip_prefix(".vitna/receipts/")
+        .unwrap_or(file_name);
+    if bare_name.is_empty()
+        || bare_name.contains('/')
+        || bare_name.contains('\\')
+        || bare_name.contains("..")
+    {
+        return Err("invalid receipt filename".to_string());
+    }
+    if !matches!(redaction, "none" | "standard" | "strict") {
+        return Err(format!(
+            "unsupported redaction level '{redaction}': expected none, standard, or strict"
+        ));
+    }
+
+    let vitna_dir = root.join(".vitna");
+    if let Ok(meta) = fs::symlink_metadata(&vitna_dir) {
+        if meta.file_type().is_symlink() {
+            return Err(".vitna is a symlink and will not be followed".to_string());
+        }
+    }
+    let rdir = receipts_dir(root);
+    if let Ok(meta) = fs::symlink_metadata(&rdir) {
+        if meta.file_type().is_symlink() {
+            return Err(".vitna/receipts is a symlink and will not be followed".to_string());
+        }
+    }
+
+    let src = rdir.join(bare_name);
+    let meta = fs::symlink_metadata(&src)
+        .map_err(|e| format!("cannot inspect receipt {bare_name}: {e}"))?;
+    if meta.file_type().is_symlink() {
+        return Err("receipt path is a symlink and will not be followed".to_string());
+    }
+    if !meta.is_file() {
+        return Err("receipt path is not a regular file".to_string());
+    }
+    if meta.len() > MAX_BYTES {
+        return Err("receipt exceeds maximum readable size".to_string());
+    }
+
+    let mut raw = String::new();
+    fs::File::open(&src)
+        .and_then(|f| f.take(MAX_BYTES + 1).read_to_string(&mut raw))
+        .map_err(|e| format!("cannot read receipt {bare_name}: {e}"))?;
+
+    let mut receipt: vitna_receipts::VitnaRunReceiptV1 =
+        serde_json::from_str(&raw).map_err(|e| format!("receipt is not valid JSON: {e}"))?;
+
+    let exported = match redaction {
+        "none" => raw,
+        "standard" => {
+            receipt.workspace_fingerprint = "[REDACTED]".to_string();
+            receipt.base_commit_sha = "[REDACTED]".to_string();
+            for f in &mut receipt.changeset.files_modified {
+                let basename = Path::new(&f.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "file".to_string());
+                f.path = format!("<redacted>/{basename}");
+            }
+            receipt.device_signature.clear();
+            receipt.device_public_key = None;
+            let envelope = serde_json::json!({
+                "redaction": "standard",
+                "signature_stripped": true,
+                "note": "Redacted receipts cannot carry the original device signature because signed fields were modified.",
+                "receipt": receipt,
+            });
+            serde_json::to_string_pretty(&envelope).map_err(|e| e.to_string())?
+        }
+        "strict" => {
+            receipt.workspace_fingerprint = "[REDACTED]".to_string();
+            receipt.base_commit_sha = "[REDACTED]".to_string();
+            for (idx, f) in receipt.changeset.files_modified.iter_mut().enumerate() {
+                f.path = format!("redacted-file-{idx}");
+            }
+            for ev in &mut receipt.evidence_items {
+                ev.description = "[REDACTED]".to_string();
+                ev.artifact_digest = None;
+            }
+            receipt.device_signature.clear();
+            receipt.device_public_key = None;
+            let envelope = serde_json::json!({
+                "redaction": "strict",
+                "signature_stripped": true,
+                "note": "Strictly redacted receipts strip paths, evidence descriptions, artifact digests, and the original device signature.",
+                "receipt": receipt,
+            });
+            serde_json::to_string_pretty(&envelope).map_err(|e| e.to_string())?
+        }
+        _ => unreachable!(),
+    };
+
+    let exports_dir = vitna_dir.join("exports");
+    if let Ok(meta) = fs::symlink_metadata(&exports_dir) {
+        if meta.file_type().is_symlink() {
+            return Err(".vitna/exports is a symlink and will not be written to".to_string());
+        }
+    }
+    fs::create_dir_all(&exports_dir)
+        .map_err(|e| format!("could not create .vitna/exports: {e}"))?;
+
+    let stem = Path::new(file_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("receipt");
+    let out_name = format!("{stem}-{redaction}.json");
+    let out_path = exports_dir.join(&out_name);
+    if let Ok(meta) = fs::symlink_metadata(&out_path) {
+        if meta.file_type().is_symlink() {
+            return Err("export destination is a symlink and will not be overwritten".to_string());
+        }
+    }
+    fs::write(&out_path, exported).map_err(|e| format!("could not write export: {e}"))?;
+    Ok(format!(".vitna/exports/{out_name}"))
+}
+
 fn read_one(path: &Path, name: &str) -> Entry {
     let file = clean(name);
     let unreadable = |written, reason: String| {
