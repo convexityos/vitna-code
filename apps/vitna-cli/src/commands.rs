@@ -544,6 +544,106 @@ pub fn verify_event_store_merkle(store_path: &Path, receipt: &VitnaRunReceiptV1)
     audit
 }
 
+/// Cryptographic audit result checking a signed `VitnaRunReceiptV1` against a
+/// signed `vitna-model-policy-v1` policy file.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PolicyReceiptAudit {
+    pub policy_path: String,
+    pub matched: bool,
+    pub policy_id: Option<String>,
+    pub expected_policy_digest: Option<String>,
+    pub receipt_policy_digest: Option<String>,
+    pub digest_matched: bool,
+    pub route_and_sandbox_allowed: bool,
+    pub errors: Vec<String>,
+}
+
+/// Verifies a signed `vitna-model-policy-v1` policy file (Ed25519 signature and
+/// expiry) and checks that the receipt's `(provider, model_sku, isolation_label)`
+/// and `model_selection.policy_digest` satisfy the policy fail-closed.
+pub fn verify_receipt_against_policy(
+    policy_path: &Path,
+    receipt: &VitnaRunReceiptV1,
+) -> PolicyReceiptAudit {
+    let mut audit = PolicyReceiptAudit {
+        policy_path: policy_path.display().to_string(),
+        matched: false,
+        policy_id: None,
+        expected_policy_digest: None,
+        receipt_policy_digest: receipt.model_selection.policy_digest.clone(),
+        digest_matched: false,
+        route_and_sandbox_allowed: false,
+        errors: Vec::new(),
+    };
+
+    let raw = match fs::read_to_string(policy_path) {
+        Ok(s) => s,
+        Err(e) => {
+            audit
+                .errors
+                .push(format!("could not read model policy {}: {e}", policy_path.display()));
+            return audit;
+        }
+    };
+
+    let policy: vitna_policy::SignedModelPolicy = match serde_json::from_str(&raw) {
+        Ok(p) => p,
+        Err(e) => {
+            audit
+                .errors
+                .push(format!("invalid model policy {}: {e}", policy_path.display()));
+            return audit;
+        }
+    };
+    audit.policy_id = Some(policy.policy_id.clone());
+
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let digest = match policy.verify_for_use(now_secs, None) {
+        Ok(d) => d,
+        Err(e) => {
+            audit.errors.push(e);
+            return audit;
+        }
+    };
+    audit.expected_policy_digest = Some(digest.clone());
+
+    match policy.enforce(
+        now_secs,
+        None,
+        &receipt.model_selection.provider,
+        &receipt.model_selection.model_sku,
+        &receipt.isolation_label,
+    ) {
+        Ok(_) => audit.route_and_sandbox_allowed = true,
+        Err(e) => audit.errors.push(e),
+    }
+
+    match receipt.model_selection.policy_digest.as_deref() {
+        Some(stamped) if stamped.eq_ignore_ascii_case(&digest) => {
+            audit.digest_matched = true;
+        }
+        Some(stamped) => {
+            audit.errors.push(format!(
+                "receipt policy_digest {} does not match model policy digest {}",
+                short_hash(stamped),
+                short_hash(&digest)
+            ));
+        }
+        None => {
+            audit
+                .errors
+                .push("receipt is missing model_selection.policy_digest".to_string());
+        }
+    }
+
+    audit.matched = audit.route_and_sandbox_allowed && audit.digest_matched && audit.errors.is_empty();
+    audit
+}
+
 /// `vitna receipt show <run_id>`
 pub fn run_receipt_show(
     run_id: &str,
@@ -2775,11 +2875,12 @@ pub fn run_mandate_verify(
     Ok(())
 }
 
-/// `vitna doctor [--workspace <dir>] [--sandbox-image <img_ref>] [--mandate <file>] [--json]`
+/// `vitna doctor [--workspace <dir>] [--sandbox-image <img_ref>] [--mandate <file>] [--policy <file>] [--json]`
 pub async fn run_doctor_audit(
     workspace: &Path,
     sandbox_image: Option<&str>,
     mandate_file: Option<&Path>,
+    policy_file: Option<&Path>,
     as_json: bool,
 ) -> Result<(), String> {
     use vitna_providers::{CredentialError, CredentialResolver, KeyringStore, ProviderId};
@@ -2902,6 +3003,25 @@ pub async fn run_doctor_audit(
         Err(e) => Err(e),
     });
 
+    let policy_check = policy_file.map(|path| {
+        let raw = fs::read_to_string(path)
+            .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        let policy: vitna_policy::SignedModelPolicy = serde_json::from_str(&raw)
+            .map_err(|e| format!("invalid model policy {}: {e}", path.display()))?;
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let digest = policy.verify_for_use(now_secs, None)?;
+        Ok::<_, String>((
+            policy.policy_id,
+            digest,
+            policy.required_sandbox_guarantee,
+            policy.allowed_providers,
+            policy.lanes.len(),
+        ))
+    });
+
     if as_json {
         let out = json!({
             "os": os,
@@ -2936,6 +3056,21 @@ pub async fn run_doctor_audit(
                     "root_jti": root_jti,
                     "chain_hash": chain_hash,
                     "priced_tools": priced,
+                }),
+                Some(Err(reason)) => json!({
+                    "valid": false,
+                    "error": reason,
+                }),
+                None => Value::Null,
+            },
+            "policy": match &policy_check {
+                Some(Ok((policy_id, digest, required_sandbox, providers, lane_count))) => json!({
+                    "valid": true,
+                    "policy_id": policy_id,
+                    "policy_digest": digest,
+                    "required_sandbox_guarantee": required_sandbox,
+                    "allowed_providers": providers,
+                    "lanes": lane_count,
                 }),
                 Some(Err(reason)) => json!({
                     "valid": false,
@@ -3027,11 +3162,29 @@ pub async fn run_doctor_audit(
                 }
             }
         }
+        if let Some(res) = &policy_check {
+            match res {
+                Ok((policy_id, digest, required_sandbox, providers, lane_count)) => {
+                    println!(
+                        "[OK] Model Policy: verified ({}, sandbox>={required_sandbox}, providers={}, lanes={lane_count}, digest={})",
+                        sanitize_public_id(policy_id),
+                        providers.join(","),
+                        short_hash(digest)
+                    );
+                }
+                Err(reason) => {
+                    println!("[FAIL] Model Policy: {reason}");
+                }
+            }
+        }
         println!("\nDoctor audit complete.");
     }
 
     if let Some(Err(reason)) = mandate_check {
         return Err(format!("mandate audit failed: {reason}"));
+    }
+    if let Some(Err(reason)) = policy_check {
+        return Err(format!("model policy audit failed: {reason}"));
     }
     Ok(())
 }

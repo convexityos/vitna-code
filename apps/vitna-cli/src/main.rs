@@ -154,6 +154,10 @@ enum Commands {
         /// cryptographically verify the run's hash chain and Merkle root against `event_hash_chain_root`.
         #[arg(long)]
         store: Option<PathBuf>,
+        /// Optional signed `vitna-model-policy-v1` JSON file to verify against the receipt's
+        /// `model_selection.policy_digest`, provider/model, and isolation label.
+        #[arg(long)]
+        policy: Option<PathBuf>,
         /// Fail verification if any audited `DataEnvelope` is degraded, stale, or missing freshness metadata.
         #[arg(long)]
         strict_freshness: bool,
@@ -164,7 +168,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Check local environment, guarded & strong sandboxes, keychain, skills, mandate, and daemon health
+    /// Check local environment, guarded & strong sandboxes, keychain, skills, mandate, policy, and daemon health
     Doctor {
         /// Workspace folder to probe for sandbox and workspace skills health.
         #[arg(long, default_value = ".")]
@@ -175,6 +179,9 @@ enum Commands {
         /// Optional `vitna-mandate-config-v1` JSON file to verify during audit.
         #[arg(long)]
         mandate: Option<PathBuf>,
+        /// Optional signed `vitna-model-policy-v1` JSON file to verify during audit.
+        #[arg(long)]
+        policy: Option<PathBuf>,
         /// Emit machine-readable JSON output.
         #[arg(long)]
         json: bool,
@@ -228,6 +235,9 @@ enum Commands {
         /// Path to a `vitna-mandate-config-v1` JSON file enforcing an `am/1` Agent Mandate chain.
         #[arg(long)]
         mandate: Option<PathBuf>,
+        /// Path to a signed `vitna-model-policy-v1` JSON file enforcing allowed providers, lanes, and sandbox guarantee.
+        #[arg(long)]
+        policy: Option<PathBuf>,
     },
     /// Manage customer-held provider credentials in the OS keychain (never scans env vars)
     Auth {
@@ -565,12 +575,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             workspace,
             sandbox_image,
             mandate,
+            policy,
             json,
         }) => {
             if let Err(e) = commands::run_doctor_audit(
                 &workspace,
                 sandbox_image.as_deref(),
                 mandate.as_deref(),
+                policy.as_deref(),
                 json,
             )
             .await
@@ -585,6 +597,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             checkpoint,
             envelopes,
             store,
+            policy,
             strict_freshness,
             require_signature,
             json,
@@ -595,6 +608,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 checkpoint.as_deref(),
                 &envelopes,
                 store.as_deref(),
+                policy.as_deref(),
                 strict_freshness,
                 require_signature,
                 json,
@@ -745,6 +759,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             sandbox_guarantee,
             sandbox_image,
             mandate,
+            policy,
         }) => {
             if let Err(e) = serve(
                 endpoint,
@@ -761,6 +776,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sandbox_guarantee,
                 sandbox_image,
                 mandate,
+                policy,
             )
             .await
             {
@@ -1068,6 +1084,7 @@ async fn serve(
     sandbox_guarantee: Option<String>,
     sandbox_image: Option<String>,
     mandate: Option<PathBuf>,
+    policy: Option<PathBuf>,
 ) -> Result<(), String> {
     vitna_daemon::launch::logging();
     let launch = vitna_daemon::launch::Launch::resolve(endpoint, store)?
@@ -1077,7 +1094,8 @@ async fn serve(
         .with_mcp_servers(mcp_http, mcp_stdio)?
         .with_egress_allowlist(allow_egress)?
         .with_sandbox(sandbox_guarantee, sandbox_image)?
-        .with_mandate(mandate)?;
+        .with_mandate(mandate)?
+        .with_policy(policy)?;
     let announce = launch.endpoint.clone();
     vitna_daemon::launch::run(&launch, move || {
         // Printed once the endpoint is bound, so it is true when it is read.
@@ -1219,6 +1237,7 @@ fn run_verify(
     checkpoint: Option<&Path>,
     envelopes: &[PathBuf],
     store: Option<&Path>,
+    policy: Option<&Path>,
     strict_freshness: bool,
     require_signature: bool,
     as_json: bool,
@@ -1245,6 +1264,7 @@ fn run_verify(
     let use_bundle = checkpoint.is_some()
         || !envelopes.is_empty()
         || store.is_some()
+        || policy.is_some()
         || strict_freshness
         || require_signature
         || as_json;
@@ -1295,7 +1315,10 @@ fn run_verify(
             .as_ref()
             .map(|e| e.matched)
             .unwrap_or(true);
-        let overall_valid = audit.overall_valid && event_store_ok;
+        let policy_audit =
+            policy.map(|p| commands::verify_receipt_against_policy(p, &verified.receipt));
+        let policy_ok = policy_audit.as_ref().map(|p| p.matched).unwrap_or(true);
+        let overall_valid = audit.overall_valid && event_store_ok && policy_ok;
 
         if as_json {
             let out = serde_json::json!({
@@ -1308,6 +1331,7 @@ fn run_verify(
                 "overall_valid": overall_valid,
                 "audit": audit,
                 "event_store": event_store_audit,
+                "policy": policy_audit,
             });
             println!("{}", serde_json::to_string_pretty(&out)?);
         } else {
@@ -1352,6 +1376,19 @@ fn run_verify(
                     es.store_path
                 );
             }
+            if let Some(pa) = &policy_audit {
+                let pid = pa
+                    .policy_id
+                    .as_deref()
+                    .map(commands::sanitize_public_id)
+                    .unwrap_or_else(|| "unknown".to_string());
+                println!(
+                    "Model Policy:      {} ({}, {})",
+                    if pa.matched { "MATCHED" } else { "MISMATCH" },
+                    pid,
+                    pa.policy_path
+                );
+            }
             if !audit.envelopes.is_empty() {
                 println!("DataEnvelopes:     {} audited", audit.envelopes.len());
                 for env in &audit.envelopes {
@@ -1371,6 +1408,11 @@ fn run_verify(
                     event_store_audit
                         .iter()
                         .flat_map(|es| es.errors.iter().map(String::as_str)),
+                )
+                .chain(
+                    policy_audit
+                        .iter()
+                        .flat_map(|pa| pa.errors.iter().map(String::as_str)),
                 )
                 .collect();
             if !combined_errors.is_empty() {

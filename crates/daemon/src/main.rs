@@ -86,6 +86,10 @@ struct Args {
     /// Path to a `vitna-mandate-config-v1` JSON file enforcing an `am/1` Agent Mandate chain.
     #[arg(long)]
     mandate: Option<std::path::PathBuf>,
+
+    /// Path to a signed `vitna-model-policy-v1` JSON file enforcing allowed providers, lanes, and sandbox guarantee.
+    #[arg(long)]
+    policy: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -109,7 +113,8 @@ async fn run() -> Result<(), String> {
         .with_mcp_servers(args.mcp_http, args.mcp_stdio)?
         .with_egress_allowlist(args.allow_egress)?
         .with_sandbox(args.sandbox_guarantee, args.sandbox_image)?
-        .with_mandate(args.mandate)?;
+        .with_mandate(args.mandate)?
+        .with_policy(args.policy)?;
 
     let announce = launch.endpoint.clone();
     launch::run(&launch, move || {
