@@ -1835,6 +1835,194 @@ fn verify_provenance_bundle_cli_audits_checkpoint_and_envelopes() {
     let _ = fs::remove_dir_all(&base);
 }
 
+#[test]
+fn receipt_list_verifies_and_sorts_workspace_receipts_cli() {
+    let base = temp_dir("receipt_list");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    // 1. Empty workspace succeeds with count 0.
+    let empty = run_vitna(
+        &["receipt", "list", "--workspace", ws.to_str().unwrap(), "--json"],
+        &home,
+        &ws,
+    );
+    assert!(
+        empty.status.success(),
+        "empty receipt list failed: {}",
+        String::from_utf8_lossy(&empty.stderr)
+    );
+    let empty_doc: Value = serde_json::from_slice(&empty.stdout).unwrap();
+    assert_eq!(empty_doc["count"], 0);
+    assert_eq!(empty_doc["receipts"].as_array().unwrap().len(), 0);
+
+    // 2. Write two signed receipts, one tampered receipt, and one unreadable JSON file.
+    write_signed_receipt(&ws, "run-1001", Vec::new(), Vec::new());
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    write_signed_receipt(
+        &ws,
+        "run-1002",
+        vec![FileModificationRecord {
+            path: "src/lib.rs".to_string(),
+            preimage_hash: NULL_HASH.to_string(),
+            postimage_hash: sha256_hex(b"pub fn ok() {}"),
+        }],
+        Vec::new(),
+    );
+
+    let (mut tampered, _) = write_signed_receipt(&ws, "run-1003-tampered", Vec::new(), Vec::new());
+    tampered.isolation_label = "strong".to_string(); // invalidates Ed25519 signature
+    fs::write(
+        ws.join(".vitna/receipts/run-1003-tampered.json"),
+        serde_json::to_string_pretty(&tampered).unwrap(),
+    )
+    .unwrap();
+    fs::write(ws.join(".vitna/receipts/corrupt.json"), b"{not valid json").unwrap();
+
+    let listed = run_vitna(
+        &["receipt", "list", "--workspace", ws.to_str().unwrap(), "--json"],
+        &home,
+        &ws,
+    );
+    assert!(
+        listed.status.success(),
+        "receipt list --json failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&listed.stdout),
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let doc: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(doc["count"], 3);
+    let receipts = doc["receipts"].as_array().unwrap();
+    let invalid = doc["invalid"].as_array().unwrap();
+    assert_eq!(invalid.len(), 1);
+    assert!(invalid[0]["path"].as_str().unwrap().ends_with("corrupt.json"));
+
+    let by_id = |id: &str| {
+        receipts
+            .iter()
+            .find(|r| r["run_id"] == id)
+            .unwrap_or_else(|| panic!("missing receipt {id} in {doc}"))
+    };
+    assert_eq!(by_id("run-1001")["is_valid"], true);
+    assert_eq!(by_id("run-1001")["signature_status"], "verified_embedded_key");
+    assert_eq!(by_id("run-1002")["is_valid"], true);
+    assert_eq!(by_id("run-1002")["files_modified"], 1);
+    assert_eq!(by_id("run-1003-tampered")["is_valid"], false);
+    assert_eq!(
+        by_id("run-1003-tampered")["signature_status"],
+        "invalid_signature"
+    );
+
+    // Human output surfaces both OK and INVALID rows plus corrupt files.
+    let human = run_vitna(
+        &["receipt", "list", "--workspace", ws.to_str().unwrap()],
+        &home,
+        &ws,
+    );
+    assert!(human.status.success());
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.contains("[OK] run-1002"));
+    assert!(stdout.contains("[INVALID] run-1003-tampered"));
+    assert!(stdout.contains("corrupt.json"));
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn skills_init_scaffolds_verifies_and_rejects_traversal_cli() {
+    let base = temp_dir("skills_init");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    // 1. Reject traversal and invalid skill names fail-closed.
+    for bad_name in ["../escape", "nested/skill", "UpperCase", "-leading-dash"] {
+        let res = run_vitna(
+            &["skills", "init", bad_name, "--workspace", ws.to_str().unwrap()],
+            &home,
+            &ws,
+        );
+        assert!(
+            !res.status.success(),
+            "expected bad skill name '{bad_name}' to fail"
+        );
+    }
+
+    // 2. Scaffold a valid skill and pin lockfile in one command.
+    let init = run_vitna(
+        &[
+            "skills",
+            "init",
+            "code-review",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--description",
+            "Audit pull requests for regressions",
+            "--write-lock",
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        init.status.success(),
+        "vitna skills init failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&init.stdout),
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let init_doc: Value = serde_json::from_slice(&init.stdout).unwrap();
+    assert_eq!(init_doc["name"], "code-review");
+    assert_eq!(
+        init_doc["description"],
+        "Audit pull requests for regressions"
+    );
+    assert_eq!(
+        init_doc["source_path"],
+        ".vitna/skills/code-review/SKILL.md"
+    );
+    assert_eq!(init_doc["sha256_digest"].as_str().unwrap().len(), 64);
+    assert!(init_doc["lock_path"].as_str().unwrap().ends_with("skills.lock.json"));
+
+    // 3. Duplicate init refuses to overwrite existing skill.
+    let dup = run_vitna(
+        &["skills", "init", "code-review", "--workspace", ws.to_str().unwrap()],
+        &home,
+        &ws,
+    );
+    assert!(!dup.status.success());
+    assert!(String::from_utf8_lossy(&dup.stderr).contains("already exists"));
+
+    // 4. `vitna skills verify` and `vitna skills list` succeed against the scaffolded skill.
+    let verify = run_vitna(
+        &["skills", "verify", "--workspace", ws.to_str().unwrap(), "--json"],
+        &home,
+        &ws,
+    );
+    assert!(
+        verify.status.success(),
+        "vitna skills verify failed: {}",
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let verify_doc: Value = serde_json::from_slice(&verify.stdout).unwrap();
+    assert_eq!(verify_doc["verified"], true);
+    assert_eq!(verify_doc["skills_verified"], 1);
+
+    let list = run_vitna(
+        &["skills", "list", "--workspace", ws.to_str().unwrap(), "--json"],
+        &home,
+        &ws,
+    );
+    assert!(list.status.success());
+    let list_doc: Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(list_doc["skills"].as_array().unwrap().len(), 1);
+    assert_eq!(list_doc["skills"][0]["name"], "code-review");
+
+    let _ = fs::remove_dir_all(&base);
+}
+
 
 
 

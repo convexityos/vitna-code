@@ -158,6 +158,225 @@ fn verify_signature_summary(
     }
 }
 
+const MAX_RECEIPT_LIST_BYTES: usize = 4 * 1024 * 1024;
+
+/// `vitna receipt list [--workspace <path>] [--json]`
+pub fn run_receipt_list(workspace: &Path, as_json: bool) -> Result<(), String> {
+    let files = WorkspaceFiles::open(workspace)
+        .map_err(|e| format!("could not open workspace {}: {e}", workspace.display()))?;
+
+    let entries = match files.list(".vitna/receipts", false) {
+        Ok(entries) => entries,
+        Err(FileError::Missing) => {
+            if as_json {
+                let out = json!({
+                    "workspace": workspace.display().to_string(),
+                    "count": 0,
+                    "receipts": [],
+                    "invalid": [],
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+                );
+            } else {
+                println!("No receipts found under .vitna/receipts.");
+            }
+            return Ok(());
+        }
+        Err(e) => return Err(format!("could not list .vitna/receipts: {e}")),
+    };
+
+    let local_device_key = vitna_daemon::launch::vitna_home()
+        .ok()
+        .and_then(|home| vitna_daemon::key::public_key_in(&home).ok().flatten());
+
+    struct ListedReceipt {
+        run_id: String,
+        path: String,
+        modified_at_ms: u64,
+        is_valid: bool,
+        signature_status: String,
+        completion_state: String,
+        isolation_label: String,
+        model_sku: String,
+        provider: String,
+        files_modified: usize,
+        evidence_count: usize,
+        mandate_spent: Option<String>,
+        errors: Vec<String>,
+    }
+
+    let mut rows: Vec<ListedReceipt> = Vec::new();
+    let mut invalid: Vec<Value> = Vec::new();
+
+    for entry in entries {
+        if entry.kind != EntryKind::File || !entry.name.ends_with(".json") {
+            continue;
+        }
+        let rel = format!(".vitna/receipts/{}", entry.name);
+        let bytes = match files.read(&rel) {
+            Ok(b) => b,
+            Err(e) => {
+                invalid.push(json!({ "path": rel, "error": e.to_string() }));
+                continue;
+            }
+        };
+        if bytes.len() > MAX_RECEIPT_LIST_BYTES {
+            invalid.push(json!({
+                "path": rel,
+                "error": format!("receipt exceeds {} byte limit", MAX_RECEIPT_LIST_BYTES),
+            }));
+            continue;
+        }
+        let receipt: VitnaRunReceiptV1 = match serde_json::from_slice(&bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                invalid.push(json!({ "path": rel, "error": format!("parse error: {e}") }));
+                continue;
+            }
+        };
+
+        let modified_at_ms = fs::symlink_metadata(workspace.join(&rel))
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let structural = ReceiptVerifier::verify_receipt(&receipt, None)
+            .map_err(|e| format!("verification error on {rel}: {e}"))?;
+        let mut errors = structural.errors;
+
+        let signature_status = if receipt.device_signature.is_empty() {
+            "unsigned".to_string()
+        } else if let Some(ref embedded_pk) = receipt.device_public_key {
+            let sig_report = ReceiptVerifier::verify_receipt(&receipt, Some(embedded_pk))
+                .map_err(|e| format!("signature check error on {rel}: {e}"))?;
+            if sig_report.signature_verified {
+                if local_device_key.as_deref() == Some(embedded_pk.as_str()) {
+                    "verified_local_device".to_string()
+                } else {
+                    "verified_embedded_key".to_string()
+                }
+            } else {
+                errors.extend(sig_report.errors);
+                "invalid_signature".to_string()
+            }
+        } else if let Some(ref local_pk) = local_device_key {
+            let sig_report = ReceiptVerifier::verify_receipt(&receipt, Some(local_pk))
+                .map_err(|e| format!("signature check error on {rel}: {e}"))?;
+            if sig_report.signature_verified {
+                "verified_local_device".to_string()
+            } else {
+                "unverified_external_key".to_string()
+            }
+        } else {
+            "unverified_no_key".to_string()
+        };
+
+        let is_valid = errors.is_empty();
+        let mandate_spent = receipt
+            .mandate_provenance
+            .as_ref()
+            .map(|m| format!("{} {}", m.total_spent, m.currency));
+
+        rows.push(ListedReceipt {
+            run_id: receipt.run_id,
+            path: rel,
+            modified_at_ms,
+            is_valid,
+            signature_status,
+            completion_state: receipt.completion_state,
+            isolation_label: receipt.isolation_label,
+            model_sku: receipt.model_selection.model_sku,
+            provider: receipt.model_selection.provider,
+            files_modified: receipt.changeset.files_modified.len(),
+            evidence_count: receipt.evidence_items.len(),
+            mandate_spent,
+            errors,
+        });
+    }
+
+    // Sort newest first, with deterministic tie-breakers on run_id and path.
+    rows.sort_by(|a, b| {
+        b.modified_at_ms
+            .cmp(&a.modified_at_ms)
+            .then_with(|| b.run_id.cmp(&a.run_id))
+            .then_with(|| b.path.cmp(&a.path))
+    });
+
+    if as_json {
+        let json_rows: Vec<Value> = rows
+            .iter()
+            .map(|r| {
+                json!({
+                    "run_id": r.run_id,
+                    "path": r.path,
+                    "modified_at_ms": r.modified_at_ms,
+                    "is_valid": r.is_valid,
+                    "signature_status": r.signature_status,
+                    "completion_state": r.completion_state,
+                    "isolation_label": r.isolation_label,
+                    "model_sku": r.model_sku,
+                    "provider": r.provider,
+                    "files_modified": r.files_modified,
+                    "evidence_count": r.evidence_count,
+                    "mandate_spent": r.mandate_spent,
+                    "errors": r.errors,
+                })
+            })
+            .collect();
+        let out = json!({
+            "workspace": workspace.display().to_string(),
+            "count": json_rows.len(),
+            "receipts": json_rows,
+            "invalid": invalid,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
+    println!("Vitna Workspace Receipts ({})", workspace.display());
+    println!("-------------------------------------------");
+    if rows.is_empty() && invalid.is_empty() {
+        println!("No receipts found under .vitna/receipts.");
+        return Ok(());
+    }
+    for r in &rows {
+        let status = if r.is_valid { "OK" } else { "INVALID" };
+        let mandate_part = r
+            .mandate_spent
+            .as_deref()
+            .map(|m| format!(" mandate={m}"))
+            .unwrap_or_default();
+        write_stdout_line(&format!(
+            "- [{}] {} | {} ({}) | isolation={} | files={} | evidence={} | sig={}{}",
+            status,
+            sanitize_public_id(&r.run_id),
+            r.model_sku,
+            r.provider,
+            r.isolation_label,
+            r.files_modified,
+            r.evidence_count,
+            r.signature_status,
+            mandate_part,
+        ));
+    }
+    if !invalid.is_empty() {
+        println!("Unreadable or refused receipt files:");
+        for item in &invalid {
+            let p = item["path"].as_str().unwrap_or("<unknown>");
+            let err = item["error"].as_str().unwrap_or("unknown error");
+            write_stdout_line(&format!("  ! {p}: {err}"));
+        }
+    }
+    Ok(())
+}
+
 /// `vitna receipt show <run_id>`
 pub fn run_receipt_show(
     run_id: &str,
@@ -1505,6 +1724,162 @@ pub fn run_auth_clear(provider_name: &str) -> Result<(), String> {
             "No stored API key found for {} in {}.",
             provider.as_str(),
             store.name()
+        );
+    }
+    Ok(())
+}
+
+/// Validates a workspace skill identifier (`[a-z0-9][a-z0-9_-]{0,63}`).
+/// Rejects path traversal, separators, uppercase, whitespace, and YAML metacharacters.
+pub fn validate_skill_name(raw: &str) -> Result<&str, String> {
+    if raw.is_empty() || raw.len() > 64 {
+        return Err(
+            "skill name must be 1 to 64 characters matching [a-z0-9][a-z0-9_-]*".to_string(),
+        );
+    }
+    let bytes = raw.as_bytes();
+    if !(bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit()) {
+        return Err(format!(
+            "invalid skill name '{}': must start with a lowercase ASCII letter or digit",
+            sanitize_public_id(raw)
+        ));
+    }
+    for &b in &bytes[1..] {
+        if !(b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_') {
+            return Err(format!(
+                "invalid skill name '{}': only lowercase ASCII letters, digits, '-' and '_' are allowed",
+                sanitize_public_id(raw)
+            ));
+        }
+    }
+    Ok(raw)
+}
+
+/// `vitna skills init <name> [--workspace <path>] [--description <text>] [--write-lock] [--json]`
+pub fn run_skills_init(
+    raw_name: &str,
+    workspace: &Path,
+    description_arg: Option<&str>,
+    write_lock: bool,
+    as_json: bool,
+) -> Result<(), String> {
+    use vitna_skills::{SkillLock, SkillRegistry};
+
+    let name = validate_skill_name(raw_name)?;
+    let description = match description_arg {
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err("skill --description cannot be empty".to_string());
+            }
+            if trimmed.contains('\n') || trimmed.contains('\r') {
+                return Err("skill --description must be a single line".to_string());
+            }
+            if trimmed.len() > 240 {
+                return Err("skill --description must be 240 characters or fewer".to_string());
+            }
+            trimmed.to_string()
+        }
+        None => format!("Workspace skill guidance for {name}"),
+    };
+
+    let files = WorkspaceFiles::open(workspace)
+        .map_err(|e| format!("could not open workspace {}: {e}", workspace.display()))?;
+    let rel_path = format!(".vitna/skills/{name}/SKILL.md");
+
+    match files.read(&rel_path) {
+        Ok(_) => {
+            return Err(format!(
+                "skill '{name}' already exists at {rel_path}; refusing to overwrite"
+            ));
+        }
+        Err(FileError::Missing) => {}
+        Err(FileError::Refused(reason)) => {
+            return Err(format!("refusing to scaffold {rel_path}: {reason}"));
+        }
+        Err(e) => {
+            return Err(format!("could not check existing {rel_path}: {e}"));
+        }
+    }
+
+    let content = format!(
+        "---\n\
+         name: {name}\n\
+         description: {description}\n\
+         version: 0.1.0\n\
+         ---\n\
+         \n\
+         # {name}\n\
+         \n\
+         Describe the workflow, conventions, and verification steps for this skill.\n\
+         \n\
+         ## Trust Boundary\n\
+         \n\
+         This skill is Trust Level 5 (Repository Content). It provides prompt guidance\n\
+         only and cannot widen execution policy, bypass sandbox isolation, or skip\n\
+         exact-action approvals.\n"
+    );
+
+    files
+        .write(&rel_path, ABSENT_PREIMAGE_HASH, content.as_bytes())
+        .map_err(|e| format!("could not create {rel_path}: {e}"))?;
+
+    let registry = SkillRegistry::discover_in_workspace(workspace)
+        .map_err(|e| format!("failed to verify scaffolded skill in {}: {e}", workspace.display()))?;
+    let manifest = registry.get(name).ok_or_else(|| {
+        format!("scaffolded {rel_path} did not parse cleanly during skill discovery")
+    })?;
+
+    let mut lock_written: Option<String> = None;
+    if write_lock {
+        if !registry.refused().is_empty() {
+            let reasons: Vec<String> = registry
+                .refused()
+                .iter()
+                .map(|r| format!("{}: {}", r.path, r.reason))
+                .collect();
+            return Err(format!(
+                "refused to write skill lock because workspace contains {} refused skill path(s): {}",
+                reasons.len(),
+                reasons.join("; ")
+            ));
+        }
+        let lock_path = workspace.join(".vitna").join("skills.lock.json");
+        let lock = SkillLock::from_manifests(registry.skills());
+        let body = serde_json::to_string_pretty(&lock).map_err(|e| e.to_string())?;
+        fs::write(&lock_path, body)
+            .map_err(|e| format!("could not write lockfile {}: {e}", lock_path.display()))?;
+        lock_written = Some(lock_path.display().to_string());
+    }
+
+    if as_json {
+        let out = json!({
+            "name": manifest.name,
+            "description": manifest.description,
+            "version": manifest.version,
+            "source_path": manifest.source_path,
+            "sha256_digest": manifest.sha256_digest,
+            "lock_path": lock_written,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "Created workspace skill '{}' at {} [sha256:{}].",
+        manifest.name,
+        manifest.source_path,
+        short_hash(&manifest.sha256_digest)
+    );
+    if let Some(lock_path) = lock_written {
+        println!("Updated skill lockfile: {lock_path}");
+    } else {
+        println!(
+            "Pin it to a lockfile with: vitna skills verify --workspace {} --write-lock",
+            workspace.display()
         );
     }
     Ok(())

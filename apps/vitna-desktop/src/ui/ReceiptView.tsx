@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState, type DragEvent } from 'react';
 import { loadSample } from '../app/transportChoice';
 import { EVIDENCE_GRADES, readReceipt, type Receipt } from '../receipt/receipt';
+import { exportFilename, formatReceiptExport, type RedactionLevel } from '../receipt/redact';
 import { checkDeviceSignature, signatureShape, type SignatureCheck } from '../receipt/verify';
 import { shortDigest } from './text';
 import { completionWord, gradeWord, isolationWord } from './words';
@@ -24,6 +25,7 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
   const [signature, setSignature] = useState<SignatureCheck | null>(null);
   const [dragging, setDragging] = useState(false);
   const [sampleNote, setSampleNote] = useState('');
+  const [exportNote, setExportNote] = useState('');
   const inputId = useId();
   const keyId = useId();
 
@@ -46,6 +48,7 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
 
   const loadFile = async (file: File) => {
     setFileError('');
+    setExportNote('');
     if (file.size > MAX_RECEIPT_BYTES) {
       setFileError(`${file.name} is ${Math.round(file.size / 1024)} KB, larger than any receipt this reader opens.`);
       return;
@@ -73,6 +76,27 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
     setKey(built.publicKeyHex);
     setSource('sample receipt, signed in this window a moment ago');
     setSampleNote('Edit any signed field in the text and the signature check fails.');
+    setExportNote('');
+  };
+
+  const downloadExport = (level: RedactionLevel) => {
+    if (!receipt) return;
+    const payload = formatReceiptExport(receipt, text, level);
+    const filename = exportFilename(receipt.run_id, level);
+    const blob = new Blob([payload], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setExportNote(
+      level === 'none'
+        ? `Exported verbatim signed receipt (${filename}).`
+        : `Exported ${level}-redacted receipt with signature stripped (${filename}).`,
+    );
   };
 
   return (
@@ -140,6 +164,21 @@ export function ReceiptView({ isSample }: ReceiptViewProps) {
             placeholder="64 hex characters. Without it the signature is not checked."
             onChange={(e) => setKey(e.target.value)}
           />
+
+          {receipt ? (
+            <div className="receipt-sample" aria-label="Export receipt">
+              <button type="button" className="pill pill-small" onClick={() => downloadExport('none')}>
+                Export verbatim
+              </button>
+              <button type="button" className="pill pill-small" onClick={() => downloadExport('standard')}>
+                Export standard redacted
+              </button>
+              <button type="button" className="pill pill-small" onClick={() => downloadExport('strict')}>
+                Export strict redacted
+              </button>
+              {exportNote ? <span className="faint">{exportNote}</span> : null}
+            </div>
+          ) : null}
 
           {loadSample ? (
             <div className="receipt-sample">
