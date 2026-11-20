@@ -819,6 +819,7 @@ pub struct LiveRunOptions<'a> {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub base_url: Option<String>,
+    pub checkpoint: Option<PathBuf>,
     pub mcp_http: Vec<String>,
     pub mcp_stdio: Vec<String>,
     pub allow_egress: Vec<String>,
@@ -827,12 +828,14 @@ pub struct LiveRunOptions<'a> {
     pub allow_unsandboxed: bool,
 }
 
-/// Runs a live model-driven agent turn via either a local `vitna-runtime` lane
-/// or a direct OS-keychain provider route (`anthropic` / `openai`), wiring
-/// Trust Level 5 workspace skills and any attached MCP servers.
+/// Runs a live model-driven agent turn via a local `vitna-runtime` lane, a
+/// local `vitna-anchor` server, or a direct OS-keychain provider route
+/// (`anthropic` / `openai`), wiring Trust Level 5 workspace skills and any
+/// attached MCP servers.
 pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
     use vitna_providers::{
-        AnthropicProvider, CredentialResolver, KeyringStore, OpenAIProvider, Provider, ProviderId,
+        AnchorConfig, AnthropicProvider, CredentialResolver, KeyringStore, OpenAIProvider,
+        Provider, ProviderId, VitnaAnchorProvider,
     };
 
     // Reuse Launch's exact route, MCP server, and egress allowlist validation so
@@ -843,6 +846,7 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
     )?
     .with_runtime(opts.runtime_url, opts.lane)?
     .with_direct_provider(opts.provider, opts.model, opts.base_url)?
+    .with_checkpoint(opts.checkpoint)?
     .with_mcp_servers(opts.mcp_http, opts.mcp_stdio)?
     .with_egress_allowlist(opts.allow_egress)?;
 
@@ -857,12 +861,13 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
     let daemon = DaemonServer::open_with_key_in(&db_path, &home)?;
 
     let telemetry = daemon.telemetry();
-    let (provider, model_sku, provider_name, routing_reason, route_label): (
+    let (provider, model_sku, provider_name, routing_reason, route_label, policy_digest): (
         Arc<dyn Provider>,
         String,
         String,
         String,
         String,
+        Option<String>,
     ) = if let Some(lane) = &launch.route {
         let p: Arc<dyn Provider> =
             Arc::new(RuntimeLaneProvider::new(lane.clone()).with_telemetry(telemetry));
@@ -872,6 +877,7 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
             RUNTIME_PROVIDER_NAME.to_string(),
             format!("runtime_lane:{}", lane.lane),
             format!("{} (lane: {})", lane.endpoint, lane.lane),
+            None,
         )
     } else if let Some(direct) = &launch.direct {
         let provider_id = direct.provider;
@@ -899,6 +905,31 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
             provider_id.as_str().to_string(),
             format!("direct_keychain:{}", provider_id.as_str()),
             format!("{} ({})", provider_id.as_str(), direct.model),
+            None,
+        )
+    } else if let Some(anchor) = &launch.anchor {
+        let mut cfg = AnchorConfig::default().with_base_url(&anchor.base_url);
+        if let Some(cp) = &anchor.checkpoint_path {
+            cfg = cfg.with_checkpoint_path(cp);
+        }
+        let adapter = VitnaAnchorProvider::new(cfg)?;
+        let checkpoint_digest = if anchor.checkpoint_path.is_some() {
+            let att = adapter.build_attestation().await?;
+            att.checkpoint_sha256
+        } else {
+            match adapter.build_attestation().await {
+                Ok(att) => att.checkpoint_sha256,
+                Err(_) => None,
+            }
+        };
+        let p: Arc<dyn Provider> = Arc::new(adapter);
+        (
+            p,
+            anchor.model.clone(),
+            "vitna-anchor".to_string(),
+            format!("vitna_anchor:{}", anchor.model),
+            format!("{} (vitna-anchor: {})", anchor.base_url, anchor.model),
+            checkpoint_digest,
         )
     } else {
         return Err(
@@ -951,7 +982,8 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
     )
     .continuing_at(next_seq)
     .with_extra_tools(extra_tools)
-    .with_egress_allowlist(launch.egress_allowlist.clone());
+    .with_egress_allowlist(launch.egress_allowlist.clone())
+    .with_policy_digest(policy_digest);
     engine.routing_reason = routing_reason;
 
     let mut loaded_skill_names = Vec::new();

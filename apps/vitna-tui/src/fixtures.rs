@@ -65,6 +65,9 @@ fn run(
                 kind: k.clone(),
             })
             .collect(),
+        egress_calls: Vec::new(),
+        runner_statements: Vec::new(),
+        mandate_provenance: None,
         children: 0,
         signed: true,
         failed_checks: failed_checks.iter().map(|s| s.to_string()).collect(),

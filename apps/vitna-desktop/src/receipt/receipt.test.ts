@@ -168,4 +168,51 @@ describe('reading a receipt', () => {
     const reading = readReceipt(JSON.stringify(RUST_TEST_RECEIPT).replace('run-001', 'run-\\ud800'));
     expect(reading.schemaErrors).toEqual(['run_id is not valid Unicode']);
   });
+
+  it('reads and canonicalizes egress_calls without flagging them uncovered', () => {
+    const withEgress = {
+      ...RUST_TEST_RECEIPT,
+      egress_calls: [
+        {
+          target_domain: 'api.github.com',
+          method: 'GET',
+          redacted_url: 'https://api.github.com/repos/convexityos/vitna-code',
+          request_sha256: 'a'.repeat(64),
+          status_code: 200,
+          response_sha256: 'b'.repeat(64),
+          bytes_sent: 0,
+          bytes_received: 512,
+          latency_ms: 42,
+        },
+      ],
+    };
+    const reading = read(withEgress);
+    expect(reading.schemaErrors).toEqual([]);
+    expect(reading.rustMissing).toEqual([]);
+    expect(reading.uncovered).toEqual([]);
+    expect(reading.receipt?.egress_calls).toHaveLength(1);
+    const canonical = canonicalJson(signedValue(reading.receipt as Receipt));
+    expect(canonical).toContain('"egress_calls":[{"bytes_received":512,"bytes_sent":0,"latency_ms":42,"method":"GET","redacted_url":"https://api.github.com/repos/convexityos/vitna-code","request_sha256":');
+  });
+
+  it('rejects out-of-range egress status_code values', () => {
+    const bad = {
+      ...RUST_TEST_RECEIPT,
+      egress_calls: [
+        {
+          target_domain: '127.0.0.1',
+          method: 'GET',
+          redacted_url: 'http://127.0.0.1:8080/health',
+          request_sha256: 'a'.repeat(64),
+          status_code: 999,
+          response_sha256: 'b'.repeat(64),
+          bytes_sent: 0,
+          bytes_received: 2,
+          latency_ms: 1,
+        },
+      ],
+    };
+    const reading = read(bad);
+    expect(reading.schemaErrors).toContain('egress_calls[0].status_code 999 must be between 100 and 599');
+  });
 });

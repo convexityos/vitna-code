@@ -46,18 +46,22 @@ struct Args {
     #[arg(long)]
     lane: Option<String>,
 
-    /// Direct customer-held provider (`anthropic` or `openai`) using an API key
-    /// stored in the OS keychain (`vitna auth set <provider>`). Requires --model.
+    /// Model provider (`anthropic`, `openai`, or local `vitna-anchor`).
+    /// Anthropic/OpenAI keys are read strictly from the OS keychain (`vitna auth set`).
     #[arg(long)]
     provider: Option<String>,
 
-    /// Model SKU for --provider (for example `claude-sonnet-4-20250514` or `gpt-4o`).
+    /// Model SKU for --provider (for example `claude-sonnet-4-20250514`, `gpt-4o`, or `qwen3-coder`).
     #[arg(long)]
     model: Option<String>,
 
     /// Optional custom HTTP/HTTPS API endpoint override for --provider.
     #[arg(long)]
     base_url: Option<String>,
+
+    /// Local checkpoint file or directory hashed for `vitna-anchor` receipt attestation.
+    #[arg(long)]
+    checkpoint: Option<std::path::PathBuf>,
 
     /// Attach a Streamable HTTP MCP server (`<name>=<url>`). Repeatable.
     #[arg(long)]
@@ -89,6 +93,7 @@ async fn run() -> Result<(), String> {
     let launch = Launch::resolve(args.endpoint, args.store)?
         .with_runtime(args.runtime_url, args.lane)?
         .with_direct_provider(args.provider, args.model, args.base_url)?
+        .with_checkpoint(args.checkpoint)?
         .with_mcp_servers(args.mcp_http, args.mcp_stdio)?
         .with_egress_allowlist(args.allow_egress)?;
 

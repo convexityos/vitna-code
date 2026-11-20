@@ -166,16 +166,82 @@ fn strong_isolation_is_refused_rather_than_downgraded() {
     let workspace = temp_workspace("strong");
     let config = SandboxConfig::new(&workspace, SandboxGuarantee::Strong);
 
+    // Without an explicit pinned OCI image, strong isolation fails closed
+    // rather than guessing an image or downgrading to guarded.
     match plan(&config, "echo hello", &workspace) {
-        Err(PlanError::NotImplemented { reason }) => {
-            assert!(reason.contains("container") || reason.contains("VM"));
+        Err(PlanError::Unavailable { reason }) => {
+            assert!(
+                reason.contains("OCI container image"),
+                "unexpected refusal reason: {reason}"
+            );
         }
         other => panic!(
-            "strong isolation means a container or VM and none is implemented; \
-             serving it with something weaker is the lie this guards: {:?}",
+            "strong isolation without an explicit image must fail closed, got {:?}",
             other.map(|p| p.backend)
         ),
     }
+
+    // Even with an image, strong isolation either plans OciContainer or returns
+    // Unavailable, never Bubblewrap, Seatbelt, or AppContainer.
+    let with_image = config.with_container_image("alpine:3.20");
+    match plan(&with_image, "echo hello", &workspace) {
+        Ok(p) => assert_eq!(p.backend, vitna_sandbox::SandboxBackend::OciContainer),
+        Err(PlanError::Unavailable { reason }) => {
+            assert!(!reason.is_empty(), "unavailable strong backend must say why");
+        }
+        Err(other) => panic!("unexpected error for strong isolation: {:?}", other),
+    }
+
+    let _ = fs::remove_dir_all(&workspace);
+}
+
+#[test]
+fn test_oci_container_strong_args_enforce_isolation_and_protect_git() {
+    let workspace = temp_workspace("oci_strong");
+    fs::create_dir_all(workspace.join("sub")).unwrap();
+    fs::create_dir_all(workspace.join(".vitna")).unwrap();
+
+    let mut config =
+        SandboxConfig::new(&workspace, SandboxGuarantee::Strong).with_container_image("alpine:3.20");
+    let args = config
+        .generate_oci_container_args("podman", "alpine:3.20", "echo ok", &workspace.join("sub"))
+        .expect("valid oci args");
+
+    assert_eq!(args[0], "podman");
+    assert_eq!(args[1], "run");
+    assert!(args.contains(&"--rm".to_string()));
+    assert!(args.contains(&"--init".to_string()));
+    assert!(args.contains(&"--cap-drop=ALL".to_string()));
+    assert!(args.contains(&"--security-opt=no-new-privileges:true".to_string()));
+    assert!(args.contains(&"--read-only".to_string()));
+    assert!(args.contains(&"--network=none".to_string()));
+    assert!(args.iter().any(|a| a.starts_with("--memory=")));
+    assert!(args.iter().any(|a| a.starts_with("--pids-limit=")));
+    assert!(args.windows(2).any(|w| w[0] == "--workdir" && w[1] == "/workspace/sub"));
+    assert!(args
+        .iter()
+        .any(|a| a.contains("dst=/workspace/.git/config,readonly")));
+    assert!(args
+        .iter()
+        .any(|a| a.contains("dst=/workspace/.git/hooks,readonly")));
+    assert!(args
+        .iter()
+        .any(|a| a.contains("dst=/workspace/.vitna,readonly")));
+
+    // Allowing network removes --network=none.
+    config.allow_network = true;
+    let net_args = config
+        .generate_oci_container_args("docker", "alpine:3.20", "echo ok", &workspace)
+        .expect("valid oci args with net");
+    assert!(!net_args.contains(&"--network=none".to_string()));
+
+    // Flag-injection image names are refused.
+    assert!(config
+        .generate_oci_container_args("podman", "--privileged", "echo ok", &workspace)
+        .is_err());
+    assert!(config
+        .generate_oci_container_args("podman", "alpine latest", "echo ok", &workspace)
+        .is_err());
 
     let _ = fs::remove_dir_all(&workspace);
 }

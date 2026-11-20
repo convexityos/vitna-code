@@ -74,6 +74,18 @@ export interface RunnerStatement {
   sandbox_enforcement: string | null;
 }
 
+export interface EgressCall {
+  target_domain: string;
+  method: string;
+  redacted_url: string;
+  request_sha256: string;
+  status_code: number;
+  response_sha256: string;
+  bytes_sent: number;
+  bytes_received: number;
+  latency_ms: number;
+}
+
 export interface MandateProvenance {
   chain_hash: string;
   root_jti: string;
@@ -97,6 +109,7 @@ export interface Receipt {
   evidence_items: EvidenceItem[];
   changeset: ChangeSet;
   runner_execution_statements: RunnerStatement[];
+  egress_calls: EgressCall[];
   child_receipt_roots: string[];
   device_public_key: string | null;
   mandate_provenance?: MandateProvenance | null;
@@ -166,6 +179,21 @@ function readOptionalString(r: Reader, o: Obj, key: string, path: string): strin
   return v;
 }
 
+function readNonNegInt(r: Reader, o: Obj, key: string, path: string): number {
+  const v = o[key];
+  const where = `${path}${key}`;
+  if (v === undefined) {
+    r.schemaErrors.push(`${where} is required`);
+    r.rustMissing.push(where);
+    return 0;
+  }
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) {
+    r.schemaErrors.push(`${where} must be a non-negative integer`);
+    return 0;
+  }
+  return v;
+}
+
 function noteUncovered(r: Reader, o: Obj, declared: readonly string[], path: string) {
   for (const key of Object.keys(o)) {
     if (!declared.includes(key)) r.uncovered.push(`${path}${key}`);
@@ -202,6 +230,17 @@ const EVIDENCE_KEYS = ['evidence_id', 'grade', 'description', 'artifact_digest']
 const FILE_KEYS = ['path', 'preimage_hash', 'postimage_hash'] as const;
 const CHANGESET_KEYS = ['files_modified', 'diff_digest'] as const;
 const STATEMENT_KEYS = ['action_id', 'statement_digest', 'signature', 'sandbox_backend', 'sandbox_enforcement'] as const;
+const EGRESS_CALL_KEYS = [
+  'target_domain',
+  'method',
+  'redacted_url',
+  'request_sha256',
+  'status_code',
+  'response_sha256',
+  'bytes_sent',
+  'bytes_received',
+  'latency_ms',
+] as const;
 const MANDATE_PROVENANCE_KEYS = [
   'chain_hash',
   'root_jti',
@@ -224,6 +263,7 @@ const RECEIPT_KEYS = [
   'evidence_items',
   'changeset',
   'runner_execution_statements',
+  'egress_calls',
   'child_receipt_roots',
   'device_public_key',
   'mandate_provenance',
@@ -338,6 +378,29 @@ export function readReceipt(text: string): ReceiptReading {
     };
   });
 
+  const egress_calls = readList(r, o, 'egress_calls', '', false, (value, path) => {
+    if (!isObj(value)) {
+      r.schemaErrors.push(`${path.slice(0, -1)} must be an object`);
+      return null;
+    }
+    noteUncovered(r, value, EGRESS_CALL_KEYS, path);
+    const status_code = readNonNegInt(r, value, 'status_code', path);
+    if (typeof value.status_code === 'number' && Number.isInteger(value.status_code) && (status_code < 100 || status_code > 599)) {
+      r.schemaErrors.push(`${path}status_code ${status_code} must be between 100 and 599`);
+    }
+    return {
+      target_domain: readString(r, value, 'target_domain', path, both),
+      method: readString(r, value, 'method', path, both),
+      redacted_url: readString(r, value, 'redacted_url', path, both),
+      request_sha256: readString(r, value, 'request_sha256', path, both),
+      status_code,
+      response_sha256: readString(r, value, 'response_sha256', path, both),
+      bytes_sent: readNonNegInt(r, value, 'bytes_sent', path),
+      bytes_received: readNonNegInt(r, value, 'bytes_received', path),
+      latency_ms: readNonNegInt(r, value, 'latency_ms', path),
+    };
+  });
+
   const child_receipt_roots = readList(r, o, 'child_receipt_roots', '', false, (value, path) => {
     if (typeof value !== 'string') {
       r.schemaErrors.push(`${path.slice(0, -1)} must be a string`);
@@ -390,6 +453,7 @@ export function readReceipt(text: string): ReceiptReading {
     evidence_items,
     changeset,
     runner_execution_statements,
+    egress_calls,
     child_receipt_roots,
     device_public_key: readOptionalString(r, o, 'device_public_key', ''),
     ...(mandate_provenance !== null ? { mandate_provenance } : {}),
@@ -452,6 +516,19 @@ export function signedValue(receipt: Receipt): Json {
     }),
     device_signature: '',
   };
+  if (receipt.egress_calls.length > 0) {
+    value.egress_calls = receipt.egress_calls.map((eg) => ({
+      target_domain: eg.target_domain,
+      method: eg.method,
+      redacted_url: eg.redacted_url,
+      request_sha256: eg.request_sha256,
+      status_code: eg.status_code,
+      response_sha256: eg.response_sha256,
+      bytes_sent: eg.bytes_sent,
+      bytes_received: eg.bytes_received,
+      latency_ms: eg.latency_ms,
+    }));
+  }
   if (receipt.child_receipt_roots.length > 0) value.child_receipt_roots = [...receipt.child_receipt_roots];
   if (receipt.device_public_key !== null) value.device_public_key = receipt.device_public_key;
   if (receipt.mandate_provenance !== undefined && receipt.mandate_provenance !== null) {

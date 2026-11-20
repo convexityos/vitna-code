@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use vitna_providers::{
-    AnthropicProvider, CredentialResolver, KeyringStore, OpenAIProvider, Provider, ProviderId,
-    RuntimeLane, RuntimeLaneProvider,
+    AnchorConfig, AnthropicProvider, CredentialResolver, KeyringStore, OpenAIProvider, Provider,
+    ProviderId, RuntimeLane, RuntimeLaneProvider, VitnaAnchorProvider, DEFAULT_ANCHOR_BASE_URL,
 };
 
 use crate::{ipc, DaemonServer, McpServerSpec, ModelRoute};
@@ -31,6 +31,15 @@ pub struct DirectProvider {
     pub base_url: Option<String>,
 }
 
+/// A local-first `vitna-anchor` route (loopback-only by default, no API key
+/// required) with optional local checkpoint SHA-256 attestation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchorRoute {
+    pub model: String,
+    pub base_url: String,
+    pub checkpoint_path: Option<PathBuf>,
+}
+
 /// Where the daemon listens, where it keeps its journal, and which model a
 /// turn reaches.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +50,8 @@ pub struct Launch {
     pub route: Option<RuntimeLane>,
     /// Direct OS-keychain provider route (`anthropic` or `openai`).
     pub direct: Option<DirectProvider>,
+    /// Local `vitna-anchor` inference server route (`--provider vitna-anchor`).
+    pub anchor: Option<AnchorRoute>,
     /// External MCP servers attached at startup before serving IPC.
     pub mcp_servers: Vec<McpServerSpec>,
     /// Operator-configured destination hosts permitted for brokered `net:http_fetch`.
@@ -70,6 +81,7 @@ impl Launch {
             store,
             route: None,
             direct: None,
+            anchor: None,
             mcp_servers: Vec::new(),
             egress_allowlist: Vec::new(),
         })
@@ -87,7 +99,7 @@ impl Launch {
         self.route = match (runtime_url, lane) {
             (None, None) => None,
             (Some(url), Some(lane)) => {
-                if self.direct.is_some() {
+                if self.direct.is_some() || self.anchor.is_some() {
                     return Err(
                         "cannot combine --runtime-url/--lane with --provider/--model; pick one model route"
                             .to_string(),
@@ -105,8 +117,8 @@ impl Launch {
         Ok(self)
     }
 
-    /// Serves turns directly against Anthropic or OpenAI using a customer-held
-    /// API key stored in the OS keychain (`vitna auth set <provider>`).
+    /// Serves turns directly against Anthropic, OpenAI (using a customer-held
+    /// API key in the OS keychain), or a local `vitna-anchor` server.
     pub fn with_direct_provider(
         mut self,
         provider: Option<String>,
@@ -122,7 +134,7 @@ impl Launch {
                 Err("--provider needs --model, the model SKU to request".to_string())
             }
             (None, Some(_), _) => {
-                Err("--model needs --provider (anthropic or openai)".to_string())
+                Err("--model needs --provider (anthropic, openai, or vitna-anchor)".to_string())
             }
             (Some(prov), Some(model), base_url) => {
                 if self.route.is_some() {
@@ -132,15 +144,30 @@ impl Launch {
                     );
                 }
                 let normalized = prov.trim().to_ascii_lowercase();
-                let provider_id = ProviderId::from_name(&normalized).ok_or_else(|| {
-                    format!(
-                        "unknown provider '{prov}': expected 'anthropic' or 'openai'"
-                    )
-                })?;
                 let model = model.trim().to_string();
                 if model.is_empty() {
                     return Err("--model must be non-empty".to_string());
                 }
+                if normalized == "vitna-anchor" || normalized == "anchor" {
+                    let url = base_url
+                        .map(|raw| raw.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| DEFAULT_ANCHOR_BASE_URL.to_string());
+                    // Validate URL scheme and loopback-only policy eagerly at startup.
+                    let cfg = AnchorConfig::default().with_base_url(&url);
+                    let validated = VitnaAnchorProvider::new(cfg)?;
+                    self.anchor = Some(AnchorRoute {
+                        model,
+                        base_url: validated.config().base_url.clone(),
+                        checkpoint_path: None,
+                    });
+                    return Ok(self);
+                }
+                let provider_id = ProviderId::from_name(&normalized).ok_or_else(|| {
+                    format!(
+                        "unknown provider '{prov}': expected 'anthropic', 'openai', or 'vitna-anchor'"
+                    )
+                })?;
                 let validated_base = match base_url {
                     Some(raw) => {
                         let trimmed = raw.trim();
@@ -161,6 +188,21 @@ impl Launch {
                 Ok(self)
             }
         }
+    }
+
+    /// Attaches a local GGUF checkpoint file or model directory to a
+    /// `vitna-anchor` route for SHA-256 checkpoint attestation on receipts.
+    pub fn with_checkpoint(mut self, checkpoint: Option<PathBuf>) -> Result<Launch, String> {
+        let Some(path) = checkpoint else {
+            return Ok(self);
+        };
+        let Some(anchor) = self.anchor.as_mut() else {
+            return Err(
+                "--checkpoint is only valid with --provider vitna-anchor".to_string(),
+            );
+        };
+        anchor.checkpoint_path = Some(path);
+        Ok(self)
     }
 
     /// Attaches external MCP servers declared via `--mcp-http` and `--mcp-stdio`.
@@ -286,6 +328,39 @@ pub async fn run<F: FnOnce()>(launch: &Launch, on_ready: F) -> Result<(), String
             model: direct.model.clone(),
             routing_reason: format!("direct_keychain:{}", provider_id.as_str()),
         });
+    } else if let Some(anchor) = &launch.anchor {
+        let mut cfg = AnchorConfig::default().with_base_url(&anchor.base_url);
+        if let Some(cp) = &anchor.checkpoint_path {
+            cfg = cfg.with_checkpoint_path(cp);
+        }
+        let adapter = VitnaAnchorProvider::new(cfg)?;
+        let checkpoint_digest = if anchor.checkpoint_path.is_some() {
+            let att = adapter.build_attestation().await?;
+            tracing::info!(
+                endpoint = %anchor.base_url,
+                model = %anchor.model,
+                checkpoint_sha256 = ?att.checkpoint_sha256,
+                "verified local vitna-anchor checkpoint attestation"
+            );
+            att.checkpoint_sha256
+        } else {
+            match adapter.build_attestation().await {
+                Ok(att) => att.checkpoint_sha256,
+                Err(_) => None,
+            }
+        };
+        tracing::info!(
+            endpoint = %anchor.base_url,
+            model = %anchor.model,
+            "turns go to local vitna-anchor inference engine"
+        );
+        server = server
+            .with_route(ModelRoute {
+                provider: Arc::new(adapter),
+                model: anchor.model.clone(),
+                routing_reason: format!("vitna_anchor:{}", anchor.model),
+            })
+            .with_policy_digest(checkpoint_digest);
     } else {
         tracing::info!(
             "no model route: SubmitTurn is refused until --runtime-url/--lane or --provider/--model are given"
@@ -441,6 +516,40 @@ mod tests {
             .is_err());
         assert!(base()
             .with_egress_allowlist(vec!["example.com/path".into()])
+            .is_err());
+    }
+
+    #[test]
+    fn vitna_anchor_route_enforces_loopback_and_checkpoint_flag() {
+        let base = || Launch::resolve(Some("e".into()), Some(PathBuf::from("a.db"))).unwrap();
+
+        let configured = base()
+            .with_direct_provider(
+                Some("vitna-anchor".into()),
+                Some("qwen3-coder-30b".into()),
+                Some("http://127.0.0.1:8765".into()),
+            )
+            .unwrap()
+            .with_checkpoint(Some(PathBuf::from("/tmp/model.gguf")))
+            .unwrap();
+        let anchor = configured.anchor.expect("anchor route");
+        assert_eq!(anchor.model, "qwen3-coder-30b");
+        assert_eq!(anchor.base_url, "http://127.0.0.1:8765");
+        assert_eq!(anchor.checkpoint_path, Some(PathBuf::from("/tmp/model.gguf")));
+        assert!(configured.direct.is_none());
+
+        // Non-loopback vitna-anchor URLs are refused fail-closed.
+        assert!(base()
+            .with_direct_provider(
+                Some("vitna-anchor".into()),
+                Some("qwen3-coder-30b".into()),
+                Some("https://remote.example.com".into()),
+            )
+            .is_err());
+
+        // --checkpoint without --provider vitna-anchor is refused.
+        assert!(base()
+            .with_checkpoint(Some(PathBuf::from("/tmp/model.gguf")))
             .is_err());
     }
 

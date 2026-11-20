@@ -157,6 +157,74 @@ fn standing(lines: &mut Vec<Line<'static>>, run: &Run, w: usize, now: SystemTime
         }
     }
 
+    if !run.runner_statements.is_empty() {
+        lines.push(blank());
+        lines.push(eyebrow("Runner", Some(run.runner_statements.len())));
+        lines.push(rule(w));
+        for st in &run.runner_statements {
+            let backend = st.sandbox_backend.as_deref().unwrap_or("unspecified");
+            let enforcement = st.sandbox_enforcement.as_deref().unwrap_or("unspecified");
+            let summary = format!("{} ({}/{})", st.action_id, backend, enforcement);
+            for part in wrap(&summary, w.saturating_sub(2)) {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(part, theme::faint()),
+                ]));
+            }
+        }
+    }
+
+    if !run.egress_calls.is_empty() {
+        lines.push(blank());
+        lines.push(eyebrow("Egress", Some(run.egress_calls.len())));
+        lines.push(rule(w));
+        for eg in &run.egress_calls {
+            let short_sha: String = eg.response_sha256.chars().take(12).collect();
+            let summary = format!(
+                "{} {} -> {} ({}B, {}ms, sha256 {})",
+                eg.method, eg.redacted_url, eg.status_code, eg.bytes_received, eg.latency_ms, short_sha
+            );
+            for part in wrap(&summary, w.saturating_sub(2)) {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(part, theme::ink()),
+                ]));
+            }
+        }
+    }
+
+    if let Some(mp) = &run.mandate_provenance {
+        lines.push(blank());
+        lines.push(eyebrow("Mandate (am/1)", None));
+        lines.push(rule(w));
+        let short_chain: String = mp.chain_hash.chars().take(16).collect();
+        let summary = format!(
+            "root {} {} spent {} {} ({} receipts) {} chain {}",
+            mp.root_jti,
+            glyph::DOT,
+            mp.total_spent,
+            mp.currency,
+            mp.spend_count,
+            glyph::DOT,
+            short_chain
+        );
+        for part in wrap(&summary, w.saturating_sub(2)) {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(part, theme::ink()),
+            ]));
+        }
+        if !mp.path.is_empty() {
+            let path_line = format!("path {} {} ledger {}", mp.path.join(" -> "), glyph::DOT, mp.ledger);
+            for part in wrap(&path_line, w.saturating_sub(2)) {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(part, theme::faint()),
+                ]));
+            }
+        }
+    }
+
     // What this terminal could establish, check by check.
     lines.push(blank());
     lines.push(eyebrow("Checks", None));

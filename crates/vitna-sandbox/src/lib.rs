@@ -12,8 +12,11 @@
 //! - **Read-only**: no writes to the workspace.
 //! - **Guarded**: native OS sandbox. Bubblewrap on Linux, Seatbelt on macOS,
 //!   AppContainer on Windows.
-//! - **Strong**: ephemeral container or hardware VM. Not implemented anywhere
-//!   in this codebase, and asking for it returns an error rather than being
+//! - **Strong**: ephemeral OCI container (`podman` or `docker`, `--rm`,
+//!   `--cap-drop=ALL`, `--security-opt=no-new-privileges:true`, `--read-only`,
+//!   `--network=none`, `--memory`, `--pids-limit`, read-only `.git`/`.vitna`
+//!   overlays) requiring an explicit pinned image. Asking for it when no image
+//!   or container runtime is available returns an error rather than being
 //!   quietly served by something weaker.
 //! - **Full access**: host execution with no OS sandbox, only on explicit
 //!   operator override, and per that document "never described or labeled as
@@ -22,7 +25,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +41,7 @@ pub enum SandboxBackend {
     Bubblewrap,
     Seatbelt,
     AppContainer,
+    OciContainer,
 }
 
 impl SandboxBackend {
@@ -48,6 +51,7 @@ impl SandboxBackend {
             SandboxBackend::Bubblewrap => "bubblewrap",
             SandboxBackend::Seatbelt => "seatbelt",
             SandboxBackend::AppContainer => "appcontainer",
+            SandboxBackend::OciContainer => "oci_container",
         }
     }
 }
@@ -130,6 +134,11 @@ pub struct SandboxConfig {
     pub max_processes: u32,
     pub sanitized_environment: Vec<(String, String)>,
     pub guarantee: SandboxGuarantee,
+    /// Explicit OCI container image reference required when `guarantee` is
+    /// [`SandboxGuarantee::Strong`]. Never defaulted so we never pull an
+    /// unpinned image behind the operator's back.
+    #[serde(default)]
+    pub container_image: Option<String>,
 }
 
 /// The form of a path that a sandbox policy has to be written against.
@@ -261,7 +270,13 @@ impl SandboxConfig {
                 ("LC_ALL".to_string(), "en_US.UTF-8".to_string()),
             ],
             guarantee,
+            container_image: None,
         }
+    }
+
+    pub fn with_container_image(mut self, image: impl Into<String>) -> Self {
+        self.container_image = Some(image.into());
+        self
     }
 
     /// Generates Bubblewrap arguments for Linux sandbox execution.
@@ -385,6 +400,151 @@ impl SandboxConfig {
         let hash = sha2::Sha256::digest(self.workspace_root.to_string_lossy().as_bytes());
         format!("VitnaSandbox_{}", hex::encode(&hash[..8]))
     }
+
+    /// Generates hardened OCI container (`podman` / `docker`) arguments for
+    /// [`SandboxGuarantee::Strong`] execution.
+    ///
+    /// Enforces ephemeral execution (`--rm`), dropped capabilities
+    /// (`--cap-drop=ALL`), `--security-opt=no-new-privileges:true`, read-only
+    /// rootfs (`--read-only`), bounded `/tmp`, `--network=none` by default,
+    /// memory/PID resource limits, and read-only overlays over `.git/*` and
+    /// `.vitna` inside `/workspace`.
+    pub fn generate_oci_container_args(
+        &self,
+        runtime: &str,
+        image: &str,
+        command: &str,
+        cwd: &Path,
+    ) -> Result<Vec<String>, String> {
+        let image = validate_container_image(image)?;
+        let ws_host = policy_path(&self.workspace_root);
+        let ws_str = ws_host.to_string_lossy();
+        if ws_str.contains(',') || ws_str.contains('\0') {
+            return Err(format!(
+                "workspace path '{}' contains characters unsupported by OCI --mount syntax",
+                ws_str
+            ));
+        }
+
+        let mut args: Vec<String> = vec![
+            runtime.to_string(),
+            "run".to_string(),
+            "--rm".to_string(),
+            "--init".to_string(),
+            "--cap-drop=ALL".to_string(),
+            "--security-opt=no-new-privileges:true".to_string(),
+            "--read-only".to_string(),
+            "--tmpfs=/tmp:rw,noexec,nosuid,size=64m".to_string(),
+        ];
+
+        if !self.allow_network {
+            args.push("--network=none".to_string());
+        }
+        if self.max_memory_bytes > 0 {
+            args.push(format!("--memory={}", self.max_memory_bytes));
+        }
+        if self.max_processes > 0 {
+            args.push(format!("--pids-limit={}", self.max_processes));
+        }
+
+        let ws_ro = if self.guarantee == SandboxGuarantee::ReadOnly {
+            ",readonly"
+        } else {
+            ""
+        };
+        args.push("--mount".to_string());
+        args.push(format!("type=bind,src={},dst=/workspace{}", ws_str, ws_ro));
+
+        for protected in protected_subpaths(&self.workspace_root) {
+            if let Ok(rel) = protected.strip_prefix(&self.workspace_root) {
+                let rel_posix = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                let host_p = policy_path(&protected);
+                let host_str = host_p.to_string_lossy();
+                if !host_str.contains(',') && !host_str.contains('\0') {
+                    args.push("--mount".to_string());
+                    args.push(format!(
+                        "type=bind,src={},dst=/workspace/{},readonly",
+                        host_str, rel_posix
+                    ));
+                }
+            }
+        }
+
+        let container_cwd = match cwd.strip_prefix(&self.workspace_root) {
+            Ok(rel) if !rel.as_os_str().is_empty() => {
+                let rel_posix = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                format!("/workspace/{rel_posix}")
+            }
+            _ => "/workspace".to_string(),
+        };
+        args.push("--workdir".to_string());
+        args.push(container_cwd);
+
+        for (k, v) in &self.sanitized_environment {
+            args.push("-e".to_string());
+            args.push(format!("{k}={v}"));
+        }
+        args.push("-e".to_string());
+        args.push(format!("VITNA_SANDBOX={}", SandboxBackend::OciContainer.as_str()));
+
+        args.push(image.to_string());
+        args.push("/bin/sh".to_string());
+        args.push("-c".to_string());
+        args.push(command.to_string());
+
+        Ok(args)
+    }
+}
+
+/// Validates an OCI image reference so untrusted input cannot inject CLI flags
+/// into `podman run` or `docker run`.
+pub fn validate_container_image(raw: &str) -> Result<&str, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("container image must be non-empty".to_string());
+    }
+    if trimmed.starts_with('-')
+        || trimmed.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(format!(
+            "invalid OCI container image '{}': must not start with '-' or contain whitespace/control characters",
+            trimmed
+        ));
+    }
+    Ok(trimmed)
+}
+
+/// Probes for an operational OCI container runtime (`podman`, then `docker`).
+fn oci_container_probe() -> &'static Result<String, String> {
+    static PROBE: OnceLock<Result<String, String>> = OnceLock::new();
+    PROBE.get_or_init(|| {
+        let mut reasons = Vec::new();
+        for runtime in ["podman", "docker"] {
+            match std::process::Command::new(runtime).arg("info").output() {
+                Ok(out) if out.status.success() => return Ok(runtime.to_string()),
+                Ok(out) => {
+                    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    reasons.push(format!(
+                        "{runtime} is present but not operational ({})",
+                        if err.is_empty() { "non-zero exit" } else { &err }
+                    ));
+                }
+                Err(e) => reasons.push(format!("{runtime} not available ({e})")),
+            }
+        }
+        Err(format!(
+            "no operational OCI container runtime found for strong isolation: {}",
+            reasons.join("; ")
+        ))
+    })
 }
 
 /// Builds the invocation that delivers `config.guarantee` for `command`.
@@ -404,17 +564,65 @@ pub fn plan(
                     .to_string(),
             })
         }
-        SandboxGuarantee::Strong => {
-            return Err(PlanError::NotImplemented {
-                reason: "strong isolation means an ephemeral container or hardware VM \
-                         (docs/PLATFORM_MATRIX.md); no such backend is implemented"
-                    .to_string(),
-            })
-        }
+        SandboxGuarantee::Strong => return plan_strong(config, command, cwd),
         SandboxGuarantee::ReadOnly | SandboxGuarantee::Guarded => {}
     }
 
     plan_guarded(config, command, cwd)
+}
+
+fn plan_strong(
+    config: &SandboxConfig,
+    command: &str,
+    cwd: &Path,
+) -> Result<SandboxPlan, PlanError> {
+    let Some(raw_image) = config.container_image.as_deref() else {
+        return Err(PlanError::Unavailable {
+            reason: "strong isolation requires an explicit OCI container image \
+                     (docs/PLATFORM_MATRIX.md); refusing to guess or pull an unpinned image \
+                     or downgrade to guarded isolation"
+                .to_string(),
+        });
+    };
+    let image = validate_container_image(raw_image)
+        .map_err(|reason| PlanError::Unavailable { reason })?;
+
+    let runtime = match oci_container_probe() {
+        Ok(rt) => rt.clone(),
+        Err(reason) => {
+            return Err(PlanError::Unavailable {
+                reason: reason.clone(),
+            })
+        }
+    };
+
+    let mut full_args = config
+        .generate_oci_container_args(&runtime, image, command, cwd)
+        .map_err(|reason| PlanError::Unavailable { reason })?;
+    let args = full_args.split_off(1);
+
+    let mut gaps = Vec::new();
+    if !config.workspace_root.join(".git").exists() {
+        gaps.push(
+            "workspace has no .git directory, so one created inside the container is not \
+             protected"
+                .to_string(),
+        );
+    }
+
+    Ok(SandboxPlan {
+        backend: SandboxBackend::OciContainer,
+        enforcement: if gaps.is_empty() {
+            Enforcement::FullyEnforced
+        } else {
+            Enforcement::Fallback
+        },
+        gaps,
+        program: runtime,
+        args,
+        env: config.sanitized_environment.clone(),
+        cwd: cwd.to_path_buf(),
+    })
 }
 
 #[cfg(target_os = "linux")]

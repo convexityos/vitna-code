@@ -107,6 +107,7 @@ export async function buildSampleReceipt(): Promise<SampleReceipt> {
     // The protocol does not say what a runner statement signs, so the sample
     // leaves them out rather than inventing one.
     runner_execution_statements: [],
+    egress_calls: [],
     child_receipt_roots: [],
     device_public_key: publicKeyHex,
     device_signature: '',
