@@ -147,6 +147,10 @@ enum Commands {
         /// Optional Convexity API `DataEnvelope` JSON file(s) to audit alongside the receipt. Repeatable.
         #[arg(long = "envelope", value_name = "PATH")]
         envelopes: Vec<PathBuf>,
+        /// Optional SQLite event store (`.vitna/store.db` or `~/.vitna/daemon.db`) to replay and
+        /// cryptographically verify the run's hash chain and Merkle root against `event_hash_chain_root`.
+        #[arg(long)]
+        store: Option<PathBuf>,
         /// Fail verification if any audited `DataEnvelope` is degraded, stale, or missing freshness metadata.
         #[arg(long)]
         strict_freshness: bool,
@@ -524,6 +528,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             key,
             checkpoint,
             envelopes,
+            store,
             strict_freshness,
             require_signature,
             json,
@@ -533,6 +538,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 key.as_deref(),
                 checkpoint.as_deref(),
                 &envelopes,
+                store.as_deref(),
                 strict_freshness,
                 require_signature,
                 json,
@@ -1103,11 +1109,13 @@ async fn run_app(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_verify(
     receipt_path: &str,
     key: Option<&str>,
     checkpoint: Option<&Path>,
     envelopes: &[PathBuf],
+    store: Option<&Path>,
     strict_freshness: bool,
     require_signature: bool,
     as_json: bool,
@@ -1133,6 +1141,7 @@ fn run_verify(
 
     let use_bundle = checkpoint.is_some()
         || !envelopes.is_empty()
+        || store.is_some()
         || strict_freshness
         || require_signature
         || as_json;
@@ -1177,6 +1186,14 @@ fn run_verify(
             },
         )?;
 
+        let event_store_audit =
+            store.map(|db| commands::verify_event_store_merkle(db, &verified.receipt));
+        let event_store_ok = event_store_audit
+            .as_ref()
+            .map(|e| e.matched)
+            .unwrap_or(true);
+        let overall_valid = audit.overall_valid && event_store_ok;
+
         if as_json {
             let out = serde_json::json!({
                 "receipt_file": receipt_path,
@@ -1185,14 +1202,16 @@ fn run_verify(
                 "model": verified.receipt.model_selection,
                 "isolation_label": verified.receipt.isolation_label,
                 "completion_state": verified.receipt.completion_state,
+                "overall_valid": overall_valid,
                 "audit": audit,
+                "event_store": event_store_audit,
             });
             println!("{}", serde_json::to_string_pretty(&out)?);
         } else {
             let r = &verified.receipt;
             println!(
                 "{}",
-                if audit.overall_valid {
+                if overall_valid {
                     "Provenance Bundle Verification PASSED"
                 } else {
                     "Provenance Bundle Verification FAILED"
@@ -1221,6 +1240,15 @@ fn run_verify(
                     cp.path
                 );
             }
+            if let Some(es) = &event_store_audit {
+                println!(
+                    "Event Store Chain: {} ({} events, {} hashed, {})",
+                    if es.matched { "MATCHED" } else { "MISMATCH" },
+                    es.total_events,
+                    es.hashed_events,
+                    es.store_path
+                );
+            }
             if !audit.envelopes.is_empty() {
                 println!("DataEnvelopes:     {} audited", audit.envelopes.len());
                 for env in &audit.envelopes {
@@ -1232,15 +1260,25 @@ fn run_verify(
                     );
                 }
             }
-            if !audit.errors.is_empty() {
+            let combined_errors: Vec<&str> = audit
+                .errors
+                .iter()
+                .map(String::as_str)
+                .chain(
+                    event_store_audit
+                        .iter()
+                        .flat_map(|es| es.errors.iter().map(String::as_str)),
+                )
+                .collect();
+            if !combined_errors.is_empty() {
                 println!("Errors:");
-                for err in &audit.errors {
+                for err in combined_errors {
                     println!("  - {err}");
                 }
             }
         }
 
-        if !audit.overall_valid {
+        if !overall_valid {
             std::process::exit(1);
         }
         return Ok(());

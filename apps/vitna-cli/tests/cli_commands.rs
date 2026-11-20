@@ -2023,6 +2023,144 @@ fn skills_init_scaffolds_verifies_and_rejects_traversal_cli() {
     let _ = fs::remove_dir_all(&base);
 }
 
+#[test]
+fn verify_store_recomputes_event_chain_and_detects_tampering_cli() {
+    let base = temp_dir("verify_store_merkle");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    let store_path = ws.join(".vitna").join("store.db");
+
+    // 1. Execute a real local run so OrchestrationEngine populates `.vitna/store.db`
+    //    and writes a signed receipt with its Merkle root into `.vitna/receipts/`.
+    let run = run_vitna(
+        &[
+            "run",
+            "Create notes.txt for merkle verification",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--auto-approve",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        run.status.success(),
+        "vitna run failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(store_path.is_file(), "expected event store at {}", store_path.display());
+
+    let receipts_dir = ws.join(".vitna").join("receipts");
+    let receipt_file = fs::read_dir(&receipts_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+        .expect("signed receipt file");
+
+    // 2. `vitna verify <receipt> --store <store.db> --require-signature --json`
+    //    replays the SQLite event chain, recomputes the Merkle root, and matches.
+    let ok = run_vitna(
+        &[
+            "verify",
+            receipt_file.to_str().unwrap(),
+            "--store",
+            store_path.to_str().unwrap(),
+            "--require-signature",
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        ok.status.success(),
+        "vitna verify --store failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&ok.stdout),
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let ok_doc: Value = serde_json::from_slice(&ok.stdout).unwrap();
+    assert_eq!(ok_doc["overall_valid"], true);
+    assert_eq!(ok_doc["event_store"]["matched"], true);
+    assert_eq!(ok_doc["event_store"]["chain_valid"], true);
+    assert_eq!(ok_doc["event_store"]["has_receipt_generated_event"], true);
+    assert!(ok_doc["event_store"]["hashed_events"].as_u64().unwrap() > 0);
+    assert_eq!(
+        ok_doc["event_store"]["computed_merkle_root"],
+        ok_doc["event_store"]["expected_merkle_root"]
+    );
+
+    // 3. Human output also reports Event Store Chain: MATCHED.
+    let human = run_vitna(
+        &[
+            "verify",
+            receipt_file.to_str().unwrap(),
+            "--store",
+            store_path.to_str().unwrap(),
+        ],
+        &home,
+        &ws,
+    );
+    assert!(human.status.success());
+    assert!(String::from_utf8_lossy(&human.stdout).contains("Event Store Chain: MATCHED"));
+
+    // 4. Missing event store fails closed with non-zero exit code.
+    let missing = run_vitna(
+        &[
+            "verify",
+            receipt_file.to_str().unwrap(),
+            "--store",
+            base.join("nonexistent.db").to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!missing.status.success());
+    let missing_doc: Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(missing_doc["overall_valid"], false);
+    assert_eq!(missing_doc["event_store"]["matched"], false);
+
+    // 5. Appending an unauthorized event to SQLite after ReceiptGenerated fails closed.
+    let receipt_val: VitnaRunReceiptV1 =
+        serde_json::from_str(&fs::read_to_string(&receipt_file).unwrap()).unwrap();
+    let store = vitna_store::EventStore::open(&store_path).unwrap();
+    let existing = store.get_events(&receipt_val.run_id, 0).unwrap();
+    let last = existing.last().unwrap();
+    let forged = vitna_store::EventRecord::new(
+        "ev-forged-post-receipt",
+        &receipt_val.run_id,
+        last.sequence + 1,
+        "vitna.audit.v1.ContextAssembled",
+        last.timestamp_ms + 1,
+        b"{}".to_vec(),
+        &last.event_hash,
+    );
+    store.append_event(&forged).unwrap();
+    drop(store);
+
+    let tampered = run_vitna(
+        &[
+            "verify",
+            receipt_file.to_str().unwrap(),
+            "--store",
+            store_path.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!tampered.status.success());
+    let tampered_doc: Value = serde_json::from_slice(&tampered.stdout).unwrap();
+    assert_eq!(tampered_doc["overall_valid"], false);
+    assert_eq!(tampered_doc["event_store"]["matched"], false);
+
+    let _ = fs::remove_dir_all(&base);
+}
+
 
 
 

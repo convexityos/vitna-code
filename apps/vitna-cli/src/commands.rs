@@ -377,6 +377,173 @@ pub fn run_receipt_list(workspace: &Path, as_json: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Cryptographic audit result comparing a SQLite `EventStore` hash chain and
+/// Merkle root against a signed `VitnaRunReceiptV1.event_hash_chain_root`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EventStoreAudit {
+    pub store_path: String,
+    pub matched: bool,
+    pub total_events: usize,
+    pub hashed_events: usize,
+    pub has_receipt_generated_event: bool,
+    pub chain_valid: bool,
+    pub expected_merkle_root: String,
+    pub computed_merkle_root: Option<String>,
+    pub errors: Vec<String>,
+}
+
+const RECEIPT_GENERATED_TYPE_URL: &str = "vitna.audit.v1.ReceiptGenerated";
+
+/// Replays all events for `receipt.run_id` from `store_path`, validates every
+/// event's SHA-256 integrity hash, `prev_event_hash` chain linkage from
+/// `GENESIS_HASH`, and strictly increasing sequence numbers, then recomputes
+/// the Merkle root and checks it against `receipt.event_hash_chain_root`.
+pub fn verify_event_store_merkle(store_path: &Path, receipt: &VitnaRunReceiptV1) -> EventStoreAudit {
+    let mut audit = EventStoreAudit {
+        store_path: store_path.display().to_string(),
+        matched: false,
+        total_events: 0,
+        hashed_events: 0,
+        has_receipt_generated_event: false,
+        chain_valid: false,
+        expected_merkle_root: receipt.event_hash_chain_root.clone(),
+        computed_merkle_root: None,
+        errors: Vec::new(),
+    };
+
+    if !store_path.is_file() {
+        audit.errors.push(format!(
+            "event store file does not exist: {}",
+            store_path.display()
+        ));
+        return audit;
+    }
+
+    let store = match EventStore::open(store_path) {
+        Ok(s) => s,
+        Err(e) => {
+            audit
+                .errors
+                .push(format!("could not open event store {}: {e}", store_path.display()));
+            return audit;
+        }
+    };
+
+    let events = match store.get_events(&receipt.run_id, 0) {
+        Ok(ev) => ev,
+        Err(e) => {
+            audit.errors.push(format!(
+                "could not read events for run '{}': {e}",
+                sanitize_public_id(&receipt.run_id)
+            ));
+            return audit;
+        }
+    };
+
+    audit.total_events = events.len();
+    if events.is_empty() {
+        audit.errors.push(format!(
+            "no events found in {} for run_id '{}'",
+            store_path.display(),
+            sanitize_public_id(&receipt.run_id)
+        ));
+        return audit;
+    }
+
+    // Validate hash chain integrity, prev_event_hash linkage, and monotonic sequences.
+    let mut expected_prev = vitna_store::GENESIS_HASH.to_string();
+    let mut prev_seq: Option<u64> = None;
+    let mut chain_ok = true;
+    let mut receipt_gen_positions: Vec<usize> = Vec::new();
+
+    for (idx, ev) in events.iter().enumerate() {
+        if !ev.verify_integrity() {
+            chain_ok = false;
+            audit.errors.push(format!(
+                "event seq={} ({}) failed SHA-256 integrity verification",
+                ev.sequence, ev.event_id
+            ));
+        }
+        if ev.prev_event_hash != expected_prev {
+            chain_ok = false;
+            audit.errors.push(format!(
+                "broken hash chain at seq={}: expected prev_event_hash {}, got {}",
+                ev.sequence,
+                short_hash(&expected_prev),
+                short_hash(&ev.prev_event_hash)
+            ));
+        }
+        if let Some(last_s) = prev_seq {
+            if ev.sequence <= last_s {
+                chain_ok = false;
+                audit.errors.push(format!(
+                    "non-monotonic event sequence at index {idx}: {} <= {last_s}",
+                    ev.sequence
+                ));
+            }
+        }
+        prev_seq = Some(ev.sequence);
+        expected_prev = ev.event_hash.clone();
+
+        if ev.type_url == RECEIPT_GENERATED_TYPE_URL {
+            receipt_gen_positions.push(idx);
+        }
+    }
+    audit.chain_valid = chain_ok;
+
+    // `OrchestrationEngine::finalize_run` computes the Merkle root over all
+    // pre-receipt events and then appends one final `vitna.audit.v1.ReceiptGenerated`
+    // event carrying the receipt's device_signature. Any events appearing after
+    // `ReceiptGenerated` indicate post-finalization tampering.
+    let pre_receipt_slice = if let Some(&first_rg) = receipt_gen_positions.first() {
+        audit.has_receipt_generated_event = true;
+        if receipt_gen_positions.len() > 1 || first_rg != events.len() - 1 {
+            audit.errors.push(format!(
+                "unexpected events after {} (found {} marker(s), first at index {} of {})",
+                RECEIPT_GENERATED_TYPE_URL,
+                receipt_gen_positions.len(),
+                first_rg,
+                events.len()
+            ));
+        }
+        if let Ok(payload_val) = serde_json::from_slice::<Value>(&events[first_rg].encrypted_payload) {
+            if let Some(sig) = payload_val.get("device_signature").and_then(Value::as_str) {
+                if !sig.is_empty()
+                    && !receipt.device_signature.is_empty()
+                    && sig != receipt.device_signature
+                {
+                    audit.errors.push(
+                        "ReceiptGenerated event device_signature does not match receipt.device_signature"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        &events[..first_rg]
+    } else {
+        &events[..]
+    };
+
+    let hashes: Vec<String> = pre_receipt_slice
+        .iter()
+        .map(|ev| ev.event_hash.clone())
+        .collect();
+    audit.hashed_events = hashes.len();
+
+    let computed = VitnaRunReceiptV1::compute_event_merkle_root(&hashes);
+    if computed != receipt.event_hash_chain_root {
+        audit.errors.push(format!(
+            "Merkle root mismatch: receipt claims {}, store recomputes {}",
+            short_hash(&receipt.event_hash_chain_root),
+            short_hash(&computed)
+        ));
+    }
+    audit.computed_merkle_root = Some(computed.clone());
+    audit.matched =
+        audit.chain_valid && audit.errors.is_empty() && computed == receipt.event_hash_chain_root;
+    audit
+}
+
 /// `vitna receipt show <run_id>`
 pub fn run_receipt_show(
     run_id: &str,
