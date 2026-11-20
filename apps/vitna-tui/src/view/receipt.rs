@@ -82,6 +82,10 @@ fn standing(lines: &mut Vec<Line<'static>>, run: &Run, w: usize, now: SystemTime
         super::runs::model(run),
         words::isolation(&run.isolation),
     ];
+    if let Some(ref pd) = run.policy_digest {
+        let short_pd: String = pd.chars().take(12).collect();
+        facts.push(format!("policy {short_pd}"));
+    }
     if run.children > 0 {
         facts.push(format!(
             "with {}",
@@ -241,13 +245,36 @@ fn standing(lines: &mut Vec<Line<'static>>, run: &Run, w: usize, now: SystemTime
     for failed in &run.failed_checks {
         check(lines, w, glyph::CROSS, theme::RUST, &format!("{failed}."));
     }
-    if run.signed {
+    if run.signature_verified == Some(true) {
+        let short_pk = run
+            .device_public_key
+            .as_deref()
+            .map(|k| k.chars().take(12).collect::<String>())
+            .unwrap_or_default();
+        check(
+            lines,
+            w,
+            glyph::CHECK,
+            theme::OK,
+            &format!(
+                "Signature verified against embedded device key {short_pk}. Confirm trust with `vitna verify --key`."
+            ),
+        );
+    } else if run.signature_verified == Some(false) {
+        check(
+            lines,
+            w,
+            glyph::CROSS,
+            theme::RUST,
+            "Signature check failed against the embedded device key. The receipt was modified after signing or carries a bad signature.",
+        );
+    } else if run.signed {
         check(
             lines,
             w,
             glyph::PENDING,
             theme::FAINTER,
-            "Signature not checked. The daemon holds the key it signs with, and nothing this terminal can reach publishes it. That is not a fault in the receipt.",
+            "Signature not checked. No embedded device public key is present in this receipt; check it with `vitna verify --key`.",
         );
     } else {
         check(

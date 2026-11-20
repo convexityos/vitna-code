@@ -49,6 +49,7 @@ fn run(
         base_commit: "38d891d1cd3807f04a4ddd9499986afb9e4259ce".into(),
         provider: "anthropic".into(),
         model_sku: sku.into(),
+        policy_digest: None,
         isolation: "guarded".into(),
         completion: state.into(),
         evidence: evidence
@@ -70,6 +71,8 @@ fn run(
         mandate_provenance: None,
         children: 0,
         signed: true,
+        device_public_key: None,
+        signature_verified: None,
         failed_checks: failed_checks.iter().map(|s| s.to_string()).collect(),
     }))
 }
