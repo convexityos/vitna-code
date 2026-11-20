@@ -1227,6 +1227,7 @@ pub struct LiveRunOptions<'a> {
     pub sandbox_guarantee: Option<String>,
     pub sandbox_image: Option<String>,
     pub mandate: Option<PathBuf>,
+    pub policy: Option<PathBuf>,
     pub auto_approve: bool,
     pub verify_cmd: Option<String>,
     pub allow_unsandboxed: bool,
@@ -1275,7 +1276,7 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
     };
 
     let telemetry = daemon.telemetry();
-    let (provider, model_sku, provider_name, routing_reason, route_label, policy_digest): (
+    let (provider, model_sku, provider_name, routing_reason, route_label, mut policy_digest): (
         Arc<dyn Provider>,
         String,
         String,
@@ -1350,6 +1351,34 @@ pub async fn run_live_turn(opts: LiveRunOptions<'_>) -> Result<(), String> {
             "no model route specified: pass --runtime-url/--lane or --provider/--model".to_string(),
         );
     };
+
+    if let Some(ref policy_path) = opts.policy {
+        let raw_policy = fs::read_to_string(policy_path)
+            .map_err(|e| format!("could not read model policy {}: {e}", policy_path.display()))?;
+        let parsed_policy: vitna_policy::SignedModelPolicy = serde_json::from_str(&raw_policy)
+            .map_err(|e| format!("invalid model policy {}: {e}", policy_path.display()))?;
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let effective_guarantee = if opts.mode == "inspect" {
+            "read_only"
+        } else if opts.allow_unsandboxed {
+            "full_access"
+        } else {
+            launch.sandbox_guarantee.as_str()
+        };
+        let enforced_digest = parsed_policy.enforce(
+            now_secs,
+            None,
+            &provider_name,
+            &model_sku,
+            effective_guarantee,
+        )?;
+        if policy_digest.is_none() {
+            policy_digest = Some(enforced_digest);
+        }
+    }
 
     for spec in &launch.mcp_servers {
         daemon.attach_mcp_server(spec).await?;
@@ -3047,6 +3076,235 @@ pub fn run_bench(fast: bool, out_path: Option<&Path>, as_json: bool) -> Result<(
     }
     if let Some(path) = out_path {
         println!("Report written -> {}", path.display());
+    }
+    Ok(())
+}
+
+/// Options for `vitna policy init`.
+pub struct PolicyInitOptions<'a> {
+    pub out: &'a Path,
+    pub policy_id: Option<&'a str>,
+    pub allowed_providers: Vec<String>,
+    pub lanes: Vec<String>,
+    pub required_sandbox: &'a str,
+    pub ttl_secs: u64,
+    pub as_json: bool,
+}
+
+fn parse_policy_lane_spec(raw: &str) -> Result<vitna_policy::ModelLaneConfig, String> {
+    let Some((lane_part, rhs)) = raw.split_once('=') else {
+        return Err(format!(
+            "invalid --lane '{raw}': expected 'LANE=PROVIDER:MODEL_SKU'"
+        ));
+    };
+    let Some((provider_part, model_part)) = rhs.split_once(':') else {
+        return Err(format!(
+            "invalid --lane '{raw}': expected 'LANE=PROVIDER:MODEL_SKU'"
+        ));
+    };
+    let lane = lane_part.trim();
+    let provider = provider_part.trim();
+    let model_sku = model_part.trim();
+    if lane.is_empty() || provider.is_empty() || model_sku.is_empty() {
+        return Err(format!(
+            "invalid --lane '{raw}': lane, provider, and model_sku must all be non-empty"
+        ));
+    }
+    Ok(vitna_policy::ModelLaneConfig {
+        lane: lane.to_string(),
+        provider: provider.to_string(),
+        model_sku: model_sku.to_string(),
+    })
+}
+
+/// `vitna policy init --out <FILE> [--policy-id <ID>] [--allow-provider <P>...] [--lane <LANE=PROVIDER:MODEL>...] [--required-sandbox <G>] [--ttl-secs <N>] [--json]`
+pub fn run_policy_init(opts: PolicyInitOptions<'_>) -> Result<(), String> {
+    use vitna_policy::{SignedModelPolicy, MODEL_POLICY_SCHEMA_V1, VALID_SANDBOX_GUARANTEES};
+
+    if !VALID_SANDBOX_GUARANTEES.contains(&opts.required_sandbox) {
+        return Err(format!(
+            "invalid --required-sandbox '{}': expected one of {}",
+            opts.required_sandbox,
+            VALID_SANDBOX_GUARANTEES.join(", ")
+        ));
+    }
+    if opts.ttl_secs == 0 {
+        return Err("--ttl-secs must be greater than zero".to_string());
+    }
+
+    let mut lanes = Vec::with_capacity(opts.lanes.len());
+    for spec in &opts.lanes {
+        lanes.push(parse_policy_lane_spec(spec)?);
+    }
+
+    let mut allowed_providers: Vec<String> = opts
+        .allowed_providers
+        .into_iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if allowed_providers.is_empty() {
+        for l in &lanes {
+            if !allowed_providers
+                .iter()
+                .any(|p| p.eq_ignore_ascii_case(&l.provider))
+            {
+                allowed_providers.push(l.provider.clone());
+            }
+        }
+    }
+    if allowed_providers.is_empty() {
+        allowed_providers.push("vitna-runtime".to_string());
+    }
+
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let policy_id = opts
+        .policy_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("policy-{now_secs}"));
+
+    let home = vitna_daemon::launch::vitna_home()?;
+    fs::create_dir_all(&home)
+        .map_err(|e| format!("could not create {}: {e}", home.display()))?;
+    let signing_key = vitna_daemon::key::load_or_create(&home)?;
+
+    let mut policy = SignedModelPolicy {
+        schema_version: MODEL_POLICY_SCHEMA_V1.to_string(),
+        policy_id,
+        issued_at: now_secs,
+        expires_at: now_secs.saturating_add(opts.ttl_secs),
+        allowed_providers,
+        lanes,
+        required_sandbox_guarantee: opts.required_sandbox.to_string(),
+        public_key: String::new(),
+        signature: String::new(),
+    };
+    policy
+        .sign(&signing_key)
+        .map_err(|e| format!("failed to sign model policy: {e}"))?;
+    let digest = policy.verify_for_use(now_secs, None)?;
+
+    if let Some(parent) = opts.out.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+        }
+    }
+    let body = serde_json::to_string_pretty(&policy).map_err(|e| e.to_string())?;
+    fs::write(opts.out, &body)
+        .map_err(|e| format!("could not write {}: {e}", opts.out.display()))?;
+
+    if opts.as_json {
+        let out = json!({
+            "out": opts.out.display().to_string(),
+            "policy_id": policy.policy_id,
+            "policy_digest": digest,
+            "public_key": policy.public_key,
+            "issued_at": policy.issued_at,
+            "expires_at": policy.expires_at,
+            "required_sandbox_guarantee": policy.required_sandbox_guarantee,
+            "allowed_providers": policy.allowed_providers,
+            "lanes": policy.lanes,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
+    println!("Signed Model Policy Created");
+    println!("===========================");
+    println!("File:              {}", opts.out.display());
+    println!("Policy ID:         {}", sanitize_public_id(&policy.policy_id));
+    println!("Policy Digest:     {}", digest);
+    println!("Public Key:        {}", policy.public_key);
+    println!("Required Sandbox:  {}", policy.required_sandbox_guarantee);
+    println!("Allowed Providers: {}", policy.allowed_providers.join(", "));
+    println!("Lanes:             {}", policy.lanes.len());
+    Ok(())
+}
+
+/// `vitna policy verify <policy_file> [--key <HEX>] [--provider <P>] [--model <SKU>] [--sandbox-guarantee <G>] [--json]`
+pub fn run_policy_verify(
+    policy_file: &Path,
+    expected_key: Option<&str>,
+    provider: Option<&str>,
+    model: Option<&str>,
+    sandbox_guarantee: Option<&str>,
+    as_json: bool,
+) -> Result<(), String> {
+    if model.is_some() && provider.is_none() {
+        return Err("--model requires --provider".to_string());
+    }
+
+    let raw = fs::read_to_string(policy_file)
+        .map_err(|e| format!("could not read {}: {e}", policy_file.display()))?;
+    let policy: vitna_policy::SignedModelPolicy = serde_json::from_str(&raw)
+        .map_err(|e| format!("invalid model policy {}: {e}", policy_file.display()))?;
+
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let digest = policy.verify_for_use(now_secs, expected_key)?;
+
+    let mut route_checked = false;
+    if let Some(prov) = provider {
+        route_checked = true;
+        let sku = model.unwrap_or("");
+        let sandbox = sandbox_guarantee.unwrap_or(&policy.required_sandbox_guarantee);
+        if sku.is_empty() && !policy.lanes.is_empty() {
+            return Err("policy defines explicit lanes; pass --model <SKU> alongside --provider".to_string());
+        }
+        policy.enforce(now_secs, expected_key, prov, sku, sandbox)?;
+    } else if let Some(sandbox) = sandbox_guarantee {
+        route_checked = true;
+        if !vitna_policy::sandbox_satisfies_requirement(sandbox, &policy.required_sandbox_guarantee) {
+            return Err(format!(
+                "sandbox guarantee '{sandbox}' does not satisfy model policy '{}' requirement '{}'",
+                policy.policy_id, policy.required_sandbox_guarantee
+            ));
+        }
+    }
+
+    if as_json {
+        let out = json!({
+            "valid": true,
+            "policy_file": policy_file.display().to_string(),
+            "policy_id": policy.policy_id,
+            "policy_digest": digest,
+            "public_key": policy.public_key,
+            "issued_at": policy.issued_at,
+            "expires_at": policy.expires_at,
+            "required_sandbox_guarantee": policy.required_sandbox_guarantee,
+            "allowed_providers": policy.allowed_providers,
+            "lanes": policy.lanes,
+            "route_checked": route_checked,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
+    println!("Model Policy Verification PASSED");
+    println!("================================");
+    println!("Policy ID:         {}", sanitize_public_id(&policy.policy_id));
+    println!("Policy Digest:     {}", digest);
+    println!("Public Key:        {}", policy.public_key);
+    println!("Required Sandbox:  {}", policy.required_sandbox_guarantee);
+    println!("Allowed Providers: {}", policy.allowed_providers.join(", "));
+    println!("Lanes:             {}", policy.lanes.len());
+    if route_checked {
+        println!("Route Check:       ALLOWED");
     }
     Ok(())
 }
