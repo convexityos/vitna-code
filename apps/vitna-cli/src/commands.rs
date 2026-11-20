@@ -32,7 +32,7 @@ const MAX_HANDSHAKE_REPLY_BYTES: u32 = 64 * 1024;
 /// Sanitizes a public local identifier (such as a local session slug or UUID,
 /// never a credential) by keeping only safe ASCII identifier characters so
 /// corrupted local files cannot inject terminal escape sequences.
-fn sanitize_public_id(raw: &str) -> String {
+pub(crate) fn sanitize_public_id(raw: &str) -> String {
     let mut cleaned = String::with_capacity(raw.len());
     for byte in raw.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':') {
@@ -43,7 +43,7 @@ fn sanitize_public_id(raw: &str) -> String {
 }
 
 /// Writes one user-facing CLI output line directly to stdout.
-fn write_stdout_line(line: &str) {
+pub(crate) fn write_stdout_line(line: &str) {
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     let _ = out.write_all(line.as_bytes());

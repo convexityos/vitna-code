@@ -1152,7 +1152,10 @@ fn run_verify(
             );
             println!("=====================================");
             println!("Run ID:            {}", r.run_id);
-            println!("Session ID:        {}", r.session_id);
+            commands::write_stdout_line(&format!(
+                "Session ID:        {}",
+                commands::sanitize_public_id(&r.session_id)
+            ));
             println!("Model:             {} ({})", r.model_selection.model_sku, r.model_selection.provider);
             println!("Canonical SHA-256: {}", audit.canonical_sha256);
             println!(
