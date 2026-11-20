@@ -158,6 +158,10 @@ enum Commands {
         /// `model_selection.policy_digest`, provider/model, and isolation label.
         #[arg(long)]
         policy: Option<PathBuf>,
+        /// Optional `vitna-mandate-config-v1` JSON file to verify against `receipt.mandate_provenance`
+        /// (Ed25519 `am/1` chain hash, root JTI, delegation path, ledger, currency, and max_total cap).
+        #[arg(long)]
+        mandate: Option<PathBuf>,
         /// Fail verification if any audited `DataEnvelope` is degraded, stale, or missing freshness metadata.
         #[arg(long)]
         strict_freshness: bool,
@@ -564,6 +568,18 @@ enum ReceiptCommands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Compare two signed receipts (by run ID or file path) across model, isolation, files, evidence, egress, and mandate spend
+    Diff {
+        /// Baseline receipt run ID or JSON file path.
+        run_a: String,
+        /// Target receipt run ID or JSON file path.
+        run_b: String,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Emit machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -598,6 +614,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             envelopes,
             store,
             policy,
+            mandate,
             strict_freshness,
             require_signature,
             json,
@@ -609,6 +626,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &envelopes,
                 store.as_deref(),
                 policy.as_deref(),
+                mandate.as_deref(),
                 strict_freshness,
                 require_signature,
                 json,
@@ -1053,6 +1071,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     std::process::exit(1);
                 }
             }
+            ReceiptCommands::Diff {
+                run_a,
+                run_b,
+                workspace,
+                json,
+            } => {
+                if let Err(e) = commands::run_receipt_diff(&run_a, &run_b, &workspace, json) {
+                    eprintln!("vitna receipt diff: {e}");
+                    std::process::exit(1);
+                }
+            }
         },
         None => {
             println!("Vitna Code. Run 'vitna --help' for available commands.");
@@ -1238,6 +1267,7 @@ fn run_verify(
     envelopes: &[PathBuf],
     store: Option<&Path>,
     policy: Option<&Path>,
+    mandate: Option<&Path>,
     strict_freshness: bool,
     require_signature: bool,
     as_json: bool,
@@ -1265,6 +1295,7 @@ fn run_verify(
         || !envelopes.is_empty()
         || store.is_some()
         || policy.is_some()
+        || mandate.is_some()
         || strict_freshness
         || require_signature
         || as_json;
@@ -1318,7 +1349,10 @@ fn run_verify(
         let policy_audit =
             policy.map(|p| commands::verify_receipt_against_policy(p, &verified.receipt));
         let policy_ok = policy_audit.as_ref().map(|p| p.matched).unwrap_or(true);
-        let overall_valid = audit.overall_valid && event_store_ok && policy_ok;
+        let mandate_audit =
+            mandate.map(|m| commands::verify_receipt_against_mandate(m, &verified.receipt));
+        let mandate_ok = mandate_audit.as_ref().map(|m| m.matched).unwrap_or(true);
+        let overall_valid = audit.overall_valid && event_store_ok && policy_ok && mandate_ok;
 
         if as_json {
             let out = serde_json::json!({
@@ -1332,6 +1366,7 @@ fn run_verify(
                 "audit": audit,
                 "event_store": event_store_audit,
                 "policy": policy_audit,
+                "mandate": mandate_audit,
             });
             println!("{}", serde_json::to_string_pretty(&out)?);
         } else {
@@ -1389,6 +1424,19 @@ fn run_verify(
                     pa.policy_path
                 );
             }
+            if let Some(ma) = &mandate_audit {
+                let root = ma
+                    .expected_root_jti
+                    .as_deref()
+                    .map(commands::sanitize_public_id)
+                    .unwrap_or_else(|| "unknown".to_string());
+                println!(
+                    "Mandate (am/1):    {} (root {}, {})",
+                    if ma.matched { "MATCHED" } else { "MISMATCH" },
+                    root,
+                    ma.mandate_path
+                );
+            }
             if !audit.envelopes.is_empty() {
                 println!("DataEnvelopes:     {} audited", audit.envelopes.len());
                 for env in &audit.envelopes {
@@ -1413,6 +1461,11 @@ fn run_verify(
                     policy_audit
                         .iter()
                         .flat_map(|pa| pa.errors.iter().map(String::as_str)),
+                )
+                .chain(
+                    mandate_audit
+                        .iter()
+                        .flat_map(|ma| ma.errors.iter().map(String::as_str)),
                 )
                 .collect();
             if !combined_errors.is_empty() {

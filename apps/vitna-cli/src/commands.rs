@@ -644,6 +644,368 @@ pub fn verify_receipt_against_policy(
     audit
 }
 
+/// Cryptographic audit result checking a signed `VitnaRunReceiptV1` against an
+/// `am/1` Agent Mandate bundle (`vitna-mandate-config-v1`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MandateReceiptAudit {
+    pub mandate_path: String,
+    pub matched: bool,
+    pub chain_verified: bool,
+    pub expected_root_jti: Option<String>,
+    pub expected_chain_hash: Option<String>,
+    pub receipt_root_jti: Option<String>,
+    pub receipt_chain_hash: Option<String>,
+    pub receipt_total_spent: Option<String>,
+    pub chain_hash_matched: bool,
+    pub within_budget: bool,
+    pub errors: Vec<String>,
+}
+
+/// Verifies a `vitna-mandate-config-v1` Ed25519 `am/1` delegation chain and
+/// asserts that `receipt.mandate_provenance` matches its `root_jti`,
+/// `chain_hash`, delegation `path`, `ledger`, `currency`, and cumulative
+/// `max_total` budget cap fail-closed.
+pub fn verify_receipt_against_mandate(
+    mandate_path: &Path,
+    receipt: &VitnaRunReceiptV1,
+) -> MandateReceiptAudit {
+    let mut audit = MandateReceiptAudit {
+        mandate_path: mandate_path.display().to_string(),
+        matched: false,
+        chain_verified: false,
+        expected_root_jti: None,
+        expected_chain_hash: None,
+        receipt_root_jti: receipt
+            .mandate_provenance
+            .as_ref()
+            .map(|m| m.root_jti.clone()),
+        receipt_chain_hash: receipt
+            .mandate_provenance
+            .as_ref()
+            .map(|m| m.chain_hash.clone()),
+        receipt_total_spent: receipt
+            .mandate_provenance
+            .as_ref()
+            .map(|m| format!("{} {}", m.total_spent, m.currency)),
+        chain_hash_matched: false,
+        within_budget: false,
+        errors: Vec::new(),
+    };
+
+    let session = match vitna_mcp::LiveMandateSession::from_file(mandate_path) {
+        Ok(s) => s,
+        Err(e) => {
+            audit.errors.push(e);
+            return audit;
+        }
+    };
+    let chain = session.verified_chain();
+    audit.chain_verified = true;
+    audit.expected_root_jti = Some(chain.root_jti.clone());
+    audit.expected_chain_hash = Some(chain.chain_hash.clone());
+
+    let Some(mp) = &receipt.mandate_provenance else {
+        audit
+            .errors
+            .push("receipt is missing mandate_provenance".to_string());
+        return audit;
+    };
+
+    if mp.root_jti != chain.root_jti {
+        audit.errors.push(format!(
+            "receipt mandate root_jti '{}' does not match verified mandate root '{}'",
+            sanitize_public_id(&mp.root_jti),
+            sanitize_public_id(&chain.root_jti)
+        ));
+    }
+    if mp.chain_hash == chain.chain_hash {
+        audit.chain_hash_matched = true;
+    } else {
+        audit.errors.push(format!(
+            "receipt mandate chain_hash {} does not match verified chain_hash {}",
+            short_hash(&mp.chain_hash),
+            short_hash(&chain.chain_hash)
+        ));
+    }
+    if mp.path != chain.path {
+        audit.errors.push(format!(
+            "receipt mandate delegation path ({}) does not match verified path ({})",
+            mp.path.join(" -> "),
+            chain.path.join(" -> ")
+        ));
+    }
+    if mp.ledger != chain.ledger {
+        audit.errors.push(format!(
+            "receipt mandate ledger '{}' does not match verified ledger '{}'",
+            mp.ledger, chain.ledger
+        ));
+    }
+    if !mp.currency.eq_ignore_ascii_case(session.currency()) {
+        audit.errors.push(format!(
+            "receipt mandate currency '{}' does not match mandate currency '{}'",
+            mp.currency,
+            session.currency()
+        ));
+    }
+
+    let spent_money = vitna_policy::mandate::Money {
+        amt: mp.total_spent.clone(),
+        cur: mp.currency.clone(),
+    };
+    match spent_money.to_scaled() {
+        Ok(spent_scaled) => {
+            if let Some(ref max_total) = chain.effective.max_total {
+                if !max_total.cur.eq_ignore_ascii_case(&mp.currency) {
+                    audit.errors.push(format!(
+                        "receipt currency '{}' does not match max_total currency '{}'",
+                        mp.currency, max_total.cur
+                    ));
+                } else {
+                    match max_total.to_scaled() {
+                        Ok(cap_scaled) if spent_scaled <= cap_scaled => {
+                            audit.within_budget = true;
+                        }
+                        Ok(_) => {
+                            audit.errors.push(format!(
+                                "receipt total_spent {} {} exceeds mandate max_total {} {}",
+                                mp.total_spent, mp.currency, max_total.amt, max_total.cur
+                            ));
+                        }
+                        Err(e) => audit.errors.push(format!("invalid mandate max_total: {e}")),
+                    }
+                }
+            } else {
+                audit.within_budget = true;
+            }
+        }
+        Err(e) => {
+            audit
+                .errors
+                .push(format!("invalid receipt mandate total_spent '{}': {e}", mp.total_spent));
+        }
+    }
+
+    audit.matched =
+        audit.chain_verified && audit.chain_hash_matched && audit.within_budget && audit.errors.is_empty();
+    audit
+}
+
+fn isolation_strength_rank(label: &str) -> Option<u8> {
+    match label {
+        "full_access" => Some(0),
+        "guarded" => Some(1),
+        "read_only" => Some(2),
+        "strong" => Some(3),
+        _ => None,
+    }
+}
+
+/// `vitna receipt diff <run_a> <run_b> [--workspace <DIR>] [--json]`
+pub fn run_receipt_diff(
+    run_a: &str,
+    run_b: &str,
+    workspace: &Path,
+    as_json: bool,
+) -> Result<(), String> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let receipt_a = load_receipt_by_id_or_path(workspace, run_a)?;
+    let receipt_b = load_receipt_by_id_or_path(workspace, run_b)?;
+
+    let files_a: BTreeMap<&str, &str> = receipt_a
+        .changeset
+        .files_modified
+        .iter()
+        .map(|f| (f.path.as_str(), f.postimage_hash.as_str()))
+        .collect();
+    let files_b: BTreeMap<&str, &str> = receipt_b
+        .changeset
+        .files_modified
+        .iter()
+        .map(|f| (f.path.as_str(), f.postimage_hash.as_str()))
+        .collect();
+
+    let mut only_in_a: Vec<String> = Vec::new();
+    let mut only_in_b: Vec<String> = Vec::new();
+    let mut postimage_changed: Vec<String> = Vec::new();
+    let mut unchanged: Vec<String> = Vec::new();
+
+    for (path, hash_a) in &files_a {
+        match files_b.get(path) {
+            None => only_in_a.push((*path).to_string()),
+            Some(hash_b) if hash_b != hash_a => postimage_changed.push((*path).to_string()),
+            Some(_) => unchanged.push((*path).to_string()),
+        }
+    }
+    for path in files_b.keys() {
+        if !files_a.contains_key(path) {
+            only_in_b.push((*path).to_string());
+        }
+    }
+
+    let model_changed = receipt_a.model_selection.provider != receipt_b.model_selection.provider
+        || receipt_a.model_selection.model_sku != receipt_b.model_selection.model_sku
+        || receipt_a.model_selection.policy_digest != receipt_b.model_selection.policy_digest;
+
+    let isolation_changed = receipt_a.isolation_label != receipt_b.isolation_label;
+    let isolation_regression = match (
+        isolation_strength_rank(&receipt_a.isolation_label),
+        isolation_strength_rank(&receipt_b.isolation_label),
+    ) {
+        (Some(ra), Some(rb)) => rb < ra,
+        _ => false,
+    };
+
+    let domains_a: BTreeSet<&str> = receipt_a
+        .egress_calls
+        .iter()
+        .map(|e| e.target_domain.as_str())
+        .collect();
+    let new_egress_domains: Vec<String> = receipt_b
+        .egress_calls
+        .iter()
+        .map(|e| e.target_domain.as_str())
+        .filter(|d| !domains_a.contains(d))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    let grade_a = highest_evidence_grade(&receipt_a);
+    let grade_b = highest_evidence_grade(&receipt_b);
+    let spent_a = receipt_a
+        .mandate_provenance
+        .as_ref()
+        .map(|m| format!("{} {}", m.total_spent, m.currency));
+    let spent_b = receipt_b
+        .mandate_provenance
+        .as_ref()
+        .map(|m| format!("{} {}", m.total_spent, m.currency));
+
+    if as_json {
+        let out = json!({
+            "run_a": receipt_a.run_id,
+            "run_b": receipt_b.run_id,
+            "model": {
+                "changed": model_changed,
+                "a": receipt_a.model_selection,
+                "b": receipt_b.model_selection,
+            },
+            "isolation": {
+                "changed": isolation_changed,
+                "regression": isolation_regression,
+                "a": receipt_a.isolation_label,
+                "b": receipt_b.isolation_label,
+            },
+            "completion": {
+                "changed": receipt_a.completion_state != receipt_b.completion_state,
+                "a": receipt_a.completion_state,
+                "b": receipt_b.completion_state,
+            },
+            "files": {
+                "only_in_a": only_in_a,
+                "only_in_b": only_in_b,
+                "postimage_changed": postimage_changed,
+                "unchanged": unchanged,
+            },
+            "evidence": {
+                "count_a": receipt_a.evidence_items.len(),
+                "count_b": receipt_b.evidence_items.len(),
+                "highest_grade_a": grade_a,
+                "highest_grade_b": grade_b,
+            },
+            "egress": {
+                "count_a": receipt_a.egress_calls.len(),
+                "count_b": receipt_b.egress_calls.len(),
+                "new_domains": new_egress_domains,
+            },
+            "mandate": {
+                "root_a": receipt_a.mandate_provenance.as_ref().map(|m| &m.root_jti),
+                "root_b": receipt_b.mandate_provenance.as_ref().map(|m| &m.root_jti),
+                "spent_a": spent_a,
+                "spent_b": spent_b,
+            },
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
+    write_stdout_line(&format!(
+        "Vitna Receipt Diff: {} -> {}",
+        sanitize_public_id(&receipt_a.run_id),
+        sanitize_public_id(&receipt_b.run_id)
+    ));
+    println!("========================================");
+    println!(
+        "Model:      {} ({}) -> {} ({}){}",
+        receipt_a.model_selection.model_sku,
+        receipt_a.model_selection.provider,
+        receipt_b.model_selection.model_sku,
+        receipt_b.model_selection.provider,
+        if model_changed { " [CHANGED]" } else { "" }
+    );
+    println!(
+        "Isolation:  {} -> {}{}",
+        receipt_a.isolation_label,
+        receipt_b.isolation_label,
+        if isolation_regression {
+            " [REGRESSION]"
+        } else if isolation_changed {
+            " [CHANGED]"
+        } else {
+            ""
+        }
+    );
+    println!(
+        "Completion: {} -> {}",
+        receipt_a.completion_state, receipt_b.completion_state
+    );
+    println!(
+        "Evidence:   {} ({}) -> {} ({})",
+        receipt_a.evidence_items.len(),
+        grade_a,
+        receipt_b.evidence_items.len(),
+        grade_b
+    );
+    println!(
+        "Egress:     {} -> {} call(s){}",
+        receipt_a.egress_calls.len(),
+        receipt_b.egress_calls.len(),
+        if new_egress_domains.is_empty() {
+            String::new()
+        } else {
+            format!(" (new domains: {})", new_egress_domains.join(", "))
+        }
+    );
+    if spent_a.is_some() || spent_b.is_some() {
+        println!(
+            "Mandate:    {} -> {}",
+            spent_a.as_deref().unwrap_or("none"),
+            spent_b.as_deref().unwrap_or("none")
+        );
+    }
+    println!(
+        "Files:      +{} added, -{} removed, ~{} changed, ={} unchanged",
+        only_in_b.len(),
+        only_in_a.len(),
+        postimage_changed.len(),
+        unchanged.len()
+    );
+    for p in &only_in_b {
+        write_stdout_line(&format!("  + {p}"));
+    }
+    for p in &only_in_a {
+        write_stdout_line(&format!("  - {p}"));
+    }
+    for p in &postimage_changed {
+        write_stdout_line(&format!("  ~ {p}"));
+    }
+    Ok(())
+}
+
 /// `vitna receipt show <run_id>`
 pub fn run_receipt_show(
     run_id: &str,

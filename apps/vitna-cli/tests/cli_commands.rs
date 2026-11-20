@@ -2679,6 +2679,372 @@ fn verify_and_doctor_with_signed_policy_cli() {
     let _ = fs::remove_dir_all(&base);
 }
 
+#[test]
+fn verify_mandate_and_receipt_diff_cli() {
+    use vitna_receipts::{EgressCallRecord, MandateProvenanceRecord};
+
+    let base = temp_dir("verify_mandate_and_diff");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    let mandate_a = base.join("mandate_a.json");
+    let mandate_b = base.join("mandate_b.json");
+
+    // 1. Create two distinct am/1 mandate bundles, with mandate_a capped at 1.00 USD.
+    let init_a = run_vitna(
+        &[
+            "mandate",
+            "init",
+            "--out",
+            mandate_a.to_str().unwrap(),
+            "--max-total",
+            "1.00",
+            "--currency",
+            "USD",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        init_a.status.success(),
+        "mandate init A failed: {}",
+        String::from_utf8_lossy(&init_a.stderr)
+    );
+    let init_b = run_vitna(
+        &[
+            "mandate",
+            "init",
+            "--out",
+            mandate_b.to_str().unwrap(),
+            "--max-total",
+            "5.00",
+            "--currency",
+            "USD",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        init_b.status.success(),
+        "mandate init B failed: {}",
+        String::from_utf8_lossy(&init_b.stderr)
+    );
+
+    // Inspect mandate_a to capture its verified root_jti, chain_hash, path, and ledger.
+    let insp_a = run_vitna(
+        &["mandate", "inspect", mandate_a.to_str().unwrap(), "--json"],
+        &home,
+        &ws,
+    );
+    assert!(insp_a.status.success());
+    let ma: Value = serde_json::from_slice(&insp_a.stdout).unwrap();
+    let root_jti = ma["root_jti"].as_str().unwrap().to_string();
+    let chain_hash = ma["chain_hash"].as_str().unwrap().to_string();
+    let ledger = ma["ledger"].as_str().unwrap().to_string();
+    let path: Vec<String> = ma["path"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+
+    // 2. Write two signed receipts into the workspace:
+    //    - run-diff-a: guarded, vitna/code, 3 files, 1 sandbox_captured evidence, within budget (0.25 USD)
+    //    - run-diff-b: full_access (isolation regression!), openai/gpt-5, changed + added file,
+    //                  1 new egress domain, over budget (2.50 USD > 1.00 USD)
+    let key = generate_signing_key();
+    let pub_hex = hex::encode(key.verifying_key().to_bytes());
+    let receipts_dir = ws.join(".vitna").join("receipts");
+    fs::create_dir_all(&receipts_dir).unwrap();
+
+    let mut receipt_a = VitnaRunReceiptV1 {
+        schema_version: "vitna-run-receipt-v1".to_string(),
+        run_id: "run-diff-a".to_string(),
+        session_id: "sess-diff".to_string(),
+        workspace_fingerprint: "ws-fp-diff".to_string(),
+        base_commit_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        model_selection: ModelSelectionRecord {
+            provider: "vitna-runtime".to_string(),
+            model_sku: "vitna/code".to_string(),
+            routing_reason: "runtime_lane:vitna/code".to_string(),
+            policy_digest: None,
+        },
+        event_hash_chain_root: "0".repeat(64),
+        isolation_label: "guarded".to_string(),
+        completion_state: "completed_with_evidence".to_string(),
+        evidence_items: vec![EvidenceItemRecord {
+            evidence_id: "ev-1".to_string(),
+            grade: "sandbox_captured".to_string(),
+            description: "cargo test passed".to_string(),
+            artifact_digest: None,
+        }],
+        changeset: ChangeSetRecord {
+            files_modified: vec![
+                FileModificationRecord {
+                    path: "src/file1.rs".to_string(),
+                    preimage_hash: NULL_HASH.to_string(),
+                    postimage_hash: sha256_hex(b"file1"),
+                },
+                FileModificationRecord {
+                    path: "src/file2.rs".to_string(),
+                    preimage_hash: NULL_HASH.to_string(),
+                    postimage_hash: sha256_hex(b"file2-v1"),
+                },
+                FileModificationRecord {
+                    path: "src/same.rs".to_string(),
+                    preimage_hash: NULL_HASH.to_string(),
+                    postimage_hash: sha256_hex(b"same"),
+                },
+            ],
+            diff_digest: "c".repeat(64),
+        },
+        runner_execution_statements: Vec::new(),
+        egress_calls: Vec::new(),
+        child_receipt_roots: Vec::new(),
+        device_public_key: None,
+        mandate_provenance: Some(MandateProvenanceRecord {
+            chain_hash: chain_hash.clone(),
+            root_jti: root_jti.clone(),
+            path: path.clone(),
+            ledger: ledger.clone(),
+            currency: "USD".to_string(),
+            total_spent: "0.25".to_string(),
+            spend_digests: vec!["d".repeat(64)],
+        }),
+        device_signature: String::new(),
+    };
+    receipt_a.sign(&key).unwrap();
+    let receipt_a_path = receipts_dir.join("run-diff-a.json");
+    fs::write(&receipt_a_path, serde_json::to_string_pretty(&receipt_a).unwrap()).unwrap();
+
+    let mut receipt_b = VitnaRunReceiptV1 {
+        schema_version: "vitna-run-receipt-v1".to_string(),
+        run_id: "run-diff-b".to_string(),
+        session_id: "sess-diff".to_string(),
+        workspace_fingerprint: "ws-fp-diff".to_string(),
+        base_commit_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        model_selection: ModelSelectionRecord {
+            provider: "openai".to_string(),
+            model_sku: "gpt-5".to_string(),
+            routing_reason: "direct_provider:openai".to_string(),
+            policy_digest: None,
+        },
+        event_hash_chain_root: "0".repeat(64),
+        isolation_label: "full_access".to_string(),
+        completion_state: "completed_with_unknowns".to_string(),
+        evidence_items: Vec::new(),
+        changeset: ChangeSetRecord {
+            files_modified: vec![
+                FileModificationRecord {
+                    path: "src/file2.rs".to_string(),
+                    preimage_hash: NULL_HASH.to_string(),
+                    postimage_hash: sha256_hex(b"file2-v2"),
+                },
+                FileModificationRecord {
+                    path: "src/file3.rs".to_string(),
+                    preimage_hash: NULL_HASH.to_string(),
+                    postimage_hash: sha256_hex(b"file3"),
+                },
+                FileModificationRecord {
+                    path: "src/same.rs".to_string(),
+                    preimage_hash: NULL_HASH.to_string(),
+                    postimage_hash: sha256_hex(b"same"),
+                },
+            ],
+            diff_digest: "e".repeat(64),
+        },
+        runner_execution_statements: Vec::new(),
+        egress_calls: vec![EgressCallRecord {
+            target_domain: "api.example.com".to_string(),
+            method: "GET".to_string(),
+            redacted_url: "https://api.example.com/v1/status".to_string(),
+            request_sha256: "1".repeat(64),
+            status_code: 200,
+            response_sha256: "2".repeat(64),
+            bytes_sent: 12,
+            bytes_received: 64,
+            latency_ms: 42,
+        }],
+        child_receipt_roots: Vec::new(),
+        device_public_key: None,
+        mandate_provenance: Some(MandateProvenanceRecord {
+            chain_hash,
+            root_jti,
+            path,
+            ledger,
+            currency: "USD".to_string(),
+            total_spent: "2.50".to_string(),
+            spend_digests: vec!["f".repeat(64)],
+        }),
+        device_signature: String::new(),
+    };
+    receipt_b.sign(&key).unwrap();
+    let receipt_b_path = receipts_dir.join("run-diff-b.json");
+    fs::write(&receipt_b_path, serde_json::to_string_pretty(&receipt_b).unwrap()).unwrap();
+
+    // Receipt without any mandate provenance.
+    write_signed_receipt(&ws, "run-no-mandate", Vec::new(), Vec::new());
+    let no_mandate_path = receipts_dir.join("run-no-mandate.json");
+
+    // 3. `vitna verify --mandate` succeeds for matching, within-budget receipt.
+    let ok = run_vitna(
+        &[
+            "verify",
+            receipt_a_path.to_str().unwrap(),
+            "--key",
+            &pub_hex,
+            "--mandate",
+            mandate_a.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        ok.status.success(),
+        "vitna verify --mandate failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&ok.stdout),
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let ok_doc: Value = serde_json::from_slice(&ok.stdout).unwrap();
+    assert_eq!(ok_doc["overall_valid"], true);
+    assert_eq!(ok_doc["mandate"]["matched"], true);
+    assert_eq!(ok_doc["mandate"]["chain_hash_matched"], true);
+    assert_eq!(ok_doc["mandate"]["within_budget"], true);
+
+    // Human output prints Mandate (am/1): MATCHED.
+    let human_ok = run_vitna(
+        &[
+            "verify",
+            receipt_a_path.to_str().unwrap(),
+            "--key",
+            &pub_hex,
+            "--mandate",
+            mandate_a.to_str().unwrap(),
+        ],
+        &home,
+        &ws,
+    );
+    assert!(human_ok.status.success());
+    assert!(String::from_utf8_lossy(&human_ok.stdout).contains("Mandate (am/1):    MATCHED"));
+
+    // 4. Wrong mandate bundle fails closed.
+    let wrong = run_vitna(
+        &[
+            "verify",
+            receipt_a_path.to_str().unwrap(),
+            "--mandate",
+            mandate_b.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!wrong.status.success());
+    let wrong_doc: Value = serde_json::from_slice(&wrong.stdout).unwrap();
+    assert_eq!(wrong_doc["overall_valid"], false);
+    assert_eq!(wrong_doc["mandate"]["matched"], false);
+    assert_eq!(wrong_doc["mandate"]["chain_hash_matched"], false);
+
+    // 5. Over-budget receipt (2.50 USD vs 1.00 USD cap) fails closed.
+    let over = run_vitna(
+        &[
+            "verify",
+            receipt_b_path.to_str().unwrap(),
+            "--mandate",
+            mandate_a.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!over.status.success());
+    let over_doc: Value = serde_json::from_slice(&over.stdout).unwrap();
+    assert_eq!(over_doc["overall_valid"], false);
+    assert_eq!(over_doc["mandate"]["matched"], false);
+    assert_eq!(over_doc["mandate"]["within_budget"], false);
+
+    // 6. Receipt lacking mandate_provenance fails closed.
+    let missing = run_vitna(
+        &[
+            "verify",
+            no_mandate_path.to_str().unwrap(),
+            "--mandate",
+            mandate_a.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!missing.status.success());
+    let missing_doc: Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(missing_doc["overall_valid"], false);
+    assert_eq!(missing_doc["mandate"]["matched"], false);
+
+    // 7. `vitna receipt diff` compares model, isolation regression, files, egress, and mandate spend.
+    let diff_json = run_vitna(
+        &[
+            "receipt",
+            "diff",
+            "run-diff-a",
+            "run-diff-b",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        diff_json.status.success(),
+        "vitna receipt diff --json failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&diff_json.stdout),
+        String::from_utf8_lossy(&diff_json.stderr)
+    );
+    let diff: Value = serde_json::from_slice(&diff_json.stdout).unwrap();
+    assert_eq!(diff["model"]["changed"], true);
+    assert_eq!(diff["isolation"]["changed"], true);
+    assert_eq!(diff["isolation"]["regression"], true);
+    assert_eq!(diff["files"]["only_in_a"], serde_json::json!(["src/file1.rs"]));
+    assert_eq!(diff["files"]["only_in_b"], serde_json::json!(["src/file3.rs"]));
+    assert_eq!(
+        diff["files"]["postimage_changed"],
+        serde_json::json!(["src/file2.rs"])
+    );
+    assert_eq!(diff["files"]["unchanged"], serde_json::json!(["src/same.rs"]));
+    assert_eq!(
+        diff["egress"]["new_domains"],
+        serde_json::json!(["api.example.com"])
+    );
+    assert_eq!(diff["evidence"]["highest_grade_a"], "sandbox_captured");
+    assert_eq!(diff["evidence"]["highest_grade_b"], "none");
+    assert_eq!(diff["mandate"]["spent_a"], "0.25 USD");
+    assert_eq!(diff["mandate"]["spent_b"], "2.50 USD");
+
+    // Human output surfaces [CHANGED], [REGRESSION], and new egress domain.
+    let diff_human = run_vitna(
+        &[
+            "receipt",
+            "diff",
+            "run-diff-a",
+            "run-diff-b",
+            "--workspace",
+            ws.to_str().unwrap(),
+        ],
+        &home,
+        &ws,
+    );
+    assert!(diff_human.status.success());
+    let human_out = String::from_utf8_lossy(&diff_human.stdout);
+    assert!(human_out.contains("[CHANGED]"), "{human_out}");
+    assert!(human_out.contains("[REGRESSION]"), "{human_out}");
+    assert!(human_out.contains("api.example.com"), "{human_out}");
+
+    let _ = fs::remove_dir_all(&base);
+}
+
 
 
 
