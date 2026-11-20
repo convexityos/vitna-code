@@ -2481,6 +2481,204 @@ fn local_first_offline_lifecycle_without_network_cli() {
     let _ = fs::remove_dir_all(&base);
 }
 
+#[test]
+fn verify_and_doctor_with_signed_policy_cli() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let base = temp_dir("verify_doctor_policy");
+    let home = base.join("home");
+    let ws = base.join("ws");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&ws).unwrap();
+
+    let policy_path = base.join("active-policy.json");
+    let other_policy_path = base.join("other-policy.json");
+
+    let init = run_vitna(
+        &[
+            "policy",
+            "init",
+            "--out",
+            policy_path.to_str().unwrap(),
+            "--policy-id",
+            "audit-policy-v1",
+            "--allow-provider",
+            "vitna-runtime",
+            "--lane",
+            "vitna/code=vitna-runtime:vitna/code",
+            "--required-sandbox",
+            "guarded",
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
+    let init_doc: Value = serde_json::from_slice(&init.stdout).unwrap();
+    let expected_digest = init_doc["policy_digest"].as_str().unwrap().to_string();
+
+    // 1. `vitna doctor --policy <valid> --json` reports verified policy.
+    let doc_ok = run_vitna(
+        &[
+            "doctor",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--policy",
+            policy_path.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        doc_ok.status.success(),
+        "vitna doctor --policy failed: {}",
+        String::from_utf8_lossy(&doc_ok.stderr)
+    );
+    let doc_json: Value = serde_json::from_slice(&doc_ok.stdout).unwrap();
+    assert_eq!(doc_json["policy"]["valid"], true);
+    assert_eq!(doc_json["policy"]["policy_id"], "audit-policy-v1");
+    assert_eq!(doc_json["policy"]["policy_digest"], expected_digest);
+
+    // 2. Run a policy-enforced turn to produce a signed receipt stamped with policy_digest.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock runtime");
+    let addr = listener.local_addr().unwrap();
+    let handle = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 8192];
+            let _ = stream.read(&mut buf);
+            let body = serde_json::json!({
+                "id": "chatcmpl-policy-verify",
+                "object": "chat.completion",
+                "model": "vitna/code",
+                "choices": [{
+                    "index": 0,
+                    "message": { "role": "assistant", "content": "Done." },
+                    "finish_reason": "stop"
+                }],
+                "usage": { "prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6 }
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    let run = run_vitna(
+        &[
+            "run",
+            "verify policy receipt",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--runtime-url",
+            &format!("http://{addr}"),
+            "--lane",
+            "vitna/code",
+            "--policy",
+            policy_path.to_str().unwrap(),
+        ],
+        &home,
+        &ws,
+    );
+    let _ = handle.join();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+
+    let receipt_path = fs::read_dir(ws.join(".vitna").join("receipts"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+        .expect("signed receipt");
+    let store_path = ws.join(".vitna").join("store.db");
+
+    // 3. `vitna verify <receipt> --policy <valid> --store <store.db> --require-signature --json` passes.
+    let verify_ok = run_vitna(
+        &[
+            "verify",
+            receipt_path.to_str().unwrap(),
+            "--policy",
+            policy_path.to_str().unwrap(),
+            "--store",
+            store_path.to_str().unwrap(),
+            "--require-signature",
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(
+        verify_ok.status.success(),
+        "vitna verify --policy --store failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&verify_ok.stdout),
+        String::from_utf8_lossy(&verify_ok.stderr)
+    );
+    let vdoc: Value = serde_json::from_slice(&verify_ok.stdout).unwrap();
+    assert_eq!(vdoc["overall_valid"], true);
+    assert_eq!(vdoc["event_store"]["matched"], true);
+    assert_eq!(vdoc["policy"]["matched"], true);
+    assert_eq!(vdoc["policy"]["digest_matched"], true);
+    assert_eq!(vdoc["policy"]["route_and_sandbox_allowed"], true);
+
+    // 4. Verifying against a different signed policy fails closed.
+    assert!(run_vitna(
+        &[
+            "policy",
+            "init",
+            "--out",
+            other_policy_path.to_str().unwrap(),
+            "--policy-id",
+            "different-policy-v2",
+            "--required-sandbox",
+            "strong",
+        ],
+        &home,
+        &ws,
+    )
+    .status
+    .success());
+    let verify_mismatch = run_vitna(
+        &[
+            "verify",
+            receipt_path.to_str().unwrap(),
+            "--policy",
+            other_policy_path.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!verify_mismatch.status.success());
+    let mdoc: Value = serde_json::from_slice(&verify_mismatch.stdout).unwrap();
+    assert_eq!(mdoc["overall_valid"], false);
+    assert_eq!(mdoc["policy"]["matched"], false);
+
+    // 5. `vitna doctor --policy <tampered>` fails closed.
+    let tampered = fs::read_to_string(&policy_path)
+        .unwrap()
+        .replace("guarded", "full_access");
+    fs::write(&policy_path, tampered).unwrap();
+    let doc_bad = run_vitna(
+        &[
+            "doctor",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--policy",
+            policy_path.to_str().unwrap(),
+            "--json",
+        ],
+        &home,
+        &ws,
+    );
+    assert!(!doc_bad.status.success());
+
+    let _ = fs::remove_dir_all(&base);
+}
+
 
 
 

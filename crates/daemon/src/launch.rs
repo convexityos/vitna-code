@@ -63,6 +63,12 @@ pub struct Launch {
     /// Optional path to a `vitna-mandate-config-v1` JSON file enforcing an `am/1`
     /// Agent Mandate delegation chain across attached MCP tools and receipts.
     pub mandate_file: Option<PathBuf>,
+    /// Optional path to a signed `vitna-model-policy-v1` JSON file enforcing
+    /// allowed providers, model lanes, and minimum sandbox guarantee.
+    pub policy_file: Option<PathBuf>,
+    /// Canonical SHA-256 digest of the verified `SignedModelPolicy` when
+    /// `policy_file` is configured, stamped onto signed receipts.
+    pub verified_policy_digest: Option<String>,
 }
 
 impl Launch {
@@ -94,6 +100,8 @@ impl Launch {
             sandbox_guarantee: "guarded".to_string(),
             sandbox_image: None,
             mandate_file: None,
+            policy_file: None,
+            verified_policy_digest: None,
         })
     }
 
@@ -305,6 +313,57 @@ impl Launch {
         self.mandate_file = mandate_file;
         Ok(self)
     }
+
+    /// Configures and eagerly enforces a signed `vitna-model-policy-v1` JSON file
+    /// (`--policy <FILE>`) against the configured model route and sandbox guarantee.
+    pub fn with_policy(mut self, policy_file: Option<PathBuf>) -> Result<Launch, String> {
+        let Some(path) = policy_file else {
+            self.policy_file = None;
+            self.verified_policy_digest = None;
+            return Ok(self);
+        };
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| format!("could not read model policy {}: {e}", path.display()))?;
+        let policy: vitna_policy::SignedModelPolicy = serde_json::from_str(&raw)
+            .map_err(|e| format!("invalid model policy {}: {e}", path.display()))?;
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let route_pair: Option<(&str, &str)> = if let Some(lane) = &self.route {
+            Some((vitna_providers::RUNTIME_PROVIDER_NAME, lane.lane.as_str()))
+        } else if let Some(direct) = &self.direct {
+            Some((direct.provider.as_str(), direct.model.as_str()))
+        } else if let Some(anchor) = &self.anchor {
+            Some(("vitna-anchor", anchor.model.as_str()))
+        } else {
+            None
+        };
+
+        let digest = match route_pair {
+            Some((provider, model_sku)) => {
+                policy.enforce(now_secs, None, provider, model_sku, &self.sandbox_guarantee)?
+            }
+            None => {
+                let d = policy.verify_for_use(now_secs, None)?;
+                if !vitna_policy::sandbox_satisfies_requirement(
+                    &self.sandbox_guarantee,
+                    &policy.required_sandbox_guarantee,
+                ) {
+                    return Err(format!(
+                        "sandbox guarantee '{}' does not satisfy model policy '{}' requirement '{}'",
+                        self.sandbox_guarantee, policy.policy_id, policy.required_sandbox_guarantee
+                    ));
+                }
+                d
+            }
+        };
+
+        self.policy_file = Some(path);
+        self.verified_policy_digest = Some(digest);
+        Ok(self)
+    }
 }
 
 /// `.vitna/daemon.db` under the home directory.
@@ -418,11 +477,21 @@ pub async fn run<F: FnOnce()>(launch: &Launch, on_ready: F) -> Result<(), String
                 model: anchor.model.clone(),
                 routing_reason: format!("vitna_anchor:{}", anchor.model),
             })
-            .with_policy_digest(checkpoint_digest);
+            .with_policy_digest(checkpoint_digest.or_else(|| launch.verified_policy_digest.clone()));
     } else {
         tracing::info!(
             "no model route: SubmitTurn is refused until --runtime-url/--lane or --provider/--model are given"
         );
+    }
+
+    if launch.anchor.is_none() {
+        if let Some(ref digest) = launch.verified_policy_digest {
+            tracing::info!(
+                policy_digest = %digest,
+                "enforcing verified vitna-model-policy-v1 policy"
+            );
+            server = server.with_policy_digest(Some(digest.clone()));
+        }
     }
 
     server = server.with_sandbox(
@@ -689,5 +758,79 @@ mod tests {
             "a relative journal moves with the folder the daemon was started from: {}",
             launch.store.display()
         );
+    }
+
+    #[test]
+    fn with_policy_enforces_route_and_sandbox_fail_closed() {
+        let dir = std::env::temp_dir().join(format!(
+            "vitna_launch_policy_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let policy_path = dir.join("policy.json");
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let key = vitna_policy::generate_policy_signing_key();
+        let mut policy = vitna_policy::SignedModelPolicy {
+            schema_version: vitna_policy::MODEL_POLICY_SCHEMA_V1.to_string(),
+            policy_id: "daemon-launch-policy".to_string(),
+            issued_at: now.saturating_sub(60),
+            expires_at: now + 3600,
+            allowed_providers: vec!["vitna-runtime".to_string()],
+            lanes: vec![vitna_policy::ModelLaneConfig {
+                lane: "vitna/code".to_string(),
+                provider: "vitna-runtime".to_string(),
+                model_sku: "vitna/code".to_string(),
+            }],
+            required_sandbox_guarantee: "strong".to_string(),
+            public_key: String::new(),
+            signature: String::new(),
+        };
+        policy.sign(&key).unwrap();
+        let expected_digest = policy.policy_digest().unwrap();
+        std::fs::write(&policy_path, serde_json::to_string_pretty(&policy).unwrap()).unwrap();
+
+        let base = || Launch::resolve(Some("e".into()), Some(PathBuf::from("a.db"))).unwrap();
+
+        // Matching runtime lane + strong OCI sandbox succeeds and records verified digest.
+        let ok = base()
+            .with_runtime(
+                Some("http://127.0.0.1:8787".into()),
+                Some("vitna/code".into()),
+            )
+            .unwrap()
+            .with_sandbox(Some("strong".into()), Some("alpine:3.20".into()))
+            .unwrap()
+            .with_policy(Some(policy_path.clone()))
+            .expect("matching route + strong sandbox allowed");
+        assert_eq!(ok.verified_policy_digest.as_deref(), Some(expected_digest.as_str()));
+
+        // Guarded sandbox under a `strong` policy fails closed.
+        assert!(base()
+            .with_runtime(
+                Some("http://127.0.0.1:8787".into()),
+                Some("vitna/code".into()),
+            )
+            .unwrap()
+            .with_policy(Some(policy_path.clone()))
+            .is_err());
+
+        // Disallowed lane under a matching strong sandbox fails closed.
+        assert!(base()
+            .with_runtime(
+                Some("http://127.0.0.1:8787".into()),
+                Some("vitna/other".into()),
+            )
+            .unwrap()
+            .with_sandbox(Some("strong".into()), Some("alpine:3.20".into()))
+            .unwrap()
+            .with_policy(Some(policy_path.clone()))
+            .is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
