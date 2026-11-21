@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn files_that_usually_hold_secrets_are_never_read() {
-        for secret in [
+        for blocked_name in [
             ".env",
             ".ENV",
             ".env.local",
@@ -200,8 +200,8 @@ mod tests {
             ".netrc",
             ".pypirc",
         ] {
-            let reason =
-                guarded(&["config", secret]).unwrap_or_else(|| panic!("{secret} was not guarded"));
+            let reason = guarded(&["config", blocked_name])
+                .unwrap_or_else(|| panic!("{blocked_name} was not guarded"));
             assert!(reason.contains("usually holds secrets"), "{reason}");
         }
         for fine in [

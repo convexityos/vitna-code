@@ -67,4 +67,10 @@ describe('showControls', () => {
     );
     expect(showControls('a\rb')).toBe('a␍b');
   });
+
+  it('covers C0, DEL, and C1 control boundaries while preserving tab and newline', () => {
+    expect(showControls('\u0000\u0008\t\n\u000b\u001f \u007f\u0080\u009f')).toBe(
+      '\u2400\u2408\t\n\u240b\u241f \u2421\ufffd\ufffd',
+    );
+  });
 });
